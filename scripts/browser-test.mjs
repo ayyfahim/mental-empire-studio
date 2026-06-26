@@ -6,8 +6,9 @@ import { chromium } from 'playwright'
 import http from 'node:http'
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, extname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const ROOT = new URL('..', import.meta.url).pathname
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const RDIR = join(ROOT, 'out', 'renderer')
 const OUT = join(ROOT, 'browser-test-out')
 mkdirSync(OUT, { recursive: true })
@@ -85,7 +86,11 @@ const nav = async (page, label) => {
 }
 
 const browser = await chromium.launch({ executablePath: process.env.CHROME, args: ['--no-sandbox'] })
-const context = await browser.newContext({ viewport: { width: 1366, height: 850 }, recordVideo: { dir: OUT, size: { width: 1366, height: 850 } }, deviceScaleFactor: 1 })
+const contextOptions = { viewport: { width: 1366, height: 850 }, deviceScaleFactor: 1 }
+if (process.env.RECORD_VIDEO === '1') {
+  contextOptions.recordVideo = { dir: OUT, size: { width: 1366, height: 850 } }
+}
+const context = await browser.newContext(contextOptions)
 await context.addInitScript({ content: MOCK })
 const page = await context.newPage()
 const errors = []
@@ -147,9 +152,10 @@ if (pngs.length) {
 }
 console.log('PAGE ERRORS:', errors.length, errors.slice(0, 3).join(' | '))
 
-const vpath = await page.video().path()
+const video = page.video()
+const vpath = video ? await video.path() : ''
 await context.close()
 await browser.close()
 server.close()
-console.log('VIDEO_RAW', vpath)
+if (vpath) console.log('VIDEO_RAW', vpath)
 console.log('DONE')

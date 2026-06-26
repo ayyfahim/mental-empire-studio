@@ -5,12 +5,14 @@ import { chromium } from 'playwright'
 import http from 'node:http'
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, extname } from 'node:path'
+import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 
-const ROOT = new URL('..', import.meta.url).pathname
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const RDIR = join(ROOT, 'out', 'renderer')
 const OUT = join(ROOT, 'browser-test-out')
 mkdirSync(OUT, { recursive: true })
-const ASSET = '/tmp/demo-assets'
+const ASSET = process.env.DEMO_ASSET_DIR || join(tmpdir(), 'demo-assets')
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2', '.woff': 'font/woff', '.png': 'image/png', '.svg': 'image/svg+xml' }
 
 const server = http.createServer((req, res) => {

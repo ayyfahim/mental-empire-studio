@@ -102,8 +102,8 @@ function MediaTab(): JSX.Element {
   )
 }
 
-function chip(text: string, on: boolean, onClick?: () => void) {
-  return <span onClick={onClick} style={{ border: on ? '1px solid var(--accent)' : '1px solid #23272f', color: on ? 'var(--accent)' : '#8a909c', borderRadius: 7, padding: '5px 9px', background: on ? 'var(--accent-soft)' : 'transparent', cursor: onClick ? 'pointer' : undefined }}>{text}</span>
+function chip(text: string, on: boolean, onClick?: () => void, key?: string) {
+  return <span key={key} onClick={onClick} style={{ border: on ? '1px solid var(--accent)' : '1px solid #23272f', color: on ? 'var(--accent)' : '#8a909c', borderRadius: 7, padding: '5px 9px', background: on ? 'var(--accent-soft)' : 'transparent', cursor: onClick ? 'pointer' : undefined }}>{text}</span>
 }
 
 function MiniToggle({ on, onClick }: { on: boolean; onClick: () => void }): JSX.Element {
@@ -235,7 +235,7 @@ function CaptionsTab(): JSX.Element {
         </div>
         <div style={{ border: '1px solid #1d2129', borderRadius: 14, padding: 15, background: '#12151b', display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div><div style={{ fontSize: 10.5, color: '#6a7180', marginBottom: 6 }}>Font</div><div style={{ border: '1px solid #23272f', borderRadius: 8, padding: 9, fontSize: 13, color: '#dde0e5', background: '#0e1116', textAlign: 'center', fontWeight: 600 }}>{project?.captionFont ?? 'Montserrat'} ▾</div></div>
-          <div><div style={{ fontSize: 10.5, color: '#6a7180', marginBottom: 7 }}>Animation</div><div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 10.5 }}>{(['Pop-in', 'Bounce', 'Slide', 'Type'] as const).map((a) => chip(a, project?.captionAnim === a, () => void setCaptions({ captionAnim: a })))}</div></div>
+          <div><div style={{ fontSize: 10.5, color: '#6a7180', marginBottom: 7 }}>Animation</div><div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 10.5 }}>{(['Pop-in', 'Bounce', 'Slide', 'Type'] as const).map((a) => chip(a, project?.captionAnim === a, () => void setCaptions({ captionAnim: a }), a))}</div></div>
           <div style={{ display: 'flex', gap: 9 }}>
             <div onClick={() => void setCaptions({ keywords: !project?.keywords })} style={{ flex: 1, border: '1px solid #1d2129', borderRadius: 9, padding: 9, background: '#0e1116', cursor: 'pointer' }}><div style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ fontSize: 11, fontWeight: 600, color: '#dde0e5' }}>Keywords</span><span style={{ marginLeft: 'auto', fontSize: 8.5, fontWeight: 700, background: project?.keywords ? '#1f9c6b' : '#2b303b', color: '#fff', borderRadius: 9, padding: '1px 6px' }}>{project?.keywords ? 'ON' : 'OFF'}</span></div><div style={{ fontSize: 9, color: '#6a7180', marginTop: 4 }}>Auto-highlight</div></div>
             <div onClick={() => void setCaptions({ punchZoom: !project?.punchZoom })} style={{ flex: 1, border: '1px solid #1d2129', borderRadius: 9, padding: 9, background: '#0e1116', cursor: 'pointer' }}><div style={{ display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ fontSize: 11, fontWeight: 600, color: '#dde0e5' }}>Punch</span><span style={{ marginLeft: 'auto', fontSize: 8.5, fontWeight: 700, background: project?.punchZoom ? '#1f9c6b' : '#2b303b', color: '#fff', borderRadius: 9, padding: '1px 6px' }}>{project?.punchZoom ? 'ON' : 'OFF'}</span></div><div style={{ fontSize: 9, color: '#6a7180', marginTop: 4 }}>Zoom on hit</div></div>
