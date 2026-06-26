@@ -34,6 +34,7 @@ interface DataState {
   projectImages: ProjectImage[]
   transcript: TranscriptWord[]
   transcribing: boolean
+  transcribeMessage: string
   transcribeError: string
   renderJobs: RenderQueueRow[]
   renderProgress: Record<string, RenderProgress>
@@ -86,6 +87,7 @@ export const useData = create<DataState>((set, get) => ({
   projectImages: [],
   transcript: [],
   transcribing: false,
+  transcribeMessage: '',
   transcribeError: '',
   renderJobs: [],
   renderProgress: {},
@@ -111,7 +113,11 @@ export const useData = create<DataState>((set, get) => ({
       set((s) => ({ dlProgress: { ...s.dlProgress, [p.downloadId]: p } }))
       void get().loadDownloads()
     })
-    a.onTranscribeProgress((p) => set({ transcribing: p.phase !== 'done' && p.phase !== 'error', transcribeError: p.phase === 'error' ? (p.error ?? p.message) : '' }))
+    a.onTranscribeProgress((p) => set({
+      transcribing: p.phase !== 'done' && p.phase !== 'error',
+      transcribeMessage: p.phase === 'done' ? 'Done' : p.phase === 'error' ? '' : p.message,
+      transcribeError: p.phase === 'error' ? (p.error ?? p.message) : ''
+    }))
     a.onRenderProgress((p) => {
       set((s) => ({ renderProgress: { ...s.renderProgress, [p.jobId]: p } }))
       void get().loadRenderJobs()
@@ -192,7 +198,7 @@ export const useData = create<DataState>((set, get) => ({
     if (!a) return
     const project = await a.compose.createProject(downloadId)
     const [projectImages, transcript] = await Promise.all([a.compose.images(project.id), a.transcribe.get(project.id)])
-    set({ activeProject: project, projectImages, transcript, transcribeError: '' })
+    set({ activeProject: project, projectImages, transcript, transcribeError: '', transcribeMessage: '' })
   },
   openProjectById: async (projectId) => {
     const a = api()
@@ -200,7 +206,7 @@ export const useData = create<DataState>((set, get) => ({
     const project = await a.compose.get(projectId)
     if (!project) return
     const [projectImages, transcript] = await Promise.all([a.compose.images(projectId), a.transcribe.get(projectId)])
-    set({ activeProject: project, projectImages, transcript, transcribeError: '' })
+    set({ activeProject: project, projectImages, transcript, transcribeError: '', transcribeMessage: '' })
   },
   setProjectImages: async (paths) => {
     const a = api()
@@ -234,12 +240,12 @@ export const useData = create<DataState>((set, get) => ({
     const a = api()
     const p = get().activeProject
     if (!a || !p || get().transcribing) return
-    set({ transcribing: true, transcribeError: '' })
+    set({ transcribing: true, transcribeError: '', transcribeMessage: 'Starting' })
     try {
       const transcript = await a.transcribe.run(p.id)
-      set({ transcript, transcribeError: '' })
+      set({ transcript, transcribeError: '', transcribeMessage: 'Done' })
     } catch (e) {
-      set({ transcribeError: (e as Error).message })
+      set({ transcribeError: (e as Error).message, transcribeMessage: '' })
     } finally {
       set({ transcribing: false })
     }

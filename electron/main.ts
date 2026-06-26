@@ -109,7 +109,16 @@ function refreshTrayMenu(): void {
   )
 }
 
-function createWindow(): void {
+function shouldStartHidden(): boolean {
+  try {
+    const login = app.getLoginItemSettings()
+    return !!login.wasOpenedAsHidden || process.argv.includes('--hidden')
+  } catch {
+    return process.argv.includes('--hidden')
+  }
+}
+
+function createWindow(showOnReady = true): void {
   mainWindow = new BrowserWindow({
     width: WIN_WIDTH,
     height: WIN_HEIGHT,
@@ -128,7 +137,9 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.on('ready-to-show', () => mainWindow?.show())
+  mainWindow.on('ready-to-show', () => {
+    if (showOnReady) mainWindow?.show()
+  })
 
   // Close-to-tray: when the tray is enabled, closing the window hides it (the app
   // keeps running in the background for auto-watch) — real quit is via the tray menu.
@@ -916,14 +927,16 @@ app.whenReady().then(() => {
     return
   }
 
-  createWindow()
+  const startHidden = shouldStartHidden()
+  if (!startHidden) createWindow()
 
   // Headless screenshot (ME_SHOOT=<png path>): wait for the renderer to settle,
   // capture, then exit. With ME_BATCH=1, also drive the Thumbnails "Generate all"
   // button and report how many PNGs the renderer rasterized + wrote (M5 check).
   const shootPath = process.env['ME_SHOOT']
-  if (shootPath && mainWindow) {
-    mainWindow.webContents.once('did-finish-load', () => {
+  if (shootPath) {
+    if (!mainWindow) createWindow()
+    mainWindow!.webContents.once('did-finish-load', () => {
       setTimeout(async () => {
         const wc = mainWindow!.webContents
         const accent = await wc.executeJavaScript('document.documentElement.getAttribute("data-accent")')

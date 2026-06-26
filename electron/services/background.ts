@@ -9,6 +9,10 @@ import type { AppSettings } from '../../shared/types'
 /** Register/unregister the app to launch on OS sign-in, hidden into the tray. */
 export function applyLoginItem(settings: AppSettings): void {
   try {
+    if (!app.isPackaged) {
+      app.setLoginItemSettings({ openAtLogin: false })
+      return
+    }
     app.setLoginItemSettings({ openAtLogin: settings.background.startOnSignIn, openAsHidden: true })
   } catch {
     /* login items unsupported on this platform — non-fatal */

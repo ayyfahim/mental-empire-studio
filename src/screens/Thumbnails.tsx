@@ -216,7 +216,7 @@ function TemplateRail(): JSX.Element {
   const saveCurrentTemplate = useStore((s) => s.saveCurrentTemplate)
   const deleteTemplate = useStore((s) => s.deleteTemplate)
   return (
-    <div style={{ flex: 'none', width: 120, display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div className="me-template-rail" style={{ flex: 'none', width: 120, display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.6px', color: '#5b616f', marginBottom: 1 }}>PROFILE TEMPLATES</div>
       {templates.map((t) => (
         <div key={t.id} onClick={() => applyTemplate(t)} className="me-card" style={{ position: 'relative', border: '1px solid #1d2129', background: '#12151b', borderRadius: 9, padding: 6, cursor: 'pointer' }}>
@@ -285,7 +285,7 @@ export function Thumbnails(): JSX.Element {
   const headline = (selected && selected.kind === 'text' ? selected : layers.find((l) => l.kind === 'text')) as TextLayer
 
   return (
-    <ScreenPad>
+    <ScreenPad style={{ minHeight: '100%', padding: 'clamp(16px, 2.2vw, 30px) clamp(16px, 2.5vw, 34px) 28px' }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', marginBottom: 22 }}>
         <div><div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '1px', color: 'var(--accent)', marginBottom: 7 }}>STEP 03 — THUMBNAIL</div><div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 25, letterSpacing: '-.5px', color: '#f4f6f9' }}>Thumbnail studio</div></div>
         <div style={{ flex: 1 }} />
@@ -294,15 +294,15 @@ export function Thumbnails(): JSX.Element {
 
       <Toolbar />
 
-      <div style={{ display: 'flex', gap: 18, marginBottom: 22 }}>
+      <div className="me-thumb-workspace" style={{ display: 'grid', gridTemplateColumns: 'minmax(96px, 120px) minmax(420px, 1fr) minmax(260px, 300px)', gap: 18, marginBottom: 22, alignItems: 'start' }}>
         <TemplateRail />
         {/* minWidth:0 lets the canvas column shrink; without it the Konva canvas's pixel
             width becomes the flex min-size and pushes the inspector off the right edge. */}
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ minWidth: 0 }}>
           <ThumbCanvas />
           <div style={{ fontSize: 11.5, color: '#6a7180', marginTop: 11, lineHeight: 1.5 }}>Drag any layer on the canvas; the selected subject/shape gets resize handles. <span style={{ color: 'var(--accent)' }}>Auto-arrange type</span> lays out the headline opposite the subject. Dashed = title-safe.</div>
         </div>
-        <div style={{ flex: 'none', width: 300, border: '1px solid #1d2129', borderRadius: 14, background: '#12151b', overflow: 'hidden', display: 'flex', flexDirection: 'column', maxHeight: 560 }}>
+        <div className="me-thumb-inspector" style={{ minWidth: 0, border: '1px solid #1d2129', borderRadius: 14, background: '#12151b', overflow: 'hidden', display: 'flex', flexDirection: 'column', maxHeight: 'calc(100vh - 180px)' }}>
           <LayersPanel />
           {headline && <TextLayerEditor layer={headline} />}
         </div>

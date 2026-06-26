@@ -150,7 +150,9 @@ async function runTranscribe(projectId: string): Promise<TranscriptWord[]> {
     validateDownloadedAudio(project.downloadId, project.mp3Path, project.durationSec)
     emitT({ projectId, phase: 'start', message: 'Starting' })
     emitT({ projectId, phase: 'uploading', message: 'Uploading audio' })
-    const words = await transcribeAudio(project.mp3Path, settings)
+    const words = await transcribeAudio(project.mp3Path, settings, {
+      onProgress: (message) => emitT({ projectId, phase: 'transcribing', message })
+    })
     emitT({ projectId, phase: 'transcribing', message: 'Aligning words' })
 
     const rows: TranscriptWord[] = words.map((w, i) => ({

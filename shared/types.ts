@@ -475,7 +475,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   concurrency: 2,
   quality: '1080p',
   autoScrape: { enabled: true, frequency: 'Every 6 hours', delaySec: 1.5, retries: 3, proxy: '', cookiesPath: '' },
-  background: { tray: true, startOnSignIn: true, notifications: true, webhook: '' },
+  background: { tray: true, startOnSignIn: false, notifications: true, webhook: '' },
   transcription: { apiKey: '', model: 'whisper-large-v3-turbo' },
   beta: { enabled: false, pexelsKey: '', pixabayKey: '', coverrKey: '' }
 }

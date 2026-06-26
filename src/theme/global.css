@@ -109,6 +109,22 @@ body {
   border-color: var(--accent) !important;
 }
 
+.me-nav,
+.me-row,
+.me-card,
+.me-btn {
+  min-width: 0;
+}
+
+.me-nav,
+.me-row {
+  overflow-wrap: anywhere;
+}
+
+.me-sidebar {
+  scrollbar-gutter: stable;
+}
+
 /* draggable title bar region for the frameless window */
 .drag-region {
   -webkit-app-region: drag;
@@ -119,4 +135,71 @@ body {
 
 button {
   font-family: inherit;
+}
+
+@media (max-width: 1180px) {
+  .me-sidebar {
+    width: 188px !important;
+  }
+
+  .me-title-search {
+    display: none !important;
+  }
+
+  .me-thumb-workspace {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .me-template-rail {
+    width: 100% !important;
+    flex-direction: row !important;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .me-template-rail > div {
+    min-width: 108px;
+  }
+
+  .me-thumb-inspector {
+    max-height: none !important;
+  }
+}
+
+@media (max-width: 900px), (max-height: 760px) {
+  .me-screen {
+    padding: 16px !important;
+  }
+
+  .me-sidebar {
+    width: 76px !important;
+    padding: 12px 8px !important;
+  }
+
+  .me-sidebar-brand-text,
+  .me-sidebar-status {
+    display: none !important;
+  }
+
+  .me-sidebar .me-nav {
+    justify-content: center;
+    padding: 10px 8px !important;
+  }
+
+  .me-sidebar .me-nav svg {
+    flex: none;
+  }
+
+  .me-sidebar .me-nav,
+  .me-sidebar h1 {
+    font-size: 0 !important;
+  }
+
+  .me-sidebar .me-nav > span:last-child {
+    font-size: 10px !important;
+  }
+
+  .me-title-render {
+    padding: 8px 10px !important;
+  }
 }

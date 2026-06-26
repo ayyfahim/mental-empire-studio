@@ -66,11 +66,11 @@ export function Sidebar(): JSX.Element {
   const watching = profiles.filter((p) => p.autoWatch).length
 
   return (
-    <div style={{ width: 236, flex: 'none', background: '#0a0c10', borderRight: '1px solid #1a1e26', display: 'flex', flexDirection: 'column', padding: '16px 12px' }}>
+    <div className="me-sidebar" style={{ width: 'clamp(196px, 15vw, 236px)', flex: 'none', background: '#0a0c10', borderRight: '1px solid #1a1e26', display: 'flex', flexDirection: 'column', padding: '14px 12px', minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '6px 8px 16px' }}>
-        <div style={{ width: 34, height: 34, borderRadius: 10, background: 'linear-gradient(135deg,var(--accent),var(--accent-deep))', display: 'grid', placeItems: 'center', fontFamily: 'var(--font-display)', fontWeight: 700, color: 'var(--accent-ink)', fontSize: 14, boxShadow: '0 4px 14px -4px var(--accent-glow)' }}>ME</div>
-        <div style={{ lineHeight: 1.2 }}>
-          <div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 14, color: '#f2f4f7' }}>Mental Empire</div>
+        <div style={{ width: 34, height: 34, borderRadius: 10, background: 'linear-gradient(135deg,var(--accent),var(--accent-deep))', display: 'grid', placeItems: 'center', fontFamily: 'var(--font-display)', fontWeight: 700, color: 'var(--accent-ink)', fontSize: 14, boxShadow: '0 4px 14px -4px var(--accent-glow)', flex: 'none' }}>ME</div>
+        <div className="me-sidebar-brand-text" style={{ lineHeight: 1.2, minWidth: 0 }}>
+          <div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 14, color: '#f2f4f7', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Mental Empire</div>
           <div style={{ fontSize: 10.5, color: '#5b616f', fontFamily: 'var(--font-mono)', letterSpacing: '.3px' }}>studio v{window.api?.appVersion || '0.1.0'}</div>
         </div>
       </div>
@@ -83,9 +83,9 @@ export function Sidebar(): JSX.Element {
         <NavItem key={d.key} def={d} badge={d.key === 'render' && queued > 0 ? String(queued) : undefined} />
       ))}
 
-      <div style={{ flex: 1 }} />
+      <div style={{ flex: 1, minHeight: 12 }} />
 
-      <div style={{ border: '1px solid #1d2129', borderRadius: 12, padding: 12, background: 'linear-gradient(180deg,#10141a,#0c0f13)' }}>
+      <div className="me-sidebar-status" style={{ border: '1px solid #1d2129', borderRadius: 12, padding: 12, background: 'linear-gradient(180deg,#10141a,#0c0f13)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 9 }}>
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: watching > 0 ? '#36c98e' : '#5b616f', boxShadow: watching > 0 ? '0 0 8px #36c98e' : 'none', animation: watching > 0 ? 'mePulse 2s infinite' : 'none' }} />
           <span style={{ fontSize: 11, fontWeight: 600, color: '#cdd2da' }}>{watching > 0 ? 'Auto-watch active' : 'Auto-watch off'}</span>

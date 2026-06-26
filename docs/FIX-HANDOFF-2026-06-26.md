@@ -209,3 +209,110 @@ Verification run:
 
 Remaining related work:
 - Native manual smoke is still recommended with real YouTube/Groq/thumbnail assets because automated checks do not spend API keys or verify live network flows.
+
+## 8. Groq Large-Audio Transcription Fix
+
+Files changed:
+- `electron/services/transcribe.ts`
+- `docs/FIX-HANDOFF-2026-06-26.md`
+
+Bug/symptom fixed:
+- Groq transcription failed for the attached 30.53 MB MP3 before any words were returned.
+- In the app, this surfaced as transcription not working or appearing stuck.
+
+Root cause:
+- Groq rejected the full MP3 upload with HTTP `413 Request Entity Too Large`.
+- The app uploaded the entire source MP3 in one request.
+
+Exact behavior changed:
+- `transcribeAudio` now uploads directly only when the MP3 is under 20 MB.
+- Larger MP3s are chunked with bundled ffmpeg into 10-minute, mono, 16 kHz, 96 kbps MP3 segments.
+- Each chunk is sent to Groq, then word timestamps are offset and merged into one transcript.
+- The service can also read `GROQ_API_KEY` from the process environment as a fallback, without storing secrets in source code.
+- Chunk creation, chunk sizes, upload attempts, retry attempts, word counts, merge completion, failures, and temp-dir cleanup are logged through `electron-log`.
+- Each chunk is retried twice. If any chunk still fails, the whole transcription fails and no partial transcript is saved to the database.
+- Compose now shows chunk/progress messages from the backend while transcription is running.
+
+Verification run:
+- Direct full-file Groq upload against the attached MP3 failed with `413`, confirming the root cause.
+- A 2-minute ffmpeg chunk of the same MP3 returned HTTP `200` from Groq with 304 words.
+- Full-file chunked smoke on the attached 30.53 MB MP3 split into 3 chunks and returned 3,073 words from Groq.
+- `npm run typecheck` passed.
+- `npm run build` passed.
+
+Remaining related work:
+- Package EXE after validation.
+
+## 9. Groq Chunk Logging and Mid-Chunk Failure Handling
+
+Files changed:
+- `electron/services/transcribe.ts`
+- `electron/ipc/compose.ts`
+- `src/store/useData.ts`
+- `src/screens/Compose.tsx`
+- `docs/FIX-HANDOFF-2026-06-26.md`
+
+Bug/symptom fixed:
+- Large audio chunking existed but did not log enough detail to debug user machines.
+- If Groq failed midway, the expected behavior was not clearly enforced or surfaced.
+
+Root cause:
+- The transcription service had no per-chunk retry wrapper or renderer progress callback.
+
+Exact behavior changed:
+- Added structured, secret-safe logs for ffmpeg chunking, chunk temp directory, chunk sizes, Groq upload attempts, retries, success word counts, merge completion, failures, and cleanup.
+- Added two retries per chunk with small backoff.
+- If chunking or any chunk upload fails after retries, transcription throws before `replaceTranscript`, so old transcript data is preserved and no partial transcript is saved.
+- Backend progress messages are emitted through `transcribe:progress`.
+- Compose shows the current transcription message beside the button.
+
+Verification run:
+- Pending after this hardening slice.
+
+Remaining related work:
+- Run typecheck/build/dist and push this Groq hardening commit.
+
+## 10. Responsive Sidebar, Thumbnail Layout, and Startup Behavior
+
+Files changed:
+- `shared/types.ts`
+- `electron/main.ts`
+- `electron/services/background.ts`
+- `src/components/Sidebar.tsx`
+- `src/components/TitleBar.tsx`
+- `src/screens/Thumbnails.tsx`
+- `src/theme/global.css`
+- `docs/FIX-HANDOFF-2026-06-26.md`
+
+Bug/symptom fixed:
+- Sidebar could clip vertically or spill text on smaller/shorter screens.
+- Thumbnail Studio canvas/inspector layout could overflow horizontally and hide controls.
+- Long words/labels could push compact UI rows out of shape.
+- The app could launch raw Electron/default Electron UI on Windows startup in dev/unpackaged mode.
+- The app window showed on sign-in even though login item was registered as hidden.
+
+Root cause:
+- Sidebar and thumbnail editor used fixed desktop dimensions.
+- Several text containers lacked truncation/min-width behavior.
+- Login item registration ran in development, where Electron can restart as raw `electron.exe`.
+- `createWindow` always showed on `ready-to-show`, ignoring hidden login startup.
+
+Exact behavior changed:
+- Sidebar width now clamps, scrolls vertically, and switches to icon-only compact mode when height/width is tight.
+- Titlebar search/render controls collapse or stay nowrap instead of pushing the layout.
+- Thumbnail Studio uses a responsive grid; the template rail becomes horizontal and the inspector stacks below the canvas on narrow screens.
+- Global card/row/button/nav styles now use `min-width: 0` and safer word wrapping.
+- Default `startOnSignIn` is now `false`.
+- Login-item registration is disabled for unpackaged/dev Electron builds.
+- Hidden startup no longer creates/shows the main window; the app stays in tray/background until opened.
+
+Verification run:
+- `npm run typecheck` passed after this slice.
+- `npm run build` passed after this slice.
+- `npm run dist:win` passed after this slice.
+- Fresh package outputs:
+  - `D:\Work\mental-empire-studio\dist\Mental Empire Studio Setup 0.1.5.exe`
+  - `D:\Work\mental-empire-studio\dist\Mental Empire Studio 0.1.5.exe`
+
+Remaining related work:
+- Manual UI smoke on small screens is still useful, but the responsive CSS and package build are in place.

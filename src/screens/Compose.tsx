@@ -244,6 +244,7 @@ function CaptionsTab(): JSX.Element {
   const project = useData((s) => s.activeProject)
   const transcript = useData((s) => s.transcript)
   const transcribing = useData((s) => s.transcribing)
+  const transcribeMessage = useData((s) => s.transcribeMessage)
   const transcribeError = useData((s) => s.transcribeError)
   const runTranscribe = useData((s) => s.runTranscribe)
   const toggleWordEmphasis = useData((s) => s.toggleWordEmphasis)
@@ -283,7 +284,7 @@ function CaptionsTab(): JSX.Element {
       </div>
 
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}><span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#6a7180' }}>TRANSCRIPT · WORD-LEVEL</span><div style={{ flex: 1 }} /><div onClick={() => { if (!transcribing) void runTranscribe() }} className="me-btn" style={{ border: '1px solid #262b34', background: '#15181f', borderRadius: 8, padding: '6px 11px', fontSize: 11, color: '#c4cad3', cursor: transcribing ? 'not-allowed' : 'pointer', opacity: transcribing ? 0.55 : 1 }}>{transcribing ? 'Transcribing…' : 'Re-transcribe ↻'}</div></div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}><span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#6a7180' }}>TRANSCRIPT · WORD-LEVEL</span><div style={{ flex: 1 }} />{transcribing && <span style={{ fontSize: 10.5, color: '#8a909c' }}>{transcribeMessage || 'Transcribing…'}</span>}<div onClick={() => { if (!transcribing) void runTranscribe() }} className="me-btn" style={{ border: '1px solid #262b34', background: '#15181f', borderRadius: 8, padding: '6px 11px', fontSize: 11, color: '#c4cad3', cursor: transcribing ? 'not-allowed' : 'pointer', opacity: transcribing ? 0.55 : 1 }}>{transcribing ? 'Transcribing…' : 'Re-transcribe ↻'}</div></div>
         <div style={{ border: '1px solid #1d2129', borderRadius: 12, padding: 16, background: '#12151b', fontSize: 14, lineHeight: 2.1, color: '#cdd2da', height: 178, overflow: 'auto' }}>
           {transcribeError ? (
             <span style={{ color: '#ff8a96', fontSize: 12 }}>{transcribeError}</span>
