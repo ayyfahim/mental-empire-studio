@@ -1,4 +1,5 @@
 import { useStore } from '../store/useStore'
+import { useData } from '../store/useData'
 import type { ScreenKey } from '@shared/types'
 
 const LABELS: Record<ScreenKey, string> = {
@@ -18,6 +19,16 @@ function winCtl(action: 'minimize' | 'maximize' | 'close') {
 
 export function TitleBar(): JSX.Element {
   const active = useStore((s) => s.active)
+  const setActive = useStore((s) => s.setActive)
+  const rows = useData((s) => s.renderJobs)
+  const rendering = useData((s) => s.rendering)
+  const renderAll = useData((s) => s.renderAll)
+  const canRender = rows.length > 0 && rows.every((r) => r.isReady) && !rendering
+  const handleRenderAll = (): void => {
+    setActive('render')
+    if (canRender) void renderAll()
+  }
+
   return (
     <div
       className="drag-region"
@@ -42,9 +53,9 @@ export function TitleBar(): JSX.Element {
         <span style={{ fontSize: 12.5, color: '#5b616f' }}>Search channels, jobs…</span>
         <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 10, color: '#444b57', border: '1px solid #262b34', borderRadius: 4, padding: '1px 5px' }}>⌘K</span>
       </div>
-      <div className="me-btn no-drag me-title-render" style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'linear-gradient(180deg,var(--accent),var(--accent-deep))', color: 'var(--accent-ink)', fontWeight: 600, fontSize: 12.5, padding: '8px 15px', borderRadius: 9, cursor: 'pointer', boxShadow: '0 4px 16px -4px var(--accent-glow)', whiteSpace: 'nowrap' }}>
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M5 4l14 8-14 8z" /></svg>Render all
-      </div>
+      <button type="button" onClick={handleRenderAll} disabled={rendering} className="me-btn no-drag me-title-render" title={canRender ? 'Render all queued jobs' : 'Open Render Queue'} style={{ display: 'flex', alignItems: 'center', gap: 8, border: 0, background: 'linear-gradient(180deg,var(--accent),var(--accent-deep))', color: 'var(--accent-ink)', fontWeight: 600, fontSize: 12.5, padding: '8px 15px', borderRadius: 9, cursor: rendering ? 'not-allowed' : 'pointer', boxShadow: '0 4px 16px -4px var(--accent-glow)', whiteSpace: 'nowrap', opacity: rendering ? 0.6 : 1 }}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M5 4l14 8-14 8z" /></svg>{rendering ? 'Rendering…' : 'Render all'}
+      </button>
       <div style={{ width: 30, height: 30, borderRadius: 9, background: 'linear-gradient(135deg,#3a3f4d,#23262f)', border: '1px solid #2c303b', display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 700, color: '#aab1bf' }}>A</div>
     </div>
   )

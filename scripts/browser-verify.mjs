@@ -4,9 +4,11 @@ import { chromium } from 'playwright'
 import http from 'node:http'
 import { readFileSync, existsSync } from 'node:fs'
 import { join, extname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const RDIR = '/home/claude/repo/out/renderer'
-const OUT = '/home/claude/repo/browser-test-out'
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
+const RDIR = join(ROOT, 'out', 'renderer')
+const OUT = join(ROOT, 'browser-test-out')
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2', '.woff': 'font/woff', '.png': 'image/png', '.svg': 'image/svg+xml' }
 const server = http.createServer((req, res) => { let p = decodeURIComponent(req.url.split('?')[0]); if (p === '/') p = '/index.html'; const f = join(RDIR, p); if (!existsSync(f)) { res.writeHead(404); res.end(); return } res.writeHead(200, { 'Content-Type': MIME[extname(f)] || 'application/octet-stream' }); res.end(readFileSync(f)) })
 await new Promise((r) => server.listen(0, '127.0.0.1', r))

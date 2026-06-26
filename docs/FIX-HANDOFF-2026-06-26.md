@@ -316,3 +316,106 @@ Verification run:
 
 Remaining related work:
 - Manual UI smoke on small screens is still useful, but the responsive CSS and package build are in place.
+
+## 11. Real Button Controls for Download and Render Actions
+
+Files changed:
+- `src/screens/Download.tsx`
+- `src/screens/RenderQueue.tsx`
+- `src/components/TitleBar.tsx`
+- `docs/FIX-HANDOFF-2026-06-26.md`
+
+Bug/symptom fixed:
+- Live browser QA could not find the visible Fetch, Download, Add to queue, Browse, or Render all actions as real buttons.
+- The titlebar Render all control looked clickable but had no command wired.
+
+Root cause:
+- Primary actions were styled clickable `<div>` elements. They looked like buttons, but they did not expose native button semantics, disabled state, keyboard activation, or reliable role-based testing behavior.
+
+Exact behavior changed:
+- Fetch, order tabs, Download mp3 only, Add to queue, Browse, Render all, and the titlebar Render all are now native `<button type="button">` controls where they perform commands.
+- Empty/invalid Download actions are disabled.
+- Render Queue blocks disabled render attempts.
+- The titlebar Render all now opens Render Queue, and it starts rendering immediately only when every queued row is ready.
+
+Verification run:
+- `npm run typecheck` passed after this slice.
+- Live browser re-test passed after restarting `npm run dev:browser`: Fetch is disabled until a URL is entered, Fetch loads 5 mock videos, selected videos enable Download/Add to queue, Add to queue opens Compose with `18:04` duration and image ranges, and no console errors were reported.
+
+Remaining related work:
+- Continue the live workflow pass to catch any remaining click/state bugs outside these controls.
+
+## 12. Real Button Controls for Compose Commands
+
+Files changed:
+- `src/screens/Compose.tsx`
+- `docs/FIX-HANDOFF-2026-06-26.md`
+
+Bug/symptom fixed:
+- Live browser QA could not find Compose commands like Save & send to render or Re-transcribe as real buttons.
+- Users could click these controls visually, but automation/keyboard semantics and disabled state were unreliable.
+
+Root cause:
+- Compose used styled `<div>`/`<span>` elements for commands that behave like buttons.
+
+Exact behavior changed:
+- Compose tabs, Sequence/Random pool, Re-roll, Copy master prompt, Auto-generate (Groq), Re-transcribe, and Save & send to render are now native `<button type="button">` controls.
+- Re-transcribe is disabled while transcription is already running, so duplicate requests are blocked at the UI layer as well as in the store/backend.
+- Save & send to render remains clickable and now exposes a button role for QA and keyboard users.
+
+Verification run:
+- `npm run typecheck` passed after this slice.
+- Live browser re-test passed after restarting `npm run dev:browser`: Compose exposes Audio + Image, Captions, Save & send to render, Sequence, Random pool, and Re-roll as real buttons; Save & send to render queues one job; Render Queue shows it blocked with `missing thumbnail` and disables `Render all (1)` instead of hanging; no console errors were reported.
+
+Remaining related work:
+- Continue checking other high-value screens for visually clickable command divs that should be buttons.
+
+## 13. Portable Browser Verification Script Paths
+
+Files changed:
+- `scripts/browser-verify.mjs`
+- `docs/FIX-HANDOFF-2026-06-26.md`
+
+Bug/symptom fixed:
+- The 1920px thumbnail/layout verifier could not run in this Windows workspace.
+
+Root cause:
+- `scripts/browser-verify.mjs` had hardcoded Linux paths under `/home/claude/repo` for `out/renderer` and `browser-test-out`.
+
+Exact behavior changed:
+- The verifier now resolves the repository root from `import.meta.url`, matching the other browser scripts.
+- `out/renderer` and `browser-test-out` are now built with `join(ROOT, ...)`, so the script works on Windows and other checkout paths.
+
+Verification run:
+- `CHROME='C:\Program Files\Google\Chrome\Application\chrome.exe' node scripts/browser-verify.mjs` passed.
+- Output: `INSPECTOR right-edge=1639 viewport=1920 -> OK (inside)`, `templates after save: 1`, `delete control present: true | templates after delete: 0`, `VERIFY_OK`.
+
+Remaining related work:
+- None for this script portability fix.
+
+## 14. Final Gate and Package Verification for Button/QA Fixes
+
+Files changed:
+- `docs/FIX-HANDOFF-2026-06-26.md`
+
+Bug/symptom fixed:
+- This entry records the final validation and package outputs after sections 11-13.
+
+Root cause:
+- Not applicable; this is the handoff record for the completed verification pass.
+
+Exact behavior changed:
+- No runtime code changed in this entry.
+
+Verification run:
+- `npm run typecheck` passed.
+- `npm run build` passed.
+- `CHROME='C:\Program Files\Google\Chrome\Application\chrome.exe' node scripts/browser-test.mjs` passed: 10 screenshots written, 3 thumbnail PNGs rasterized, `PAGE ERRORS: 0`, `DONE`.
+- `CHROME='C:\Program Files\Google\Chrome\Application\chrome.exe' node scripts/browser-thumb.mjs` passed: 2 file inputs found, image background screenshot written, 3 PNGs rasterized, `PAGE ERRORS: 0`, `DONE`.
+- `CHROME='C:\Program Files\Google\Chrome\Application\chrome.exe' node scripts/browser-verify.mjs` passed with `VERIFY_OK`.
+- `npm run dist:win` passed.
+- Rebuilt setup EXE: `D:\Work\mental-empire-studio\dist\Mental Empire Studio Setup 0.1.5.exe` (`196,514,704` bytes, `2026-06-26 20:45:24`).
+- Rebuilt portable EXE: `D:\Work\mental-empire-studio\dist\Mental Empire Studio 0.1.5.exe` (`196,297,557` bytes, `2026-06-26 20:45:29`).
+
+Remaining related work:
+- Commit and push the current fix slice on `codex/app-workflow-fixes`.

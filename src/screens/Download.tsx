@@ -44,7 +44,11 @@ export function Download(): JSX.Element {
       return next
     })
 
-  const fetchVids = (): void => void fetchSource(url, order, qty)
+  const canFetch = url.trim().length > 0 && !fetching
+  const fetchVids = (): void => {
+    if (!canFetch) return
+    void fetchSource(url, order, qty)
+  }
   const selected = sourceVideos.filter((v) => sel.has(v.id))
   const estMb = (selected.reduce((a, v) => a + v.durationSec, 0) * bitrate) / 8 / 1000
 
@@ -82,7 +86,7 @@ export function Download(): JSX.Element {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5b616f" strokeWidth="2"><path d="M10 13a5 5 0 007 0l2-2a5 5 0 00-7-7l-1 1" /><path d="M14 11a5 5 0 00-7 0l-2 2a5 5 0 007 7l1-1" /></svg>
           <input value={url} onChange={(e) => setUrl(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && fetchVids()} placeholder="youtube.com/@PowerWithinOfficial" style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', fontSize: 13, color: '#dde0e5', fontFamily: 'var(--font-mono)' }} />
         </div>
-        <div onClick={fetchVids} className="me-btn" style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'linear-gradient(180deg,var(--accent),var(--accent-deep))', color: 'var(--accent-ink)', fontWeight: 600, fontSize: 13, padding: '0 20px', borderRadius: 11, cursor: 'pointer', boxShadow: '0 4px 16px -4px var(--accent-glow)' }}>{fetching ? 'Fetching…' : 'Fetch'}</div>
+        <button type="button" disabled={!canFetch} onClick={fetchVids} className="me-btn" style={{ display: 'flex', alignItems: 'center', gap: 8, border: 0, background: 'linear-gradient(180deg,var(--accent),var(--accent-deep))', color: 'var(--accent-ink)', fontWeight: 600, fontSize: 13, padding: '0 20px', borderRadius: 11, cursor: canFetch ? 'pointer' : 'not-allowed', boxShadow: '0 4px 16px -4px var(--accent-glow)', opacity: canFetch ? 1 : 0.5 }}>{fetching ? 'Fetching…' : 'Fetch'}</button>
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 13, border: '1px solid #1d2129', borderRadius: 13, padding: '13px 16px', marginBottom: 18, background: '#12151b' }}>
@@ -92,7 +96,7 @@ export function Download(): JSX.Element {
         <div style={{ display: 'flex', gap: 9, alignItems: 'center' }}>
           <div style={{ display: 'flex', background: '#0e1116', border: '1px solid #23272f', borderRadius: 9, overflow: 'hidden', fontSize: 12 }}>
             {(['Popular', 'Latest', 'Oldest'] as ScrapeOrder[]).map((o) => (
-              <div key={o} onClick={() => setOrder(o)} style={{ padding: '8px 14px', cursor: 'pointer', background: order === o ? 'var(--accent)' : undefined, color: order === o ? 'var(--accent-ink)' : '#8a909c', fontWeight: order === o ? 600 : undefined }}>{o}</div>
+              <button type="button" key={o} onClick={() => setOrder(o)} style={{ border: 0, padding: '8px 14px', cursor: 'pointer', background: order === o ? 'var(--accent)' : 'transparent', color: order === o ? 'var(--accent-ink)' : '#8a909c', fontWeight: order === o ? 600 : undefined }}>{o}</button>
             ))}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, border: '1px solid #23272f', borderRadius: 9, padding: '7px 12px', background: '#0e1116' }}><span style={{ fontSize: 11, color: '#6a7180', fontFamily: 'var(--font-mono)' }}>QTY</span><input value={qty} onChange={(e) => setQty(Math.max(1, parseInt(e.target.value) || 1))} style={{ width: 28, border: 'none', outline: 'none', background: 'transparent', fontFamily: 'var(--font-display)', fontWeight: 600, color: '#eef0f3', fontSize: 14 }} /></div>
@@ -124,8 +128,8 @@ export function Download(): JSX.Element {
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, borderTop: '1px solid #1d2129', paddingTop: 18 }}>
         <div style={{ fontSize: 13, color: '#8a909c' }}><b style={{ color: '#eef0f3', fontFamily: 'var(--font-display)' }}>{selected.length}</b> videos selected{selected.length > 0 ? ` · ~${estMb.toFixed(0)} MB` : ''}</div>
         <div style={{ flex: 1 }} />
-        <div onClick={() => void download(false)} className="me-btn" style={{ border: '1px solid #262b34', background: '#15181f', borderRadius: 10, padding: '11px 18px', fontSize: 12.5, color: '#c4cad3', cursor: selected.length && !busy ? 'pointer' : 'not-allowed', opacity: selected.length && !busy ? 1 : 0.45 }}>Download mp3 only</div>
-        <div onClick={() => void download(true)} className="me-btn" style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'linear-gradient(180deg,var(--accent),var(--accent-deep))', color: 'var(--accent-ink)', fontWeight: 600, fontSize: 12.5, padding: '11px 20px', borderRadius: 10, cursor: selected.length && !busy ? 'pointer' : 'not-allowed', boxShadow: '0 4px 16px -4px var(--accent-glow)', opacity: selected.length && !busy ? 1 : 0.45 }}>{busy ? 'Working…' : 'Add to queue'}<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M5 12h14M13 6l6 6-6 6" /></svg></div>
+        <button type="button" disabled={!selected.length || busy} onClick={() => void download(false)} className="me-btn" style={{ border: '1px solid #262b34', background: '#15181f', borderRadius: 10, padding: '11px 18px', fontSize: 12.5, color: '#c4cad3', cursor: selected.length && !busy ? 'pointer' : 'not-allowed', opacity: selected.length && !busy ? 1 : 0.45 }}>Download mp3 only</button>
+        <button type="button" disabled={!selected.length || busy} onClick={() => void download(true)} className="me-btn" style={{ display: 'flex', alignItems: 'center', gap: 8, border: 0, background: 'linear-gradient(180deg,var(--accent),var(--accent-deep))', color: 'var(--accent-ink)', fontWeight: 600, fontSize: 12.5, padding: '11px 20px', borderRadius: 10, cursor: selected.length && !busy ? 'pointer' : 'not-allowed', boxShadow: '0 4px 16px -4px var(--accent-glow)', opacity: selected.length && !busy ? 1 : 0.45 }}>{busy ? 'Working…' : 'Add to queue'}<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M5 12h14M13 6l6 6-6 6" /></svg></button>
       </div>
       {message && <div style={{ marginTop: 10, fontSize: 12, color: message.includes('failed') || message.includes('usable') ? '#ff8a96' : '#8a909c' }}>{message}</div>}
 
