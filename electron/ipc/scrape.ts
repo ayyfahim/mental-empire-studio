@@ -65,7 +65,8 @@ function persistScrape(channelId: string, scraped: ScrapedChannel): MyChannel {
     title: v.title,
     youtubeVideoId: v.id,
     publishedAt: v.uploadDate,
-    views: humanizeCount(v.views)
+    views: v.views > 0 ? humanizeCount(v.views) : '',
+    thumb: v.thumb
   }))
   repos.replaceUploads(channelId, uploads)
 

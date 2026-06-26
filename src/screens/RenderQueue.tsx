@@ -13,6 +13,12 @@ const STATUS_TEXT: Record<RenderStatus, { text: string; color: string }> = {
 
 const THUMB_BG = 'linear-gradient(135deg,#2a2540,#46243a)'
 
+function mediaSrc(path: string | undefined): string {
+  if (!path) return ''
+  if (/^(https?:|data:|file:)/.test(path)) return path
+  return `file:///${path.replace(/\\/g, '/')}`
+}
+
 function check(on: boolean, count?: number): JSX.Element {
   if (count !== undefined) return <span style={{ fontSize: 12, color: '#aab0bb', fontFamily: 'var(--font-mono)' }}>{count}</span>
   return <span style={{ color: on ? '#36c98e' : '#ff5a6e' }}>{on ? '✓' : '!'}</span>
@@ -39,6 +45,7 @@ export function RenderQueue(): JSX.Element {
   }
   const processing = rows.filter((r) => live(r).status === 'rendering').length
   const outputFolder = settings.outputFolder || '<Downloads>/MentalEmpire_out'
+  const canRender = rows.length > 0 && rows.every((r) => r.isReady) && !rendering
 
   const browse = async (): Promise<void> => {
     const dir = await window.api?.chooseFolder?.()
@@ -67,14 +74,14 @@ export function RenderQueue(): JSX.Element {
           return (
             <div key={r.job.id} className="me-row" style={{ display: 'flex', alignItems: 'center', padding: '14px 18px', borderBottom: '1px solid #14171d' }}>
               <div style={{ flex: 2.2, display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-                <div style={{ width: 50, height: 28, borderRadius: 6, background: THUMB_BG, flex: 'none' }} />
-                <div style={{ minWidth: 0 }}><div style={{ fontSize: 13, color: '#dde0e5', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.job.title}</div><div style={{ fontSize: 10.5, color: '#5b616f', fontFamily: 'var(--font-mono)' }}>{r.job.channel}</div></div>
+                <div style={{ width: 50, height: 28, borderRadius: 6, background: THUMB_BG, flex: 'none', overflow: 'hidden' }}>{r.firstImagePath && <img src={mediaSrc(r.firstImagePath)} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />}</div>
+                <div style={{ minWidth: 0 }}><div style={{ fontSize: 13, color: '#dde0e5', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.job.title}</div><div style={{ fontSize: 10.5, color: '#5b616f', fontFamily: 'var(--font-mono)' }}>{r.job.channel}{r.missing.length ? ` · missing ${r.missing.join(', ')}` : ''}</div></div>
               </div>
               <div style={{ width: 70, textAlign: 'center' }}>{check(r.hasMp3)}</div>
               <div style={{ width: 74, textAlign: 'center' }}>{check(true, r.images)}</div>
               <div style={{ width: 70, textAlign: 'center' }}>{check(r.hasThumb)}</div>
               <div style={{ width: 80, textAlign: 'center' }}>{check(r.hasCaptions)}</div>
-              <div style={{ width: 170 }}><div style={{ display: 'flex', alignItems: 'center', gap: 9 }}><div style={{ flex: 1, height: 6, borderRadius: 4, background: '#1a1e26', overflow: 'hidden' }}><div style={{ width: `${pct}%`, height: '100%', background: barColor }} /></div><span style={{ fontSize: 10.5, color: st.color, fontFamily: 'var(--font-mono)', width: 56 }}>{status === 'rendering' ? `${pct}%` : st.text}</span></div></div>
+              <div style={{ width: 170 }}><div style={{ display: 'flex', alignItems: 'center', gap: 9 }}><div style={{ flex: 1, height: 6, borderRadius: 4, background: '#1a1e26', overflow: 'hidden' }}><div style={{ width: `${pct}%`, height: '100%', background: barColor }} /></div><span style={{ fontSize: 10.5, color: r.isReady ? st.color : '#ff8a96', fontFamily: 'var(--font-mono)', width: 56 }}>{!r.isReady && status === 'queued' ? 'blocked' : status === 'rendering' ? `${pct}%` : st.text}</span></div></div>
             </div>
           )
         })}
@@ -90,8 +97,9 @@ export function RenderQueue(): JSX.Element {
         </div>
         <div><div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.6px', color: '#5b616f', marginBottom: 7 }}>FORMAT</div><div style={{ border: '1px solid #23272f', borderRadius: 9, padding: '10px 14px', fontSize: 12, color: '#dde0e5', background: '#0e1116' }}>mp4 · {settings.quality} ▾</div></div>
         <div style={{ flex: 1 }} />
-        <div onClick={() => { if (!rendering) void renderAll() }} className="me-btn" style={{ display: 'flex', alignItems: 'center', gap: 9, background: 'linear-gradient(180deg,var(--accent),var(--accent-deep))', color: 'var(--accent-ink)', fontWeight: 600, fontSize: 13.5, padding: '13px 26px', borderRadius: 11, cursor: 'pointer', boxShadow: '0 6px 20px -5px var(--accent-glow)', opacity: rendering ? 0.6 : 1 }}><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M5 4l14 8-14 8z" /></svg>{rendering ? 'Rendering…' : `Render all (${rows.length})`}</div>
+        <div onClick={() => { if (canRender) void renderAll() }} className="me-btn" title={!rows.length ? 'No render jobs queued' : rows.some((r) => !r.isReady) ? 'Fix missing MP3, images, thumbnail, and captions before rendering' : undefined} style={{ display: 'flex', alignItems: 'center', gap: 9, background: 'linear-gradient(180deg,var(--accent),var(--accent-deep))', color: 'var(--accent-ink)', fontWeight: 600, fontSize: 13.5, padding: '13px 26px', borderRadius: 11, cursor: canRender ? 'pointer' : 'not-allowed', boxShadow: '0 6px 20px -5px var(--accent-glow)', opacity: canRender ? 1 : 0.5 }}><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M5 4l14 8-14 8z" /></svg>{rendering ? 'Rendering…' : `Render all (${rows.length})`}</div>
       </div>
+      {rows.some((r) => !r.isReady) && <div style={{ marginTop: 10, fontSize: 12, color: '#ff8a96', textAlign: 'right' }}>Fix blocked rows in Compose/Thumbnails before rendering.</div>}
     </ScreenPad>
   )
 }

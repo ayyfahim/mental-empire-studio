@@ -75,6 +75,7 @@ export interface Upload {
   youtubeVideoId: string
   publishedAt: string
   views: string
+  thumb?: string
   /** id of the DownloadedVideo this upload was fuzzy-matched to, if any */
   matchedDownloadId?: string
 }
@@ -133,6 +134,7 @@ export interface RecentUpload {
   channel: string
   views: string
   publishedAt: string
+  thumb?: string
 }
 
 export interface GoalsPatch {
@@ -397,6 +399,7 @@ export interface TranscribeProgress {
   projectId: string
   phase: 'start' | 'uploading' | 'transcribing' | 'done' | 'error'
   message: string
+  error?: string
 }
 
 /** Options for a download batch (from the Download picker header). */
@@ -436,6 +439,10 @@ export interface RenderQueueRow {
   hasMp3: boolean
   hasThumb: boolean
   hasCaptions: boolean
+  isReady: boolean
+  missing: string[]
+  projectDurationSec: number
+  firstImagePath?: string
 }
 
 
@@ -542,6 +549,7 @@ export interface NativeApi {
     list(): Promise<Project[]>
     images(projectId: string): Promise<ProjectImage[]>
     setImages(projectId: string, paths: string[]): Promise<ProjectImage[]>
+    reorderImages(projectId: string, imageIds: string[]): Promise<ProjectImage[]>
     setRanges(projectId: string, ranges: { id: string; rangeStart: number; rangeEnd: number }[]): Promise<ProjectImage[]>
     setMedia(projectId: string, patch: Partial<Project>): Promise<Project>
     setCaptions(projectId: string, patch: Partial<Project>): Promise<Project>

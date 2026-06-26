@@ -6,11 +6,30 @@ export function MyChannels(): JSX.Element {
   const channels = useData((s) => s.channels)
   const scraping = useData((s) => s.scraping)
   const addChannel = useData((s) => s.addChannel)
+  const updateGoals = useData((s) => s.updateGoals)
   const [url, setUrl] = useState('')
+  const [editingId, setEditingId] = useState('')
+  const [draft, setDraft] = useState({ weekGoal: 5, monthGoal: 20, reminder: 'On track', reminderNote: '' })
 
   const connect = (): void => {
     void addChannel(url)
     setUrl('')
+  }
+
+  const beginEdit = (c: (typeof channels)[number]): void => {
+    setEditingId(c.id)
+    setDraft({ weekGoal: c.weekGoal, monthGoal: c.monthGoal, reminder: c.reminder, reminderNote: c.reminderNote })
+  }
+
+  const saveEdit = async (): Promise<void> => {
+    if (!editingId) return
+    await updateGoals(editingId, {
+      weekGoal: Math.max(1, draft.weekGoal),
+      monthGoal: Math.max(1, draft.monthGoal),
+      reminder: draft.reminder.trim() || 'On track',
+      reminderNote: draft.reminderNote.trim()
+    })
+    setEditingId('')
   }
 
   return (
@@ -59,7 +78,7 @@ export function MyChannels(): JSX.Element {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7 }}>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.5px', color: '#6a7180' }}>WEEKLY GOAL</span>
                   <span style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 12.5, color: '#eef0f3' }}>{c.weekDone} / {c.weekGoal}</span>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#5b616f" strokeWidth="2" style={{ cursor: 'pointer' }}><path d="M4 20h4l10-10-4-4L4 16z" /></svg>
+                  <svg onClick={() => beginEdit(c)} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#5b616f" strokeWidth="2" style={{ cursor: 'pointer' }}><path d="M4 20h4l10-10-4-4L4 16z" /></svg>
                 </div>
                 <div style={{ height: 7, borderRadius: 4, background: '#1a1e26', overflow: 'hidden' }}>
                   <div style={{ width: `${Math.round((c.weekDone / c.weekGoal) * 100)}%`, height: '100%', background: 'linear-gradient(90deg,var(--accent),var(--accent-deep))' }} />
@@ -82,12 +101,29 @@ export function MyChannels(): JSX.Element {
                   <span style={{ fontSize: 12, fontWeight: 600, color: reminderColor }}>{c.reminder}</span>
                 </div>
                 <div style={{ fontSize: 10.5, color: '#8a909c', lineHeight: 1.4 }}>{c.reminderNote}</div>
-                <div className="me-btn" style={{ marginTop: 9, border: '1px solid #262b34', background: '#15181f', borderRadius: 8, padding: '6px 10px', fontSize: 10.5, color: '#c4cad3', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>Edit goal &amp; reminder</div>
+                <div onClick={() => beginEdit(c)} className="me-btn" style={{ marginTop: 9, border: '1px solid #262b34', background: '#15181f', borderRadius: 8, padding: '6px 10px', fontSize: 10.5, color: '#c4cad3', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>Edit goal &amp; reminder</div>
               </div>
             </div>
           )
         })}
       </div>
+      {editingId && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'grid', placeItems: 'center', zIndex: 20 }}>
+          <div style={{ width: 420, border: '1px solid #262b34', borderRadius: 14, background: '#12151b', padding: 18, boxShadow: '0 18px 50px rgba(0,0,0,.35)' }}>
+            <div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, color: '#eef0f3', marginBottom: 14 }}>Edit goal & reminder</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+              <label style={{ fontSize: 11, color: '#8a909c' }}>Weekly goal<input type="number" min={1} value={draft.weekGoal} onChange={(e) => setDraft((d) => ({ ...d, weekGoal: parseInt(e.target.value, 10) || 1 }))} style={{ marginTop: 6, width: '100%', boxSizing: 'border-box', border: '1px solid #23272f', borderRadius: 8, background: '#0e1116', color: '#dde0e5', padding: 9 }} /></label>
+              <label style={{ fontSize: 11, color: '#8a909c' }}>Monthly goal<input type="number" min={1} value={draft.monthGoal} onChange={(e) => setDraft((d) => ({ ...d, monthGoal: parseInt(e.target.value, 10) || 1 }))} style={{ marginTop: 6, width: '100%', boxSizing: 'border-box', border: '1px solid #23272f', borderRadius: 8, background: '#0e1116', color: '#dde0e5', padding: 9 }} /></label>
+            </div>
+            <label style={{ display: 'block', fontSize: 11, color: '#8a909c', marginBottom: 10 }}>Reminder status<input value={draft.reminder} onChange={(e) => setDraft((d) => ({ ...d, reminder: e.target.value }))} style={{ marginTop: 6, width: '100%', boxSizing: 'border-box', border: '1px solid #23272f', borderRadius: 8, background: '#0e1116', color: '#dde0e5', padding: 9 }} /></label>
+            <label style={{ display: 'block', fontSize: 11, color: '#8a909c' }}>Reminder note<textarea value={draft.reminderNote} onChange={(e) => setDraft((d) => ({ ...d, reminderNote: e.target.value }))} rows={3} style={{ marginTop: 6, width: '100%', boxSizing: 'border-box', border: '1px solid #23272f', borderRadius: 8, background: '#0e1116', color: '#dde0e5', padding: 9, resize: 'vertical' }} /></label>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 9, marginTop: 16 }}>
+              <div onClick={() => setEditingId('')} className="me-btn" style={{ border: '1px solid #262b34', borderRadius: 9, padding: '9px 14px', fontSize: 12, color: '#c4cad3', cursor: 'pointer' }}>Cancel</div>
+              <div onClick={() => void saveEdit()} className="me-btn" style={{ background: 'var(--accent)', color: 'var(--accent-ink)', borderRadius: 9, padding: '9px 16px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Save</div>
+            </div>
+          </div>
+        </div>
+      )}
     </ScreenPad>
   )
 }

@@ -201,12 +201,24 @@ function installMock(): void {
     if (!p) return
     p.stage = 'queued'
     if (!renderRows.some((r) => r.job.projectId === projectId)) {
+      const images = projectImages.get(projectId)?.length ?? 0
+      const hasThumb = templates.length > 0
+      const hasCaptions = (transcripts.get(projectId)?.length ?? 0) > 0
+      const missing = [
+        images > 0 ? '' : 'images',
+        hasThumb ? '' : 'thumbnail',
+        hasCaptions ? '' : 'captions'
+      ].filter(Boolean)
       renderRows.unshift({
         job: { id: `job-${projectId}`, title: p.title, channel: p.channel, status: 'queued', pct: 0, projectId, createdAt: new Date().toISOString() },
-        images: projectImages.get(projectId)?.length ?? 0,
+        images,
         hasMp3: true,
-        hasThumb: templates.length > 0,
-        hasCaptions: (transcripts.get(projectId)?.length ?? 0) > 0
+        hasThumb,
+        hasCaptions,
+        isReady: missing.length === 0,
+        missing,
+        projectDurationSec: p.durationSec,
+        firstImagePath: projectImages.get(projectId)?.[0]?.path
       })
     }
     pushActivity(`Queued "${p.title}" for render`)
@@ -357,6 +369,15 @@ function installMock(): void {
         const imgs = splitImages(projectId, paths, p?.durationSec ?? 720)
         projectImages.set(projectId, imgs)
         return imgs
+      },
+      reorderImages: async (projectId: string, imageIds: string[]) => {
+        const imgs = projectImages.get(projectId) ?? []
+        const byId = new Map(imgs.map((im) => [im.id, im]))
+        const ordered = imageIds.map((id) => byId.get(id)).filter((im): im is typeof imgs[number] => !!im)
+        const rest = imgs.filter((im) => !imageIds.includes(im.id))
+        const next = [...ordered, ...rest].map((im, ord) => ({ ...im, ord }))
+        projectImages.set(projectId, next)
+        return next
       },
       setRanges: async (projectId: string, ranges: Array<{ id: string; rangeStart: number; rangeEnd: number }>) => {
         const imgs = (projectImages.get(projectId) ?? []).map((im) => ({ ...im, ...(ranges.find((r) => r.id === im.id) ?? {}) }))

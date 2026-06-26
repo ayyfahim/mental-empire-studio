@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS downloaded_videos (
 );
 CREATE TABLE IF NOT EXISTS uploads (
   id TEXT PRIMARY KEY, myChannelId TEXT, title TEXT,
-  youtubeVideoId TEXT, publishedAt TEXT, views TEXT, matchedDownloadId TEXT
+  youtubeVideoId TEXT, publishedAt TEXT, views TEXT, thumb TEXT, matchedDownloadId TEXT
 );
 CREATE TABLE IF NOT EXISTS profiles (
   id TEXT PRIMARY KEY, name TEXT, mono TEXT, avatar TEXT,
@@ -128,6 +128,7 @@ function migrate(d: Database.Database): void {
   // Beta features — one JSON column each, so future fields need no migration.
   ensureColumn(d, 'projects', 'betaOpts', 'TEXT')
   ensureColumn(d, 'profiles', 'betaOpts', 'TEXT')
+  ensureColumn(d, 'uploads', 'thumb', 'TEXT')
 
   purgeLegacyDemoSeed(d)
 }
@@ -367,10 +368,10 @@ function buildRepositories(d: Database.Database): Repositories {
       const tx = d.transaction(() => {
         d.prepare('DELETE FROM uploads WHERE myChannelId=?').run(channelId)
         const ins = d.prepare(
-          `INSERT INTO uploads (id,myChannelId,title,youtubeVideoId,publishedAt,views,matchedDownloadId)
-           VALUES (@id,@myChannelId,@title,@youtubeVideoId,@publishedAt,@views,@matchedDownloadId)`
+          `INSERT INTO uploads (id,myChannelId,title,youtubeVideoId,publishedAt,views,thumb,matchedDownloadId)
+           VALUES (@id,@myChannelId,@title,@youtubeVideoId,@publishedAt,@views,@thumb,@matchedDownloadId)`
         )
-        rows.forEach((r) => ins.run({ matchedDownloadId: null, ...r }))
+        rows.forEach((r) => ins.run({ thumb: null, matchedDownloadId: null, ...r }))
       })
       tx()
     },
@@ -378,7 +379,7 @@ function buildRepositories(d: Database.Database): Repositories {
       d.prepare('SELECT * FROM uploads WHERE myChannelId=?').all(channelId) as Upload[],
     recentUploads: (limit) =>
       d.prepare(
-        `SELECT u.title AS title, u.views AS views, u.publishedAt AS publishedAt, c.name AS channel
+        `SELECT u.title AS title, u.views AS views, u.publishedAt AS publishedAt, u.thumb AS thumb, c.name AS channel
          FROM uploads u JOIN my_channels c ON c.id = u.myChannelId
          ORDER BY u.publishedAt DESC LIMIT ?`
       ).all(limit) as RecentUpload[],

@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RenderJob, RenderProgress } from '../../shared/types'
 import { asBetaOpts } from '../../shared/types'
@@ -19,6 +19,10 @@ import { emit, hhmm, pushActivity } from '../ipc/events'
 export function outputDir(): string {
   const s = getSettings()
   return s.outputFolder || join(app.getPath('downloads'), 'MentalEmpire_out')
+}
+
+function safeName(name: string): string {
+  return (name.replace(/[^a-z0-9\-_. ]/gi, '_').trim() || 'thumbnail').slice(0, 120)
 }
 
 function emitR(p: RenderProgress): void {
@@ -42,6 +46,19 @@ export async function runJob(job: RenderJob): Promise<void> {
   const images = repos.getProjectImages(job.projectId)
   const words = repos.getTranscript(job.projectId)
   const settings = getSettings()
+  const preflightMissing: string[] = []
+  if (!project.mp3Path || !existsSync(project.mp3Path)) preflightMissing.push('MP3')
+  if (!project.durationSec || project.durationSec <= 0) preflightMissing.push('duration')
+  if (images.length === 0) preflightMissing.push('images')
+  if (words.length === 0) preflightMissing.push('captions')
+  if (!existsSync(join(outputDir(), 'thumbnails', `${safeName(project.title)}.png`))) preflightMissing.push('thumbnail')
+  if (preflightMissing.length) {
+    const msg = `Missing required render assets: ${preflightMissing.join(', ')}`
+    repos.setRenderStatus(job.id, { status: 'error', pct: 0, error: msg })
+    emitR({ jobId: job.id, pct: 0, stage: 'error', done: true, error: msg })
+    pushActivity({ t: hhmm(), icon: '!', color: '#ff5a6e', text: `Render blocked: ${project.title.slice(0, 42)} — ${msg}` })
+    return
+  }
 
   repos.setRenderStatus(job.id, { status: 'rendering', pct: 0 })
   emitR({ jobId: job.id, pct: 0, stage: 'rendering', done: false })

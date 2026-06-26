@@ -9,6 +9,12 @@ const GRADIENTS = [
   'linear-gradient(135deg,#3a2440,#2a1530)'
 ]
 
+function mediaSrc(path: string | undefined): string {
+  if (!path) return ''
+  if (/^(https?:|data:|file:)/.test(path)) return path
+  return `file:///${path.replace(/\\/g, '/')}`
+}
+
 /** Parse a humanized count ("12.4K" / "2.1M") back to a number for aggregation. */
 function parseHuman(s: string): number {
   const m = s.trim().match(/^([\d.]+)\s*([KM])?$/i)
@@ -50,6 +56,7 @@ export function Library(): JSX.Element {
   const recentUploads = useData((s) => s.recentUploads)
   const activity = useData((s) => s.activity)
   const downloads = useData((s) => s.downloads)
+  const renderJobs = useData((s) => s.renderJobs)
   const scraping = useData((s) => s.scraping)
   const rescrapeAll = useData((s) => s.rescrapeAll)
   const greet = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }).toUpperCase()
@@ -59,7 +66,7 @@ export function Library(): JSX.Element {
   const totalViews = channels.reduce((a, c) => a + parseHuman(c.views), 0)
   const totalSubs = channels.reduce((a, c) => a + parseHuman(c.subs), 0)
   const totalUploaded = channels.reduce((a, c) => a + (c.total || 0), 0)
-  const inQueue = downloads.filter((d) => d.stage !== 'Uploaded ✓').length
+  const inQueue = renderJobs.filter((r) => r.job.status === 'queued' || r.job.status === 'rendering').length
 
   return (
     <ScreenPad>
@@ -128,7 +135,7 @@ export function Library(): JSX.Element {
               return (
                 <div key={`${u.title}-${i}`} className="me-row" style={{ display: 'flex', alignItems: 'center', padding: '11px 16px', borderBottom: '1px solid #14171d' }}>
                   <div style={{ flex: 2.4, display: 'flex', alignItems: 'center', gap: 11, minWidth: 0 }}>
-                    <div style={{ width: 46, height: 26, borderRadius: 5, background: GRADIENTS[i % GRADIENTS.length], flex: 'none' }} />
+                    <div style={{ width: 46, height: 26, borderRadius: 5, background: GRADIENTS[i % GRADIENTS.length], flex: 'none', overflow: 'hidden' }}>{u.thumb && <img src={mediaSrc(u.thumb)} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />}</div>
                     <span style={{ fontSize: 12.5, color: '#dde0e5', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.title}</span>
                   </div>
                   <div style={{ width: 120, fontSize: 11.5, color: '#8a909c' }}>{u.channel}</div>
@@ -137,7 +144,7 @@ export function Library(): JSX.Element {
                       <span style={{ width: 6, height: 6, borderRadius: '50%', background: s.dot }} />Uploaded
                     </span>
                   </div>
-                  <div style={{ width: 64, textAlign: 'right', fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 12.5, color: '#dde0e5' }}>{u.views}</div>
+                  <div style={{ width: 64, textAlign: 'right', fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 12.5, color: u.views ? '#dde0e5' : '#6a7180' }}>{u.views || 'unavailable'}</div>
                   <div style={{ width: 62, textAlign: 'right', fontSize: 11, color: '#6a7180', fontFamily: 'var(--font-mono)' }}>{u.publishedAt || '—'}</div>
                 </div>
               )

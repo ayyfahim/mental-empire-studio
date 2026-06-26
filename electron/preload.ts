@@ -85,6 +85,7 @@ const api: NativeApi = {
     list: () => ipcRenderer.invoke('compose:list'),
     images: (projectId: string) => ipcRenderer.invoke('compose:images', projectId),
     setImages: (projectId: string, paths: string[]) => ipcRenderer.invoke('compose:setImages', projectId, paths),
+    reorderImages: (projectId: string, imageIds: string[]) => ipcRenderer.invoke('compose:reorderImages', projectId, imageIds),
     setRanges: (projectId: string, ranges: { id: string; rangeStart: number; rangeEnd: number }[]) =>
       ipcRenderer.invoke('compose:setRanges', projectId, ranges),
     setMedia: (projectId: string, patch: Partial<Project>) => ipcRenderer.invoke('compose:setMedia', projectId, patch),

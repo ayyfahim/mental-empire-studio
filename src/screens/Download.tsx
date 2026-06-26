@@ -26,6 +26,7 @@ export function Download(): JSX.Element {
   const fetchSource = useData((s) => s.fetchSource)
   const startDownload = useData((s) => s.startDownload)
   const resumeDownload = useData((s) => s.resumeDownload)
+  const openProject = useData((s) => s.openProject)
   const setActive = useStore((s) => s.setActive)
 
   const [url, setUrl] = useState('')
@@ -33,6 +34,8 @@ export function Download(): JSX.Element {
   const [qty, setQty] = useState(10)
   const [bitrate] = useState(192)
   const [sel, setSel] = useState<Set<string>>(new Set())
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
 
   const toggle = (id: string): void =>
     setSel((prev) => {
@@ -45,10 +48,29 @@ export function Download(): JSX.Element {
   const selected = sourceVideos.filter((v) => sel.has(v.id))
   const estMb = (selected.reduce((a, v) => a + v.durationSec, 0) * bitrate) / 8 / 1000
 
-  const download = (toQueue: boolean): void => {
-    if (selected.length === 0) return
-    void startDownload(selected, url, bitrate)
-    if (toQueue) setActive('compose')
+  const download = async (toQueue: boolean): Promise<void> => {
+    if (selected.length === 0 || busy) return
+    setBusy(true)
+    setMessage(toQueue ? 'Downloading selected audio before opening Compose…' : 'Starting download…')
+    try {
+      const rows = await startDownload(selected, url, bitrate)
+      const usable = rows.find((d) => d.filePath && (d.durationSec ?? 0) > 0)
+      if (toQueue) {
+        if (!usable) {
+          setMessage('Download did not produce a usable MP3 yet. Check the row below and resume if needed.')
+          return
+        }
+        await openProject(usable.id)
+        setActive('compose')
+      } else {
+        setMessage(rows.some((d) => d.stage === 'Failed') ? 'Some downloads failed. Check Activity or logs for details.' : 'Download finished.')
+      }
+      setSel(new Set())
+    } catch (e) {
+      setMessage((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -102,9 +124,10 @@ export function Download(): JSX.Element {
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, borderTop: '1px solid #1d2129', paddingTop: 18 }}>
         <div style={{ fontSize: 13, color: '#8a909c' }}><b style={{ color: '#eef0f3', fontFamily: 'var(--font-display)' }}>{selected.length}</b> videos selected{selected.length > 0 ? ` · ~${estMb.toFixed(0)} MB` : ''}</div>
         <div style={{ flex: 1 }} />
-        <div onClick={() => download(false)} className="me-btn" style={{ border: '1px solid #262b34', background: '#15181f', borderRadius: 10, padding: '11px 18px', fontSize: 12.5, color: '#c4cad3', cursor: 'pointer' }}>Download mp3 only</div>
-        <div onClick={() => download(true)} className="me-btn" style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'linear-gradient(180deg,var(--accent),var(--accent-deep))', color: 'var(--accent-ink)', fontWeight: 600, fontSize: 12.5, padding: '11px 20px', borderRadius: 10, cursor: 'pointer', boxShadow: '0 4px 16px -4px var(--accent-glow)' }}>Add to queue<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M5 12h14M13 6l6 6-6 6" /></svg></div>
+        <div onClick={() => void download(false)} className="me-btn" style={{ border: '1px solid #262b34', background: '#15181f', borderRadius: 10, padding: '11px 18px', fontSize: 12.5, color: '#c4cad3', cursor: selected.length && !busy ? 'pointer' : 'not-allowed', opacity: selected.length && !busy ? 1 : 0.45 }}>Download mp3 only</div>
+        <div onClick={() => void download(true)} className="me-btn" style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'linear-gradient(180deg,var(--accent),var(--accent-deep))', color: 'var(--accent-ink)', fontWeight: 600, fontSize: 12.5, padding: '11px 20px', borderRadius: 10, cursor: selected.length && !busy ? 'pointer' : 'not-allowed', boxShadow: '0 4px 16px -4px var(--accent-glow)', opacity: selected.length && !busy ? 1 : 0.45 }}>{busy ? 'Working…' : 'Add to queue'}<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M5 12h14M13 6l6 6-6 6" /></svg></div>
       </div>
+      {message && <div style={{ marginTop: 10, fontSize: 12, color: message.includes('failed') || message.includes('usable') ? '#ff8a96' : '#8a909c' }}>{message}</div>}
 
       <div style={{ marginTop: 30 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 13 }}>

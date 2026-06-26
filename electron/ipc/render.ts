@@ -20,12 +20,23 @@ function jobsView(): RenderQueueRow[] {
     const images = repos.getProjectImages(job.projectId)
     const words = repos.getTranscript(job.projectId)
     const hasThumb = !!project && existsSync(join(thumbsDir, `${safeName(project.title)}.png`))
+    const hasMp3 = !!project?.mp3Path && existsSync(project.mp3Path)
+    const missing: string[] = []
+    if (!hasMp3) missing.push('MP3')
+    if (!project?.durationSec || project.durationSec <= 0) missing.push('duration')
+    if (images.length === 0) missing.push('images')
+    if (!hasThumb) missing.push('thumbnail')
+    if (words.length === 0) missing.push('captions')
     return {
       job,
       images: images.length,
-      hasMp3: !!project?.mp3Path,
+      hasMp3,
       hasThumb,
-      hasCaptions: words.length > 0
+      hasCaptions: words.length > 0,
+      isReady: missing.length === 0,
+      missing,
+      projectDurationSec: project?.durationSec ?? 0,
+      firstImagePath: images[0]?.path
     }
   })
 }
