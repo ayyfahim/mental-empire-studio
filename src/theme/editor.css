@@ -1,0 +1,154 @@
+/* Editor UI kit styles — shared by the Compose + Thumbnail studios.
+   Consistent inputs, sliders, switches, and focus states so the editors read as
+   one coherent tool instead of a pile of ad-hoc inline styles. */
+
+/* ---- text inputs / selects / textareas ---- */
+.ed-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border-2);
+  border-radius: 9px;
+  background: var(--bg-inset);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 12.5px;
+  padding: 8px 10px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.ed-input:hover {
+  border-color: var(--border-3);
+}
+.ed-input:focus,
+.ed-input:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.ed-input::placeholder {
+  color: var(--text-faint);
+}
+select.ed-input {
+  appearance: none;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238a909c' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px;
+}
+textarea.ed-input {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+/* ---- range sliders ---- */
+.ed-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 18px;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
+}
+.ed-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 4px;
+  background: #262b34;
+}
+.ed-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #0c0d11;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  transition: transform 0.12s;
+}
+.ed-range:hover::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+.ed-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+.ed-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* ---- buttons get a real focus ring ---- */
+.ed-focus:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---- panel scroll areas ---- */
+.ed-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+/* ---- micro-interactions ---- */
+@keyframes edFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.ed-fade {
+  animation: edFadeIn 0.22s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+@keyframes edPulseDot {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.ed-pulse {
+  animation: edPulseDot 1.4s ease-in-out infinite;
+}
+
+/* color input — strip the default chrome so swatch pickers look intentional */
+.ed-color {
+  -webkit-appearance: none;
+  appearance: none;
+  border: 1px solid var(--border-2);
+  border-radius: 7px;
+  background: var(--bg-inset);
+  padding: 2px;
+  width: 100%;
+  height: 30px;
+  cursor: pointer;
+}
+.ed-color::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+.ed-color::-webkit-color-swatch {
+  border: none;
+  border-radius: 5px;
+}
+
+/* timeline blocks */
+.ed-block {
+  transition: filter 0.12s, border-color 0.12s;
+}
+.ed-block:hover {
+  filter: brightness(1.25);
+}
+
+/* thumbnail canvas floating toolbar */
+.ed-float {
+  animation: edFadeIn 0.16s ease-out;
+  backdrop-filter: blur(10px);
+}
