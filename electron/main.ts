@@ -1547,6 +1547,38 @@ app.whenReady().then(() => {
     return
   }
 
+  // UI screenshot seeding (ME_SHOOT + ME_SHOOT_SEED=1): one REAL fixture-backed
+  // download + composed project (images + transcript) so the editor screens can be
+  // captured with data. Mirrors the M4 flow but writes rows directly for determinism.
+  if (process.env['ME_SHOOT'] && process.env['ME_SHOOT_SEED']) {
+    try {
+      const repos = getRepos()
+      repos.resetAll()
+      const fixtures = join(process.cwd(), 'test', 'fixtures')
+      const dlId = 'dl-shoot-0000000001-0'
+      repos.upsertDownload({
+        id: dlId,
+        sourceId: 'src-shoot',
+        title: 'Why Discipline Beats Motivation',
+        channel: '@powerwithin',
+        size: '1.2 MB',
+        when: 'now',
+        stage: 'Downloaded only',
+        pct: '100%',
+        action: 'Open',
+        thumb: ''
+      })
+      repos.setDownloadProgress(dlId, { filePath: join(fixtures, 'audio', 'sample.mp3'), durationSec: 12, pct: '100%', stage: 'Downloaded only', action: 'Open' })
+      const project = createProject(dlId)
+      setImages(project.id, ['img1.png', 'img2.png', 'img3.png'].map((n) => join(fixtures, 'images', n)))
+      const whisper = JSON.parse(readFileSync(join(fixtures, 'whisper', 'sample-words.json'), 'utf8')) as { words: Array<{ word: string; start: number; end: number }> }
+      repos.replaceTranscript(project.id, whisper.words.map((w, i) => ({ id: `shoot-w${i}`, projectId: project.id, ord: i, word: w.word, start: w.start, end: w.end, emphasis: i % 4 === 1 })))
+      console.log(`SHOOT_SEED_OK project=${project.id}`)
+    } catch (e) {
+      console.log(`SHOOT_SEED_FAIL ${(e as Error).message}`)
+    }
+  }
+
   const startHidden = shouldStartHidden()
   if (!startHidden) createWindow()
 
@@ -1594,10 +1626,11 @@ app.whenReady().then(() => {
 
         if (process.env['ME_BATCH']) {
           await wc.executeJavaScript(
-            `(() => { const b=[...document.querySelectorAll('div')].find(e=>e.textContent.trim().startsWith('Generate all')); if(b){b.click();return true;} return false; })()`
+            `(() => { const b=[...document.querySelectorAll('button,div')].find(e=>e.textContent.trim().startsWith('Generate all')); if(b){b.click();return true;} return false; })()`
           )
           await new Promise((r) => setTimeout(r, 3500)) // let 4 rasterizations + writes land
-          const dir = join(getSettings().outputFolder || app.getPath('temp'), 'thumbnails')
+          // writePng lands ad-hoc PNGs in <outputFolder>/_cache/thumbnails (see ipc/thumbnails.ts)
+          const dir = join(getSettings().outputFolder || app.getPath('temp'), '_cache', 'thumbnails')
           let pngs: string[] = []
           try {
             pngs = fs.readdirSync(dir).filter((f) => f.endsWith('.png'))
