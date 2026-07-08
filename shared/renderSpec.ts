@@ -5,6 +5,7 @@
 // imported from the Electron main process (Node) and the render-worker (renderer) alike.
 
 import type { VideoStyle } from './types'
+import type { ResolvedCaptionStyle } from './captionStyle'
 
 /** Numeric colour-grade parameters for the GPU compositor shader. Mirrors the look of
  *  the ffmpeg gradeChain() for the same style, expressed as values a shader can apply. */
@@ -58,8 +59,9 @@ export interface RenderImageSpec {
 export interface CaptionGroupModel {
   startSec: number
   endSec: number
-  /** the words in this group, in order */
-  words: Array<{ text: string; startSec: number; endSec: number; emphasis: boolean }>
+  /** the words in this group, in order. `kwOrd` = this word's ordinal among all
+   *  keyword/emphasized words (drives the preset's keyword colour rotation). */
+  words: Array<{ text: string; startSec: number; endSec: number; emphasis: boolean; kwOrd?: number }>
 }
 
 export interface CaptionHighlightBoxModel {
@@ -74,6 +76,9 @@ export interface CaptionHighlightBoxModel {
  *  composited in the WebGL pass. Drive by frame index, never wall-clock. */
 export interface CaptionFrameModel {
   groups: CaptionGroupModel[]
+  /** the fully-resolved preset style (fonts/colours/box/glow/anchor) — authoritative;
+   *  the fields below it are kept for change-detection keys and legacy callers. */
+  style: ResolvedCaptionStyle
   preset: string
   font: string
   animation: string
@@ -128,8 +133,38 @@ export function overlayAlphaAt(xN: number, yN: number, o: OverlayParams): number
 /** Optional per-frame motion (Ken Burns / punch zoom). */
 export interface MotionSpec {
   kenBurns: boolean
-  /** times (seconds) where a punch-zoom pulse should fire (emphasized words) */
+  /** times (seconds) where a punch-zoom pulse should fire — already rate-limited
+   *  via limitPunchHits() so dense emphasis can never strobe the viewer */
   punchAtSec: number[]
+  /** slow push-in over the first ~1.2s ("zoom in at the start") */
+  introZoom?: boolean
+}
+
+/** A visual transition at a segment boundary (from the style/effect plan). */
+export interface TransitionSpec {
+  atSec: number
+  /** xfade-style transition name (fade, fadeblack, slideleft, zoomin, dissolve, …) */
+  type: string
+  durationSec: number
+}
+
+/**
+ * Punch-zoom envelope at time t for a pulse that fired at `atSec` (pure). Quick
+ * attack (~80ms), eased decay (~370ms), peak 1. Shared by the GPU compositor and any
+ * preview math so every engine pulses identically; the ffmpeg expression in
+ * render.ts mirrors the same curve.
+ */
+export function punchEnvelope(timeSec: number, atSec: number): number {
+  const d = timeSec - atSec
+  if (d < 0 || d >= 0.45) return 0
+  return d < 0.08 ? d / 0.08 : Math.max(0, 1 - (d - 0.08) / 0.37)
+}
+
+/** Intro push-in zoom factor at time t (pure): starts at 1.09, eases out to 1 by 1.2s. */
+export function introZoomAt(timeSec: number): number {
+  const p = Math.max(0, Math.min(1, timeSec / 1.2))
+  const eased = 1 - Math.pow(1 - p, 3)
+  return 1.09 - 0.09 * eased
 }
 
 /** One B-roll segment and its playback window. */
@@ -149,6 +184,10 @@ export interface GpuRenderSpec {
   images: RenderImageSpec[]
   broll?: GpuBrollSegment[]
   motion: MotionSpec
+  /** per-boundary transitions from the style/effect plan (nearest within tolerance wins) */
+  transitions?: TransitionSpec[]
+  /** fallback transition when no planned one is near a segment boundary */
+  defaultTransition?: { type: string; durationSec: number }
   grade: GradeParams
   grain: GrainParams
   /** edge-gradient darkening overlay, rendered directly in the shader (preferred) */

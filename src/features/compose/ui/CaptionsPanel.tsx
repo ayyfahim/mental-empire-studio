@@ -1,28 +1,27 @@
 import { memo } from 'react'
 import type { Project, TranscriptWord } from '@shared/types'
+import { CAPTION_FONTS, captionAnchorPct, captionPresetSpec, keywordColor, resolveCaptionStyle } from '@shared/captionStyle'
 import { useData } from '../../../store/useData'
 import { CAPTION_PRESETS, captionPresetPatch } from '../gallery/captionPresets'
-import { Banner, Btn, Chip, FieldLabel, SectionLabel, Seg } from '../../../components/ui/kit'
+import { Banner, Btn, Chip, FieldLabel, SectionLabel, Seg, SliderRow } from '../../../components/ui/kit'
 
 /* Captions panel — preset, typography, layout, pacing, and the word-level
-   transcript with karaoke emphasis. */
+   transcript with karaoke emphasis. Preset cards render with the preset's REAL
+   font + colours (the same shared spec both render engines burn with). */
 
-const PRESET_SAMPLE: Record<string, { text: string; boxed: boolean; glow?: boolean }> = {
-  Hormozi: { text: 'NOT', boxed: false },
-  Submagic: { text: 'WORD', boxed: true },
-  Pop: { text: 'POP', boxed: false },
-  Bold: { text: 'BOLD', boxed: false },
-  Word: { text: 'ONE', boxed: false },
-  Neon: { text: 'GLOW', boxed: false, glow: true },
-  Minimal: { text: 'clean', boxed: false }
-}
-
-function PresetCard({ preset, active, onPick }: { preset: string; active: boolean; onPick: () => void }): JSX.Element {
-  const sample = PRESET_SAMPLE[preset] ?? { text: preset.slice(0, 4).toUpperCase(), boxed: false }
+function PresetCard({ presetId, active, onPick }: { presetId: string; active: boolean; onPick: () => void }): JSX.Element {
+  const spec = captionPresetSpec(presetId)
+  const boxKind = spec.active.kind === 'box'
+  const sampleActive = spec.uppercase ? 'WORD' : 'word'
+  const sampleKw = spec.keywordColors.length ? (spec.uppercase ? 'KEY' : 'key') : null
+  const strokePx = Math.max(0, Math.round(spec.outlinePct * 14))
+  const stroke = strokePx > 0 ? `${Math.min(2.5, strokePx)}px ${spec.outlineColor}` : undefined
+  const glow = spec.active.kind === 'glow' ? `0 0 8px ${spec.active.glowColor}, 0 0 14px ${spec.active.glowColor}` : undefined
   return (
     <button
       type="button"
       onClick={onPick}
+      title={spec.blurb}
       className="me-btn ed-focus"
       style={{
         border: active ? '1px solid var(--accent)' : '1px solid var(--border-2)',
@@ -33,29 +32,46 @@ function PresetCard({ preset, active, onPick }: { preset: string; active: boolea
         textAlign: 'center'
       }}
     >
-      <div style={{ height: 40, borderRadius: 7, background: 'linear-gradient(135deg,#1d2330,#101216)', display: 'grid', placeItems: 'center', overflow: 'hidden' }}>
+      <div style={{ height: 44, borderRadius: 7, background: 'linear-gradient(135deg,#1d2330,#101216)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, overflow: 'hidden', padding: '0 4px' }}>
         <span
           style={{
-            borderRadius: sample.boxed ? 5 : 0,
-            padding: sample.boxed ? '1px 7px' : 0,
-            background: sample.boxed ? '#ffd93d' : 'transparent',
-            color: sample.boxed ? '#111111' : '#ffffff',
-            fontFamily: 'var(--font-poster)',
-            fontSize: 14,
-            letterSpacing: '.5px',
-            textTransform: sample.text === 'clean' ? 'none' : 'uppercase',
-            textShadow: sample.glow ? '0 0 10px #19c3d6, 0 0 18px #19c3d6' : sample.boxed ? 'none' : '0 2px 0 #000'
+            fontFamily: `"${spec.fontFamily}", Anton, Impact, sans-serif`,
+            fontWeight: spec.fontWeight,
+            fontSize: 15,
+            lineHeight: 1,
+            letterSpacing: '.4px',
+            borderRadius: boxKind ? 5 : 0,
+            padding: boxKind ? '3px 7px 2px' : 0,
+            background: boxKind ? spec.active.boxColor : 'transparent',
+            color: boxKind ? spec.active.color : spec.active.kind === 'karaoke' || spec.active.kind === 'color' ? spec.active.color : spec.active.color,
+            WebkitTextStroke: boxKind ? undefined : stroke,
+            textShadow: glow ?? (spec.shadowPct > 0 ? '0 2px 2px rgba(0,0,0,.7)' : undefined),
+            whiteSpace: 'nowrap'
           }}
         >
-          {sample.text}
+          {sampleActive}
         </span>
+        {sampleKw && (
+          <span
+            style={{
+              fontFamily: `"${spec.fontFamily}", Anton, Impact, sans-serif`,
+              fontWeight: spec.fontWeight,
+              fontSize: 15,
+              lineHeight: 1,
+              color: spec.keywordColors[0],
+              WebkitTextStroke: stroke,
+              textShadow: spec.shadowPct > 0 ? '0 2px 2px rgba(0,0,0,.7)' : undefined,
+              whiteSpace: 'nowrap'
+            }}
+          >
+            {sampleKw}
+          </span>
+        )}
       </div>
-      <div style={{ marginTop: 5, fontSize: 10.5, fontWeight: 700, color: active ? 'var(--accent)' : 'var(--text-muted)' }}>{preset}</div>
+      <div style={{ marginTop: 5, fontSize: 10.5, fontWeight: 700, color: active ? 'var(--accent)' : 'var(--text-muted)' }}>{spec.label}</div>
     </button>
   )
 }
-
-const FONTS = ['Montserrat', 'Anton', 'Space Grotesk', 'Hanken Grotesk', 'JetBrains Mono', 'Arial', 'Impact', 'Oswald', 'Bebas Neue', 'Roboto']
 
 const PACES: Array<{ value: NonNullable<Project['captionPace']>; label: string; help: string }> = [
   { value: 'auto', label: 'Auto', help: 'Studio picks the best timing for this video length.' },
@@ -107,7 +123,7 @@ function TranscriptEditor(): JSX.Element {
         {transcribing && <span className="ed-pulse" style={{ fontSize: 10, color: 'var(--warn)', fontFamily: 'var(--font-mono)' }}>{transcribeMessage || 'working…'}</span>}
       </div>
       <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-        <Btn size="sm" disabled={transcribing || transcript.length === 0} onClick={autoDetect} title="Mark meaningful words for karaoke emphasis">
+        <Btn size="sm" disabled={transcribing || transcript.length === 0} onClick={autoDetect} title="Mark meaningful words for colour emphasis (zoom pulses stay rate-limited)">
           ✦ Auto-detect emphasis
         </Btn>
         <Btn size="sm" disabled={transcribing} onClick={() => void runTranscribe()}>
@@ -129,27 +145,29 @@ function TranscriptEditor(): JSX.Element {
 export function CaptionsPanel(): JSX.Element {
   const project = useData((s) => s.activeProject)
   const setCaptions = useData((s) => s.setCaptions)
+  const style = resolveCaptionStyle(project ?? {})
   const preset = project?.captionPreset ?? 'Hormozi'
-  const isSubmagic = preset === 'Submagic'
-  const captionHighlightColor = project?.captionHighlightColor ?? (isSubmagic ? '#111111' : '#ffd93d')
-  const captionBoxColor = project?.captionBoxColor ?? '#ffd93d'
+  const boxKind = style.activeKind === 'box'
   const pace = project?.captionPace ?? 'auto'
+  const position = project?.captionPosition ?? 'bottom'
+  const anchor = Math.round(captionAnchorPct(position, project?.captionOffsetY, project?.captionAspect))
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div>
         <FieldLabel>Preset</FieldLabel>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 7 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: 7 }}>
           {CAPTION_PRESETS.map((p) => (
-            <PresetCard key={p} preset={p} active={preset === p} onPick={() => void setCaptions(captionPresetPatch(project, p))} />
+            <PresetCard key={p} presetId={p} active={captionPresetSpec(preset).id === p} onPick={() => void setCaptions(captionPresetPatch(project, p))} />
           ))}
         </div>
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 6, lineHeight: 1.4 }}>{captionPresetSpec(preset).blurb}</div>
       </div>
 
       <div>
         <FieldLabel>Font</FieldLabel>
-        <select className="ed-input" value={project?.captionFont ?? 'Montserrat'} onChange={(e) => void setCaptions({ captionFont: e.target.value })}>
-          {FONTS.map((f) => <option key={f} value={f}>{f}</option>)}
+        <select className="ed-input" value={style.fontFamily} onChange={(e) => void setCaptions({ captionFont: e.target.value })}>
+          {CAPTION_FONTS.map((f) => <option key={f.family} value={f.family} style={{ fontFamily: `"${f.family}"` }}>{f.family}</option>)}
         </select>
       </div>
 
@@ -184,29 +202,43 @@ export function CaptionsPanel(): JSX.Element {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <div>
-          <FieldLabel>Position</FieldLabel>
-          <Seg
-            grow
-            value={project?.captionPosition ?? 'bottom'}
-            onChange={(p) => void setCaptions({ captionPosition: p })}
-            options={(['top', 'middle', 'bottom'] as const).map((p) => ({ value: p, label: p[0].toUpperCase() + p.slice(1) }))}
+      <div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div>
+            <FieldLabel>Position</FieldLabel>
+            <Seg
+              grow
+              value={position}
+              onChange={(p) => void setCaptions({ captionPosition: p, captionOffsetY: null as unknown as undefined })}
+              options={(['top', 'middle', 'bottom'] as const).map((p) => ({ value: p, label: p[0].toUpperCase() + p.slice(1) }))}
+            />
+          </div>
+          <div>
+            <FieldLabel>Timing</FieldLabel>
+            <Seg
+              grow
+              value={pace}
+              onChange={(p) => void setCaptions({ captionPace: p })}
+              options={PACES.map((p) => ({ value: p.value, label: p.label, title: p.help }))}
+            />
+          </div>
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <SliderRow
+            label="Fine-tune height"
+            value={anchor}
+            min={4}
+            max={96}
+            format={(v) => `${v}% from top`}
+            onChange={(v) => void setCaptions({ captionOffsetY: v })}
           />
         </div>
-        <div>
-          <FieldLabel>Timing</FieldLabel>
-          <Seg
-            grow
-            value={pace}
-            onChange={(p) => void setCaptions({ captionPace: p })}
-            options={PACES.map((p) => ({ value: p.value, label: p.label, title: p.help }))}
-          />
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 4, lineHeight: 1.4 }}>
+          Drag to place captions exactly — e.g. lower than “Bottom” for 9:16 Shorts. {PACES.find((p) => p.value === pace)?.help}
         </div>
       </div>
-      <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: -8, lineHeight: 1.4 }}>{PACES.find((p) => p.value === pace)?.help}</div>
 
-      {isSubmagic && (
+      {boxKind && (
         <div className="ed-fade" style={{ border: '1px solid var(--accent)', borderRadius: 11, padding: 11, background: 'var(--accent-soft)', display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div>
             <FieldLabel>Words per page</FieldLabel>
@@ -220,26 +252,36 @@ export function CaptionsPanel(): JSX.Element {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <label style={{ fontSize: 10.5, color: 'var(--text-dim)', display: 'flex', flexDirection: 'column', gap: 5 }}>
               Box colour
-              <input type="color" className="ed-color" value={captionBoxColor} onChange={(e) => void setCaptions({ captionBoxColor: e.target.value })} />
+              <input type="color" className="ed-color" value={style.boxColor ?? '#ffd93d'} onChange={(e) => void setCaptions({ captionBoxColor: e.target.value })} />
             </label>
             <label style={{ fontSize: 10.5, color: 'var(--text-dim)', display: 'flex', flexDirection: 'column', gap: 5 }}>
               Text colour
-              <input type="color" className="ed-color" value={captionHighlightColor} onChange={(e) => void setCaptions({ captionHighlightColor: e.target.value })} />
+              <input type="color" className="ed-color" value={style.activeColor} onChange={(e) => void setCaptions({ captionHighlightColor: e.target.value })} />
             </label>
           </div>
         </div>
       )}
 
-      {!isSubmagic && (
+      {!boxKind && (
         <div>
-          <FieldLabel>Active-word highlight colour</FieldLabel>
-          <input type="color" className="ed-color" style={{ width: 72 }} value={captionHighlightColor} onChange={(e) => void setCaptions({ captionHighlightColor: e.target.value })} />
+          <FieldLabel>Active-word colour</FieldLabel>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input type="color" className="ed-color" style={{ width: 72 }} value={style.activeColor} onChange={(e) => void setCaptions({ captionHighlightColor: e.target.value })} />
+            {style.keywordColors.length > 0 && (
+              <span style={{ fontSize: 10, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                Emphasized words rotate
+                {style.keywordColors.map((_, i) => (
+                  <span key={i} style={{ width: 12, height: 12, borderRadius: 3, background: keywordColor(style, i), display: 'inline-block' }} />
+                ))}
+              </span>
+            )}
+          </div>
         </div>
       )}
 
       <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
-        <Chip on={!!project?.keywords} onClick={() => void setCaptions({ keywords: !project?.keywords })} title="Auto-highlight detected keywords in captions">
-          Keywords {project?.keywords ? 'ON' : 'OFF'}
+        <Chip on={!!project?.keywords} onClick={() => void setCaptions({ keywords: !project?.keywords })} title="Auto-colour important words using the preset's keyword palette (distinct from the active-word highlight)">
+          Auto-colour keywords {project?.keywords ? 'ON' : 'OFF'}
         </Chip>
       </div>
 

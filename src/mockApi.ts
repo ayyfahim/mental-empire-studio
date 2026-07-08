@@ -36,6 +36,7 @@ import {
 } from '@shared/types'
 import type { GpuRenderSpec } from '@shared/renderSpec'
 import type { ImageMotionSpec } from '@shared/renderSpec'
+import { resolveCaptionStyle } from '@shared/captionStyle'
 import { LOOKS, lookById } from '@shared/looks'
 
 function grad(a: string, b: string): string {
@@ -370,6 +371,7 @@ function installMock(): void {
       grain: { strength: adjust?.grain ?? (style === 'Cinematic' ? 0.03 : 0), temporal: style === 'Cinematic' },
       captions: {
         groups,
+        style: resolveCaptionStyle(p),
         preset: p.captionPreset,
         font: p.captionFont || 'Anton',
         animation: p.captionAnim || 'Pop-in',
@@ -774,6 +776,11 @@ function installMock(): void {
         })),
       reveal: async () => {},
       startDrag: () => {}
+    }),
+    gpu: ns({
+      // Browser mock: report a healthy software-ish probe so Compose renders its chip
+      // instead of crashing (there is no real WebCodecs hardware probe in a plain tab).
+      status: async () => ({ hardware: true, supported: true, vendor: 'unknown' as const, detail: 'browser mock' })
     }),
     effects: ns({
       generate: async () => JSON.stringify({

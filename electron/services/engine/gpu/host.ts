@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { GpuRenderSpec } from '../../../../shared/renderSpec'
+import { resolveCaptionStyle } from '../../../../shared/captionStyle'
 import { GPU_CHANNELS, type GpuDoneMsg, type GpuErrorMsg, type GpuProgressMsg, type GpuReadyMsg } from '../../../../shared/gpuIpc'
 import { ffmpegPath } from '../../bin'
 import { masterAudioTwoPass } from '../audio-master'
@@ -273,6 +274,7 @@ export async function runGpuSelfTest(): Promise<{ ok: boolean; error?: string; t
       grain: { strength: 0, temporal: false },
       captions: {
         groups: [],
+        style: resolveCaptionStyle({ captionPreset: 'Minimal' }),
         preset: 'Clean',
         font: 'Anton',
         animation: 'Pop-in',

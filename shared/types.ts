@@ -588,6 +588,9 @@ export interface Project {
   captionAspect: '16:9' | '1:1' | '9:16'
   captionLines?: 1 | 2 | 3
   captionPosition?: 'top' | 'middle' | 'bottom'
+  /** fine vertical caption placement, % of frame height from the top (4–96);
+   *  overrides the coarse captionPosition when set */
+  captionOffsetY?: number
   captionPace?: 'auto' | 'word' | 'phrase'
   /** active/highlighted caption text colour (#rrggbb); Submagic uses this inside the box */
   captionHighlightColor?: string

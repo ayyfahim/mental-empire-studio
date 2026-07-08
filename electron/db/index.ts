@@ -228,6 +228,7 @@ function migrate(d: Database.Database): void {
   ensureColumn(d, 'projects', 'captionHighlightColor', 'TEXT')
   ensureColumn(d, 'projects', 'captionBoxColor', 'TEXT')
   ensureColumn(d, 'projects', 'captionWordsPerPage', 'INTEGER')
+  ensureColumn(d, 'projects', 'captionOffsetY', 'REAL')
   ensureColumn(d, 'downloaded_videos', 'error', 'TEXT')
   ensureColumn(d, 'work_item_state', 'uploadConfidence', 'TEXT')
 
@@ -1166,7 +1167,7 @@ function parseMotionDirection(raw: unknown): MotionDirection | undefined {
 }
 
 function projectToRow(p: Project): Record<string, unknown> {
-  return { ...p, captionLines: p.captionLines ?? 1, captionPosition: p.captionPosition ?? 'bottom', captionPace: p.captionPace ?? 'auto', captionHighlightColor: p.captionHighlightColor ?? null, captionBoxColor: p.captionBoxColor ?? null, captionWordsPerPage: p.captionWordsPerPage ?? null, kenBurns: p.kenBurns ? 1 : 0, crossfade: p.crossfade ?? 0.8, emphasis: p.emphasis ? 1 : 0, keywords: p.keywords ? 1 : 0, punchZoom: p.punchZoom ? 1 : 0, motionPreset: p.motionPreset ?? null, betaOpts: JSON.stringify(p.betaOpts ?? DEFAULT_BETA_OPTS), lookAdjust: p.lookAdjust ? JSON.stringify(p.lookAdjust) : null }
+  return { ...p, captionLines: p.captionLines ?? 1, captionPosition: p.captionPosition ?? 'bottom', captionOffsetY: p.captionOffsetY ?? null, captionPace: p.captionPace ?? 'auto', captionHighlightColor: p.captionHighlightColor ?? null, captionBoxColor: p.captionBoxColor ?? null, captionWordsPerPage: p.captionWordsPerPage ?? null, kenBurns: p.kenBurns ? 1 : 0, crossfade: p.crossfade ?? 0.8, emphasis: p.emphasis ? 1 : 0, keywords: p.keywords ? 1 : 0, punchZoom: p.punchZoom ? 1 : 0, motionPreset: p.motionPreset ?? null, betaOpts: JSON.stringify(p.betaOpts ?? DEFAULT_BETA_OPTS), lookAdjust: p.lookAdjust ? JSON.stringify(p.lookAdjust) : null }
 }
 function projectPatchToRow(patch: Partial<Project>): Record<string, unknown> {
   const out: Record<string, unknown> = {}
@@ -1196,7 +1197,8 @@ function rowToProject(r: Record<string, unknown>): Project {
   const captionWordsPerPage = rawWordsPerPage === 1 || rawWordsPerPage === 2 || rawWordsPerPage === 3 ? rawWordsPerPage as 1 | 2 | 3 : undefined
   const captionHighlightColor = typeof r.captionHighlightColor === 'string' && r.captionHighlightColor ? r.captionHighlightColor : undefined
   const captionBoxColor = typeof r.captionBoxColor === 'string' && r.captionBoxColor ? r.captionBoxColor : undefined
-  return { ...(r as unknown as Project), captionLines, captionPosition: (r.captionPosition as Project['captionPosition']) ?? 'bottom', captionPace, captionHighlightColor, captionBoxColor, captionWordsPerPage, durationSec: coerceNum(r.durationSec, 0), poolSize: coerceNum(r.poolSize, 10), kenBurns: !!r.kenBurns, crossfade: coerceNum(r.crossfade, 0.8) || 0.8, emphasis: !!r.emphasis, keywords: !!r.keywords, punchZoom: !!r.punchZoom, lookStrength: r.lookStrength == null ? undefined : coerceNum(r.lookStrength, 0), lookAdjust: parseLookAdjust(r.lookAdjust), motionPreset: parseMotionPreset(r.motionPreset), betaOpts: parseBetaOpts(r) }
+  const captionOffsetY = r.captionOffsetY == null ? undefined : Math.max(4, Math.min(96, coerceNum(r.captionOffsetY, 74)))
+  return { ...(r as unknown as Project), captionLines, captionPosition: (r.captionPosition as Project['captionPosition']) ?? 'bottom', captionOffsetY, captionPace, captionHighlightColor, captionBoxColor, captionWordsPerPage, durationSec: coerceNum(r.durationSec, 0), poolSize: coerceNum(r.poolSize, 10), kenBurns: !!r.kenBurns, crossfade: coerceNum(r.crossfade, 0.8) || 0.8, emphasis: !!r.emphasis, keywords: !!r.keywords, punchZoom: !!r.punchZoom, lookStrength: r.lookStrength == null ? undefined : coerceNum(r.lookStrength, 0), lookAdjust: parseLookAdjust(r.lookAdjust), motionPreset: parseMotionPreset(r.motionPreset), betaOpts: parseBetaOpts(r) }
 }
 function rowToImage(r: Record<string, unknown>): ProjectImage {
   return {

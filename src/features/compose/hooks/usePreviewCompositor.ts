@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { GpuRenderSpec, RenderImageSpec } from '@shared/renderSpec'
 import { Compositor } from '../../../render-worker/compositor'
-import { CaptionLayer } from '../../../render-worker/captions'
+import { CaptionLayer, warmCaptionFonts } from '../../../render-worker/captions'
+import { CAPTION_FONTS } from '@shared/captionStyle'
 import { lutTextureById } from '../../../render-worker/lut'
 import { isCssImageValue, mediaSrc } from '../../../lib/media'
 
@@ -234,7 +235,9 @@ export function usePreviewCompositor(
     }
   }, [spec])
 
-  // Captions — swap the model in place; no rebuild, no image re-decode.
+  // Captions — swap the model in place; no rebuild, no image re-decode. Fonts load
+  // async, so nudge one extra repaint once they settle (otherwise the first paint of
+  // a newly-selected preset can use the fallback font until the next scrub).
   useEffect(() => {
     const rt = runtimeRef.current
     if (!rt || !spec) return
@@ -243,6 +246,12 @@ export function usePreviewCompositor(
     prevCaptionsKeyRef.current = key
     rt.captions.setModel(spec.captions)
     setCaptionTick((t) => t + 1)
+    void warmCaptionFonts(document, CAPTION_FONTS.map((f) => f.family)).then(() => {
+      if (runtimeRef.current === rt) {
+        rt.captions.setModel(spec.captions)
+        setCaptionTick((t) => t + 1)
+      }
+    })
   }, [spec])
 
   // Imperative draw — lets a playback loop redraw the canvas every frame without

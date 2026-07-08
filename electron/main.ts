@@ -18,6 +18,7 @@ import { splitRanges } from './services/audio'
 import { autoArrangeText } from '../shared/thumbnail'
 import { THUMB_W, THUMB_H, DEFAULT_BETA_OPTS, type Project, type TextLayer, type ThumbnailTemplate, type TranscriptWord } from '../shared/types'
 import { buildAss } from './services/captions'
+import { resolveCaptionStyle } from '../shared/captionStyle'
 import { isAllowedExternalUrl } from '../shared/url'
 import { buildRenderArgs, runRender, dimensions } from './services/render'
 import { ffmpegPath, ffprobePath, resolveYtdlpPath } from './services/bin'
@@ -490,7 +491,9 @@ async function runSmokeM6(): Promise<void> {
     const ass916 = buildAss(words, { preset: 'Hormozi', aspect: '9:16', keywords: false })
     const assPop = buildAss(words, { preset: 'Pop', aspect: '16:9', keywords: false })
     const assTop = buildAss(words, { preset: 'Hormozi', aspect: '16:9', keywords: false, position: 'top' })
-    const assFont = buildAss(words, { preset: 'Hormozi', font: 'Impact', aspect: '16:9', keywords: false })
+    const assFont = buildAss(words, { preset: 'Hormozi', font: 'Bebas Neue', aspect: '16:9', keywords: false })
+    const assLegacyFont = buildAss(words, { preset: 'Hormozi', font: 'Impact', aspect: '16:9', keywords: false })
+    const assOffset = buildAss(words, { preset: 'Hormozi', aspect: '16:9', keywords: false, offsetY: 85 })
     const countDialogues = (ass: string): number => ass.split(/\r?\n/).filter((line) => line.startsWith('Dialogue: 0,')).length
     const longWords: TranscriptWord[] = Array.from({ length: 1600 }, (_, i) => ({
       id: `lw${i}`,
@@ -509,9 +512,16 @@ async function runSmokeM6(): Promise<void> {
     const assOk =
       ass169.ass.includes('PlayResX: 1920') && ass916.ass.includes('PlayResX: 1080') &&
       !ass169.ass.includes('\\kf') && ass169.ass.includes('\\fscx112') && ass169.ass.includes('&H003DD9FF') &&
+      // the manually-emphasized word carries the Hormozi keyword rotation colour
+      // (green #3BFF6F), which is distinct from the active-word yellow above
+      ass169.ass.includes('&H006FFF3B') &&
       ass169.zoomHits.length === 1 &&
-      ass169.ass.includes('Anton') && assPop.ass.includes('Anton') &&
-      assTop.ass.includes(',8,60,60,') && assFont.ass.includes('Style: Default,Impact,')
+      // preset fonts genuinely differ: Hormozi=Anton, legacy Pop alias→Karaoke=Montserrat
+      ass169.ass.includes('Anton') && assPop.ass.includes('Montserrat ExtraBold') &&
+      // vertical placement: coarse position + the fine offsetY override both map to \pos
+      assTop.ass.includes('\\pos(960,140)') && assOffset.ass.includes('\\pos(960,918)') &&
+      // font override honours bundled families; never-bundled legacy names alias sanely
+      assFont.ass.includes('Style: Default,Bebas Neue,') && assLegacyFont.ass.includes('Style: Default,Anton,')
 
     const proj = (id: string, title: string): Parameters<typeof repos.createProject>[0] => ({
       id, downloadId: id, title, channel: 'Mental Empire', mp3Path: join(process.cwd(), 'test', 'fixtures', 'audio', 'sample.mp3'),
@@ -596,8 +606,10 @@ async function runSmokeM6(): Promise<void> {
     const betaImgs = [{ id: 'i0', projectId: 'p-beta', ord: 0, path: '/x/a.png', thumb: '', rangeStart: 0, rangeEnd: 12, manual: false }]
     const betaSettings = { ...smokeSettings, beta: { enabled: true, pexelsKey: '', pixabayKey: '', coverrKey: '' } }
     const betaArgs = buildRenderArgs({ project: betaProj, images: betaImgs, assPath: '/tmp/x.ass', outPath: '/tmp/o.mp4', settings: betaSettings }).join(' ')
-    // Beta OFF (default settings) → no overlay/zoom injected (regression guard).
-    const offArgs = buildRenderArgs({ project: betaProj, images: betaImgs, assPath: '/tmp/x.ass', outPath: '/tmp/o.mp4', settings: { ...smokeSettings, beta: { enabled: false, pexelsKey: '', pixabayKey: '', coverrKey: '' } } }).join(' ')
+    // Everything off on the PROJECT (static motion, no overlay/zoom flags) → no
+    // overlay/zoompan in the graph (regression guard for the no-effects default).
+    const offProj = { ...proj('p-beta-off', 'BetaOff'), kenBurns: false, punchZoom: false, motionPreset: 'off' as const, betaOpts: { ...DEFAULT_BETA_OPTS } }
+    const offArgs = buildRenderArgs({ project: offProj, images: betaImgs, assPath: '/tmp/x.ass', outPath: '/tmp/o.mp4', settings: betaSettings }).join(' ')
     const betaOk =
       assHook.ass.includes('Style: Hook') && assHook.ass.includes('Dialogue: 1,') &&
       betaArgs.includes('overlay=0:0') && betaArgs.includes('.pam') && betaArgs.includes('zoompan') &&
@@ -816,7 +828,7 @@ async function runSmokeM6(): Promise<void> {
     const probeLogOk = logTxt.includes('[probe] output=') && logTxt.includes('expectedSec=12.00')
     const captionPaceLogOk = logTxt.includes('mode=phrase') && logTxt.includes('pace=phrase') && logTxt.includes('lines=3')
 
-    console.log(`SMOKE_M6_ASS ok=${assOk} zoomHits=${ass169.zoomHits.length} top=${assTop.ass.includes(',8,60,60,')}`)
+    console.log(`SMOKE_M6_ASS ok=${assOk} zoomHits=${ass169.zoomHits.length} top=${assTop.ass.includes('\\pos(960,140)')} offset=${assOffset.ass.includes('\\pos(960,918)')}`)
     console.log(`SMOKE_M6_ARGS ok=${argsOk} eta=${etaOk}`)
     console.log(`SMOKE_M6_LONGFORM captions=${captionPerfOk} wordEvents=${longWordDialogues} phraseEvents=${longPhraseDialogues} motion=${longMotionOk} brollFast=${longBrollFastArgsOk}`)
     console.log(`SMOKE_M6_QUEUE status=${j1?.status} pct=${j1?.pct} maxActive=${lastMaxActive()} out=${!!j1?.outputPath} ass=${assFileOk} stageTiming=${stageTimingOk} probe=${probeLogOk} captionPace=${captionPaceLogOk}`)
@@ -1189,7 +1201,7 @@ async function runSmokeBrollGpuReal(): Promise<void> {
       motion: { kenBurns: false, punchAtSec: [] },
       grade: { style: 'None' as const, saturation: 1, contrast: 1, brightness: 0, colorBalance: { r: 0, g: 0, b: 0 }, vignette: 0, sharpen: 0 },
       grain: { strength: 0, temporal: false },
-      captions: { groups: [], preset: 'Clean' as const, font: 'Anton', animation: 'Pop-in', mode: 'word' as const, position: 'bottom' as const, lines: 1 as const, highlightColor: '#ffffff' },
+      captions: { groups: [], style: resolveCaptionStyle({ captionPreset: 'Minimal' }), preset: 'Clean' as const, font: 'Anton', animation: 'Pop-in', mode: 'word' as const, position: 'bottom' as const, lines: 1 as const, highlightColor: '#ffffff' },
       audio: { voicePath: audioPath },
       encoder: { codec: 'avc' as const, bitrateMbps: 6, keyIntervalSec: 2 },
       out: { h264Path, finalPath }

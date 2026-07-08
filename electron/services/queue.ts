@@ -249,15 +249,14 @@ export async function runJob(job: RenderJob): Promise<void> {
     aspect: renderProject.captionAspect,
     lines: renderProject.captionLines ?? 1,
     position: renderProject.captionPosition ?? 'bottom',
+    offsetY: renderProject.captionOffsetY,
     mode: captionMode,
     keywords: renderProject.keywords || beta.autoHighlight,
     hook: hookText ? { text: hookText, untilSec: 2.6 } : undefined,
     styleLead,
     textEffects: plan.textEffects,
     highlightColor: renderProject.captionHighlightColor,
-    highlightBox: renderProject.captionPreset === 'Submagic'
-      ? { enabled: true, boxColor: renderProject.captionBoxColor ?? '#ffd93d', textColor: renderProject.captionHighlightColor ?? '#111111' }
-      : undefined,
+    boxColor: renderProject.captionBoxColor,
     wordsPerPage: renderProject.captionWordsPerPage
   })
   writeFileSync(assPath, ass)
@@ -385,6 +384,8 @@ export async function runJob(job: RenderJob): Promise<void> {
           words,
           settings,
           zoomHits,
+          plan,
+          defaultTransition: { type: transition ?? 'fade', durationSec: Math.max(0.3, Math.min(0.8, renderProject.crossfade || 0.4)) },
           voicePath: renderProject.mp3Path,
           sfxPath,
           hookText,
@@ -438,7 +439,7 @@ export async function runJob(job: RenderJob): Promise<void> {
     }
 
     if (!gpuDone) {
-      await runRender({ project: renderProject, images, assPath, outPath, settings, caps, brollManifestPath, transition, plan, sfxPath, jobId: job.id, logPath }, (p) => {
+      await runRender({ project: renderProject, images, assPath, outPath, settings, caps, brollManifestPath, transition, plan, sfxPath, punchHits: zoomHits, jobId: job.id, logPath }, (p) => {
         emitStage('encoding', p.pct, `Encoding with ${encoderDetail}`, p)
       })
     }

@@ -146,32 +146,35 @@ describe('smart motion helpers', () => {
 
 describe('buildCaptionModel', () => {
   it('groups words and carries emphasis + style', () => {
-    const m = buildCaptionModel(words, project(), { highlightColor: '#ffd93d' })
+    const m = buildCaptionModel(words, project(), {})
     expect(m.groups.length).toBeGreaterThan(0)
     const flat = m.groups.flatMap((g) => g.words)
     expect(flat).toHaveLength(4)
     expect(flat[2].emphasis).toBe(true)
-    expect(m.highlightColor).toBe('#ffd93d')
+    expect(flat[2].kwOrd).toBeDefined() // emphasized word joins the keyword rotation
+    expect(m.style.presetId).toBe('Hormozi')
+    expect(m.highlightColor).toBe('#FFD93D')
     expect(m.mode).toBe('word')
   })
   it('forces one-word groups for the Word preset', () => {
-    const m = buildCaptionModel(words, project({ captionPreset: 'Word', captionLines: 1 }), { highlightColor: '#fff' })
+    const m = buildCaptionModel(words, project({ captionPreset: 'Word', captionLines: 1 }), {})
     expect(m.groups.every((g) => g.words.length === 1)).toBe(true)
   })
   it('includes a hook when provided', () => {
-    const m = buildCaptionModel(words, project(), { highlightColor: '#fff', hook: { text: 'wait', untilSec: 2 } })
+    const m = buildCaptionModel(words, project(), { hook: { text: 'wait', untilSec: 2 } })
     expect(m.hook?.text).toBe('wait')
   })
   it('builds Submagic rounded-box caption pages', () => {
     const m = buildCaptionModel(
       words,
       project({ captionPreset: 'Submagic', captionPace: 'phrase', captionLines: 3, captionWordsPerPage: 2 }),
-      { highlightColor: '#111111', highlightBox: { enabled: true, boxColor: '#ffd93d', textColor: '#111111', radius: 14, padding: 12 } }
+      {}
     )
     expect(m.mode).toBe('word')
     expect(m.lines).toBe(1)
     expect(m.wordsPerPage).toBe(2)
-    expect(m.highlightBox?.boxColor).toBe('#ffd93d')
+    expect(m.style.presetId).toBe('Boxed') // legacy Submagic id resolves to the Boxed spec
+    expect(m.highlightBox?.boxColor).toBe('#FFD93D')
     expect(m.groups[0].words).toHaveLength(2)
   })
 })

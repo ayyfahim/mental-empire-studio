@@ -165,6 +165,11 @@ export function MediaPanel({ fileInputRef }: { fileInputRef: React.RefObject<HTM
             { value: 'cinematic', label: 'Cinematic', title: 'Stronger push and drift' }
           ]}
         />
+        {motionPreset !== 'off' && (project?.durationSec ?? 0) >= 600 && (
+          <div style={{ fontSize: 10, color: 'var(--warn)', marginTop: 6, lineHeight: 1.4 }}>
+            Motion is skipped on videos over 10 minutes (long-form fast path) to keep render times sane.
+          </div>
+        )}
       </div>
 
       <SliderRow

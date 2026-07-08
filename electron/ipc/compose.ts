@@ -45,7 +45,7 @@ function defaultProject(downloadId: string, title: string, channel: string, mp3P
     seed: Math.floor(Math.random() * 9000) + 1000,
     crossfade: 0.8,
     captionPreset: 'Hormozi',
-    captionFont: 'Montserrat',
+    captionFont: 'Anton',
     captionAnim: 'Pop-in',
     captionAspect: '16:9',
     captionLines: 2,
@@ -328,15 +328,14 @@ function previewSpec(projectId: string, draftOverrides?: Partial<Project>): GpuR
     aspect: draftProject.captionAspect,
     lines: draftProject.captionLines ?? 1,
     position: draftProject.captionPosition ?? 'bottom',
+    offsetY: draftProject.captionOffsetY,
     mode: draftProject.captionPace === 'word' ? 'word' : draftProject.captionPace === 'phrase' ? 'phrase' : undefined,
     keywords: draftProject.keywords || beta.autoHighlight,
     hook: hookText ? { text: hookText, untilSec: 2.6 } : undefined,
     styleLead,
     textEffects: plan.textEffects,
     highlightColor: draftProject.captionHighlightColor,
-    highlightBox: draftProject.captionPreset === 'Submagic'
-      ? { enabled: true, boxColor: draftProject.captionBoxColor ?? '#ffd93d', textColor: draftProject.captionHighlightColor ?? '#111111' }
-      : undefined,
+    boxColor: draftProject.captionBoxColor,
     wordsPerPage: draftProject.captionWordsPerPage
   })
   const dims = gpuDimensions(settings.quality, draftProject.captionAspect)
@@ -360,6 +359,11 @@ function previewSpec(projectId: string, draftOverrides?: Partial<Project>): GpuR
     words,
     settings,
     zoomHits,
+    plan,
+    defaultTransition: {
+      type: style !== 'None' ? styleTransition(style) : 'fade',
+      durationSec: Math.max(0.3, Math.min(0.8, draftProject.crossfade || 0.4))
+    },
     voicePath: draftProject.mp3Path,
     hookText,
     out: {
