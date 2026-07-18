@@ -5,12 +5,15 @@ import { CaptionLayer, warmCaptionFonts } from '../../../render-worker/captions'
 import { CAPTION_FONTS } from '@shared/captionStyle'
 import { lutTextureById } from '../../../render-worker/lut'
 import { isCssImageValue, mediaSrc } from '../../../lib/media'
+import { asPosterPreviewSpec } from '../preview/posterSpec'
 
 type PreviewStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 interface PreviewRuntime {
   compositor: Compositor
   captions: CaptionLayer
+  /** Poster-frame image specs currently standing in for B-roll video segments. */
+  posterImages: RenderImageSpec[]
   /** Decoded stills keyed by resolved path, reused across edits so unchanged images
    *  are never re-fetched/re-decoded. */
   bitmapCache: Map<string, ImageBitmap>
@@ -74,7 +77,7 @@ async function specForPreview(spec: GpuRenderSpec): Promise<{ spec: GpuRenderSpe
       endSec: seg.endSec
     }
   }))
-  return { spec: { ...spec, broll: undefined, images }, images }
+  return { spec: asPosterPreviewSpec(spec, images), images }
 }
 
 /** Dimensions key — the ONLY thing that forces a full Compositor/CaptionLayer rebuild. */
@@ -149,7 +152,7 @@ export function usePreviewCompositor(
       canvas.height = spec.height
       const compositor = new Compositor(canvas, spec)
       const captions = new CaptionLayer(spec.captions, spec.width, spec.height)
-      runtime = { compositor, captions, bitmapCache: new Map() }
+      runtime = { compositor, captions, posterImages: [], bitmapCache: new Map() }
       runtimeRef.current = runtime
       // Force every incremental effect to re-populate the fresh runtime.
       prevImagesKeyRef.current = ''
@@ -185,7 +188,7 @@ export function usePreviewCompositor(
     prevImagesKeyRef.current = key
     void (async () => {
       try {
-        const { images } = await specForPreview(spec)
+        const { spec: drawableSpec, images } = await specForPreview(spec)
         if (cancelled || runtimeRef.current !== rt) return
         const wanted = new Set(images.map((im) => im.path))
         for (const [path, bmp] of rt.bitmapCache) {
@@ -208,6 +211,8 @@ export function usePreviewCompositor(
         const ordered = images
           .map((im) => rt.bitmapCache.get(im.path))
           .filter((b): b is ImageBitmap => !!b)
+        rt.posterImages = spec.broll?.length ? images : []
+        rt.compositor.updateSpec(drawableSpec)
         rt.compositor.setImages(ordered)
         setStatus('ready')
         setError('')
@@ -227,7 +232,7 @@ export function usePreviewCompositor(
   useEffect(() => {
     const rt = runtimeRef.current
     if (!rt || !spec) return
-    rt.compositor.updateSpec(spec)
+    rt.compositor.updateSpec(asPosterPreviewSpec(spec, rt.posterImages))
     const gradeKey = specGradeKey(spec)
     if (gradeKey !== prevGradeKeyRef.current) {
       prevGradeKeyRef.current = gradeKey

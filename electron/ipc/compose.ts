@@ -18,7 +18,7 @@ import { emit, hhmm, pushActivity } from './events'
 import { outputDir } from '../services/queue'
 import { itemDirForProject, itemImagesDir, itemThumbDir, cacheDir, ensureDir, writeProjectManifest, videoIdFromProjectId } from '../services/storage'
 import { buildAss } from '../services/captions'
-import { buildCachedBrollPreviewSegments } from '../services/broll'
+import { buildCachedBrollPreviewSegments, cachedBrollClipCount, hasConfiguredBrollSource } from '../services/broll'
 import { buildGpuRenderSpec, gpuDimensions } from '../services/engine/gpu/spec'
 import { ffmpegPath } from '../services/bin'
 
@@ -146,14 +146,18 @@ function validateRenderReady(projectId: string): void {
   const repos = getRepos()
   const project = repos.getProject(projectId)
   if (!project) throw new Error(`Unknown project: ${projectId}`)
-  // Only the audio is truly required to queue/produce a video. Images are optional
-  // (the render falls back to a solid background, or B-roll supplies the visuals),
-  // captions are optional (no subtitles), and the thumbnail is a separate PNG that
-  // never enters the mp4. So we don't block "Save & send to render" on them — they're
-  // surfaced as advisory checklist items on the Render Queue instead.
+  // Captions and the thumbnail are optional, but a video without either still images
+  // or usable B-roll is not: allowing it through creates a technically-valid black MP4.
   const missing: string[] = []
   if (!project.mp3Path || !existsSync(project.mp3Path)) missing.push('MP3')
   if (!project.durationSec || project.durationSec <= 0) missing.push('audio duration')
+  const images = repos.getProjectImages(projectId)
+  if (images.length === 0) {
+    const broll = projectVideoOpts(project).broll.enabled
+    const poolKey = repos.nicheKeyForDownload(project.downloadId)
+    const brollAvailable = broll && (cachedBrollClipCount(poolKey) > 0 || hasConfiguredBrollSource(getSettings()))
+    if (!brollAvailable) missing.push('visual media (add images or warm/configure Auto B-roll)')
+  }
   if (missing.length) throw new Error(`Project is not render-ready. Missing: ${missing.join(', ')}.`)
 }
 

@@ -11,7 +11,7 @@ import { formatOutputName, probeDuration } from './audio'
 import { buildAss } from './captions'
 import { LONG_FORM_FAST_SEC, CAPTION_PHRASE_WORD_COUNT, BROLL_MAX_SEGMENTS_DEFAULT, BROLL_MAX_SEGMENTS_LONG, type RenderEngine } from './engine/render-config'
 import { runRender, dimensions, consumeCancelIntent, hasCancelIntent, canUseCudaFinalFilters } from './render'
-import { buildBrollManifest, recordClipUsage, type BrollManifestSegment } from './broll'
+import { buildBrollManifest, cachedBrollClipCount, hasConfiguredBrollSource, recordClipUsage, type BrollManifestSegment } from './broll'
 import { buildGpuRenderSpec } from './engine/gpu/spec'
 import { runGpuRender, probeGpuEngine, runGpuSelfTest } from './engine/gpu/host'
 import { probeRenderCapabilities } from './engine/caps'
@@ -284,7 +284,9 @@ export async function runJob(job: RenderJob): Promise<void> {
   // row + log can say so instead of the user wondering why the output looks different.
   let brollFallback = false
   if (beta.broll.enabled) {
-    const hasStockSource = !!(settings.beta.pexelsKey || settings.beta.pixabayKey || settings.beta.coverrKey || process.env['ME_BROLL_LOCAL'] || process.env['ME_BROLL_FIXTURE'])
+    const poolKey = repos.nicheKeyForDownload(project.downloadId)
+    // A warmed pool remains fully usable offline or after an API key is removed.
+    const hasStockSource = hasConfiguredBrollSource(settings) || cachedBrollClipCount(poolKey) > 0
     if (!hasStockSource) {
       const msg = 'Stock B-roll unavailable: add a Pexels, Pixabay, or Coverr key in Settings'
       if (renderLogPath) appendFileSync(renderLogPath, `[broll:warn] ${msg}\n`)
@@ -308,7 +310,7 @@ export async function runJob(job: RenderJob): Promise<void> {
         style,
         jobId: job.id,
         maxSegments,
-        poolKey: getRepos().nicheKeyForDownload(project.downloadId),
+        poolKey,
         shouldCancel: () => hasCancelIntent(job.id),
         logPath,
         onProgress: (phase, done, total, ffmpeg) => {
@@ -369,6 +371,12 @@ export async function runJob(job: RenderJob): Promise<void> {
 
   try {
     if (hasCancelIntent(job.id)) throw new Error('render cancelled')
+    if (images.length === 0 && !brollSegments?.length) {
+      const msg = beta.broll.enabled
+        ? 'No visual source available: Auto B-roll produced no usable clips and this project has no images. Warm its assigned B-roll pool or add images, then retry.'
+        : 'No visual source available: add at least one image or enable and warm Auto B-roll, then retry.'
+      throw new Error(msg)
+    }
 
     // Engine selection. When a hardware encoder is selected, the GPU compositor is
     // strict: failures stop visibly instead of falling into the CPU-heavy ffmpeg graph.

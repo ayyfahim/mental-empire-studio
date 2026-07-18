@@ -492,6 +492,23 @@ function readLibraryIndexes(): BrollLibraryIndex[] {
   return out
 }
 
+/** Number of usable cached clips, optionally scoped to one niche/source pool. */
+export function cachedBrollClipCount(poolKey?: string): number {
+  const indexes = poolKey ? [readLibraryIndex(poolKey)] : readLibraryIndexes()
+  return indexes.reduce((total, index) => total + index.keywords.reduce(
+    (sum, group) => sum + group.clips.filter((clip) => !!clip.path && clip.durationSec > 0 && existsSync(clip.path)).length,
+    0
+  ), 0)
+}
+
+/** Whether a render can search/download new stock clips right now. */
+export function hasConfiguredBrollSource(settings: AppSettings): boolean {
+  return !!(
+    settings.beta.pexelsKey || settings.beta.pixabayKey || settings.beta.coverrKey ||
+    process.env['ME_BROLL_LOCAL'] || process.env['ME_BROLL_FIXTURE']
+  )
+}
+
 /** Health summary for a niche's cached b-roll pool (clip count + freshness). */
 export function readNichePoolHealth(nicheId: string): NichePoolHealth {
   const index = readLibraryIndex(poolKeyForNiche(nicheId))
@@ -798,7 +815,7 @@ export async function warmLibraryForThemes(
   } = {}
 ): Promise<BrollLibraryWarmResult | null> {
   if (!themes.length) return null
-  const hasProvider = !!(settings.beta.pexelsKey || settings.beta.pixabayKey || settings.beta.coverrKey || process.env['ME_BROLL_LOCAL'] || process.env['ME_BROLL_FIXTURE'])
+  const hasProvider = hasConfiguredBrollSource(settings)
   const targetClips = Math.max(1, Math.min(200, opts.targetClips ?? 60))
   const dims = opts.dims ?? { w: 1920, h: 1080 }
   if (!hasProvider) {

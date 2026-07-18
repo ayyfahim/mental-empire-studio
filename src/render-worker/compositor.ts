@@ -199,6 +199,19 @@ export function transitionModeFor(type: string): number {
   }
 }
 
+/** B-roll is decoded one segment at a time, so no next-video texture exists for a
+ * dissolve. Keep those boundaries as hard cuts; still-image transitions retain the
+ * requested blend. Exported to make this black-frame regression unit-testable. */
+export function transitionProgressFor(
+  isBroll: boolean,
+  hasNext: boolean,
+  remainSec: number,
+  durationSec: number
+): number {
+  if (isBroll || !hasNext || remainSec >= durationSec) return 0
+  return Math.min(1, Math.max(0, (durationSec - remainSec) / durationSec))
+}
+
 function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
   const sh = gl.createShader(type)
   if (!sh) throw new Error('createShader failed')
@@ -411,14 +424,14 @@ export class Compositor {
     if (seg && nextIdx !== idx) {
       const tr = this.transitionFor(seg.endSec)
       const remain = seg.endSec - timeSec
-      if (remain < tr.dur) {
-        mix = Math.min(1, Math.max(0, (tr.dur - remain) / tr.dur))
+      mix = transitionProgressFor(isBroll, true, remain, tr.dur)
+      if (mix > 0) {
         transMode = tr.mode
       }
     }
 
     const textureA = isBroll ? this.videoTexA : this.imgTextures[Math.min(idx, this.imgTextures.length - 1)]
-    const textureB = isBroll ? this.videoTexB : this.imgTextures[nextIdx]
+    const textureB = isBroll ? this.videoTexA : this.imgTextures[nextIdx]
 
     gl.useProgram(this.program)
     gl.viewport(0, 0, this.canvas.width, this.canvas.height)
