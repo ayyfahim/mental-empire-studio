@@ -285,6 +285,170 @@ export interface AutomationEvent {
   projectIds?: string[]
 }
 
+// ---- Durable goal-based automation (persistent local worker) ----
+export type AutomationGoal =
+  | 'source-to-export'
+  | 'download-edit'
+  | 'long-to-shorts'
+  | 'images-to-video'
+  | 'transcribe-subtitle'
+  | 'multi-platform'
+  | 'batch-source'
+  | 'apply-style'
+  | 'review-export'
+
+export type AutomationJobStatus =
+  | 'queued'
+  | 'running'
+  | 'pausing'
+  | 'paused'
+  | 'attention'
+  | 'completed'
+  | 'completed_with_warnings'
+  | 'failed'
+  | 'cancelled'
+
+export type AutomationStepStatus = 'pending' | 'running' | 'completed' | 'warning' | 'skipped' | 'failed' | 'paused'
+export type AutomationItemStatus = 'waiting' | 'processing' | 'completed' | 'warning' | 'skipped' | 'failed' | 'cancelled'
+export type AutomationErrorKind =
+  | 'temporary'
+  | 'user_action'
+  | 'unsupported_input'
+  | 'missing_asset'
+  | 'authentication'
+  | 'download'
+  | 'transcription'
+  | 'editing'
+  | 'export'
+  | 'storage'
+  | 'connection'
+  | 'interruption'
+  | 'resource'
+
+export interface AutomationRules {
+  minDurationSec: number
+  skipDownloaded: boolean
+  continueOnError: boolean
+  maxRetries: number
+  minimumFreeSpaceGb: number
+  captions: boolean
+  autoBroll: boolean
+  removeSilence: boolean
+  reduceFillerWords: boolean
+  keepAwake: boolean
+}
+
+export interface AutomationJobConfig {
+  sourceId: string
+  sourceUrl: string
+  sourceName: string
+  sourceOrder: ScrapeOrder
+  sourceCount: number
+  /** Optional explicit source video ids; empty means apply the automatic selection rules. */
+  selectedVideoIds: string[]
+  assetPaths: string[]
+  style: VideoStyle
+  captionPreset: string
+  aspectRatios: Array<'16:9' | '1:1' | '9:16'>
+  rules: AutomationRules
+  notify: { desktop: boolean; webhook: boolean; sound: boolean; email: boolean }
+  execution: 'local'
+  scheduledFor?: string
+}
+
+export interface AutomationJobDraft {
+  name: string
+  goal: AutomationGoal
+  config: AutomationJobConfig
+}
+
+export interface AutomationWorkflowStep {
+  id: string
+  jobId: string
+  key: string
+  label: string
+  description: string
+  ord: number
+  status: AutomationStepStatus
+  progress: number
+  attempts: number
+  maxAttempts: number
+  runsOn: 'local' | 'online-service' | 'cloud'
+  optional: boolean
+  startedAt?: string
+  completedAt?: string
+  error?: string
+  checkpoint?: Record<string, unknown>
+}
+
+export interface AutomationJobItem {
+  id: string
+  jobId: string
+  sourceVideoId: string
+  title: string
+  status: AutomationItemStatus
+  currentStep: string
+  progress: number
+  attempts: number
+  projectId?: string
+  renderJobId?: string
+  outputPath?: string
+  warning?: string
+  error?: string
+  updatedAt: string
+}
+
+export interface AutomationJobLog {
+  id: number
+  jobId: string
+  itemId?: string
+  level: 'info' | 'warning' | 'error'
+  message: string
+  createdAt: string
+}
+
+export interface AutomationJob {
+  id: string
+  name: string
+  goal: AutomationGoal
+  status: AutomationJobStatus
+  progress: number
+  currentStep: string
+  config: AutomationJobConfig
+  createdAt: string
+  updatedAt: string
+  startedAt?: string
+  completedAt?: string
+  lastCheckpointAt?: string
+  nextRetryAt?: string
+  pauseRequested: boolean
+  cancelRequested: boolean
+  warningCount: number
+  failedCount: number
+  completedCount: number
+  totalItems: number
+  errorKind?: AutomationErrorKind
+  error?: string
+  result?: { outputPaths: string[]; summary: string }
+}
+
+export interface AutomationJobDetail extends AutomationJob {
+  steps: AutomationWorkflowStep[]
+  items: AutomationJobItem[]
+  logs: AutomationJobLog[]
+}
+
+export interface AutomationPreflight {
+  ok: boolean
+  blockers: string[]
+  warnings: string[]
+  estimatedStorageGb: number
+  estimatedMinutes: number
+  sourceItems: number
+  powerMessage: string
+  appMessage: string
+}
+
 // ---- Thumbnail editor model (req #4) ----
 export type LayerKind = 'background' | 'subject' | 'text' | 'shape'
 
@@ -1057,6 +1221,18 @@ export interface NativeApi {
     deleteProfile(profileId: string): Promise<Profile[]>
     /** trigger one scheduler tick now */
     tick(): Promise<void>
+    /** inspect a goal configuration before persisting/starting it */
+    preflight(draft: AutomationJobDraft): Promise<AutomationPreflight>
+    /** persist a durable job and let the local supervisor run it */
+    createJob(draft: AutomationJobDraft): Promise<AutomationJobDetail>
+    /** list current and historical durable jobs */
+    jobs(): Promise<AutomationJob[]>
+    /** get steps, items and understandable logs for one durable job */
+    job(id: string): Promise<AutomationJobDetail | null>
+    pauseJob(id: string): Promise<void>
+    resumeJob(id: string): Promise<void>
+    cancelJob(id: string): Promise<void>
+    retryJob(id: string): Promise<void>
   }
   /** pick an output folder via the OS dialog; returns the chosen path or '' */
   chooseFolder(): Promise<string>
@@ -1091,6 +1267,8 @@ export interface NativeApi {
   onRenderProgress(cb: (p: RenderProgress) => void): () => void
   /** subscribe to profile-run events; returns an unsubscribe fn */
   onAutomation(cb: (e: AutomationEvent) => void): () => void
+  /** subscribe to durable automation job changes; SQLite remains source of truth */
+  onAutomationJob(cb: (job: AutomationJob) => void): () => void
 }
 
 declare global {

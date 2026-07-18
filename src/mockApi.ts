@@ -13,6 +13,9 @@ import {
   type ActivityRow,
   type AppSettings,
   type AutomationEvent,
+  type AutomationJob,
+  type AutomationJobDetail,
+  type AutomationJobDraft,
   type DownloadProgress,
   type DownloadedVideo,
   type LookAdjust,
@@ -172,6 +175,8 @@ function installMock(): void {
   const activityCbs: Array<(p: ActivityRow) => void> = []
   const renderCbs: Array<(p: RenderProgress) => void> = []
   const automationCbs: Array<(p: AutomationEvent) => void> = []
+  const automationJobCbs: Array<(p: AutomationJob) => void> = []
+  const automationJobDetails: AutomationJobDetail[] = []
   const noop = (): void => {}
   const ns = <T extends object>(o: T): T => new Proxy(o, { get: (t, k) => (k in t ? (t as Record<string | symbol, unknown>)[k] : async () => []) }) as T
 
@@ -837,14 +842,48 @@ function installMock(): void {
       },
       tick: async () => {
         pushActivity('Manual auto-scrape tick completed')
-      }
+      },
+      preflight: async (draft: AutomationJobDraft) => ({
+        ok: !!draft.config.sourceId,
+        blockers: draft.config.sourceId ? [] : ['Choose a saved source.'],
+        warnings: [],
+        estimatedStorageGb: Math.max(0.3, (draft.config.selectedVideoIds.length || draft.config.sourceCount) * 0.75),
+        estimatedMinutes: (draft.config.selectedVideoIds.length || draft.config.sourceCount) * 18,
+        sourceItems: draft.config.selectedVideoIds.length || draft.config.sourceCount,
+        powerMessage: 'This job runs locally. The computer must remain powered on.',
+        appMessage: 'You may close this window; the desktop process continues in the tray.'
+      }),
+      createJob: async (draft: AutomationJobDraft) => {
+        const id = `auto-browser-${Date.now()}`
+        const at = new Date().toISOString()
+        const job: AutomationJobDetail = {
+          id, name: draft.name, goal: draft.goal, status: 'queued', progress: 0, currentStep: 'Waiting to start',
+          config: draft.config, createdAt: at, updatedAt: at, pauseRequested: false, cancelRequested: false,
+          warningCount: 0, failedCount: 0, completedCount: 0, totalItems: draft.config.sourceCount,
+          steps: ['Preflight','Select content','Download','Build projects','Transcribe','Apply style','Render videos','Quality check','Finish & notify'].map((label, ord) => ({
+            id: `${id}-step-${ord}`, jobId: id, key: slug(label), label, description: label, ord, status: 'pending' as const,
+            progress: 0, attempts: 0, maxAttempts: draft.config.rules.maxRetries + 1, runsOn: label === 'Transcribe' ? 'online-service' as const : 'local' as const, optional: label === 'Transcribe'
+          })),
+          items: [], logs: [{ id: 1, jobId: id, level: 'info', message: 'Browser preview job saved.', createdAt: at }]
+        }
+        automationJobDetails.unshift(job)
+        automationJobCbs.forEach((cb) => cb(job))
+        return job
+      },
+      jobs: async () => automationJobDetails,
+      job: async (id: string) => automationJobDetails.find((j) => j.id === id) ?? null,
+      pauseJob: async (id: string) => { const j = automationJobDetails.find((x) => x.id === id); if (j) { j.status = 'paused'; automationJobCbs.forEach((cb) => cb(j)) } },
+      resumeJob: async (id: string) => { const j = automationJobDetails.find((x) => x.id === id); if (j) { j.status = 'queued'; automationJobCbs.forEach((cb) => cb(j)) } },
+      cancelJob: async (id: string) => { const j = automationJobDetails.find((x) => x.id === id); if (j) { j.status = 'cancelled'; automationJobCbs.forEach((cb) => cb(j)) } },
+      retryJob: async (id: string) => { const j = automationJobDetails.find((x) => x.id === id); if (j) { j.status = 'queued'; j.error = undefined; automationJobCbs.forEach((cb) => cb(j)) } }
     }),
     onActivity: (cb: (row: ActivityRow) => void) => { activityCbs.push(cb); return noop },
     onScrapeProgress: () => noop,
     onDownloadProgress: (cb: (p: DownloadProgress) => void) => { dlCbs.push(cb); return noop },
     onTranscribeProgress: () => noop,
     onRenderProgress: (cb: (p: RenderProgress) => void) => { renderCbs.push(cb); return noop },
-    onAutomation: (cb: (p: AutomationEvent) => void) => { automationCbs.push(cb); return noop }
+    onAutomation: (cb: (p: AutomationEvent) => void) => { automationCbs.push(cb); return noop },
+    onAutomationJob: (cb: (p: AutomationJob) => void) => { automationJobCbs.push(cb); return noop }
   }
 
   function catalogFor(url: string): ScrapedVideo[] {

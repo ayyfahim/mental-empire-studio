@@ -23,7 +23,11 @@ import type {
   WorkItem,
   Niche,
   SourceAutomationPatch,
-  LibraryAsset
+  LibraryAsset,
+  AutomationJob,
+  AutomationJobItem,
+  AutomationJobLog,
+  AutomationWorkflowStep
 } from '../../shared/types'
 import { asBetaOpts, DEFAULT_BETA_OPTS } from '../../shared/types'
 import { seedIfEmpty, seedDemoData, seedDefaultThumbnailTemplates } from './seed'
@@ -115,6 +119,76 @@ CREATE TABLE IF NOT EXISTS niches (
   createdAt TEXT,
   updatedAt TEXT
 );
+CREATE TABLE IF NOT EXISTS automation_jobs (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  goal TEXT NOT NULL,
+  status TEXT NOT NULL,
+  progress INTEGER NOT NULL DEFAULT 0,
+  currentStep TEXT NOT NULL DEFAULT '',
+  configJson TEXT NOT NULL,
+  resultJson TEXT,
+  errorKind TEXT,
+  error TEXT,
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL,
+  startedAt TEXT,
+  completedAt TEXT,
+  lastCheckpointAt TEXT,
+  nextRetryAt TEXT,
+  pauseRequested INTEGER NOT NULL DEFAULT 0,
+  cancelRequested INTEGER NOT NULL DEFAULT 0,
+  warningCount INTEGER NOT NULL DEFAULT 0,
+  failedCount INTEGER NOT NULL DEFAULT 0,
+  completedCount INTEGER NOT NULL DEFAULT 0,
+  totalItems INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS automation_job_steps (
+  id TEXT PRIMARY KEY,
+  jobId TEXT NOT NULL,
+  key TEXT NOT NULL,
+  label TEXT NOT NULL,
+  description TEXT NOT NULL,
+  ord INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  progress INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  maxAttempts INTEGER NOT NULL DEFAULT 1,
+  runsOn TEXT NOT NULL,
+  optional INTEGER NOT NULL DEFAULT 0,
+  startedAt TEXT,
+  completedAt TEXT,
+  error TEXT,
+  checkpointJson TEXT
+);
+CREATE TABLE IF NOT EXISTS automation_job_items (
+  id TEXT PRIMARY KEY,
+  jobId TEXT NOT NULL,
+  sourceVideoId TEXT NOT NULL,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL,
+  currentStep TEXT NOT NULL DEFAULT '',
+  progress INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  projectId TEXT,
+  renderJobId TEXT,
+  outputPath TEXT,
+  warning TEXT,
+  error TEXT,
+  updatedAt TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS automation_job_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  jobId TEXT NOT NULL,
+  itemId TEXT,
+  level TEXT NOT NULL,
+  message TEXT NOT NULL,
+  createdAt TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_automation_jobs_status ON automation_jobs(status, createdAt);
+CREATE INDEX IF NOT EXISTS idx_automation_steps_job ON automation_job_steps(jobId, ord);
+CREATE INDEX IF NOT EXISTS idx_automation_items_job ON automation_job_items(jobId, updatedAt);
+CREATE INDEX IF NOT EXISTS idx_automation_logs_job ON automation_job_logs(jobId, id);
 `
 
 // Every table that holds user/domain data — wiped by resetAll(). app_meta is
@@ -122,7 +196,8 @@ CREATE TABLE IF NOT EXISTS niches (
 const DATA_TABLES = [
   'my_channels', 'source_channels', 'source_videos', 'downloaded_videos', 'uploads',
   'profiles', 'thumbnail_templates', 'render_jobs', 'activity_log',
-  'projects', 'project_images', 'transcript_words', 'work_item_state', 'niches'
+  'projects', 'project_images', 'transcript_words', 'work_item_state', 'niches',
+  'automation_jobs', 'automation_job_steps', 'automation_job_items', 'automation_job_logs'
 ]
 
 /** Add a column only if it isn't already present — idempotent forward migration. */
@@ -431,6 +506,17 @@ export interface Repositories {
   renderJob(id: string): RenderJob | undefined
   queuedJobs(): RenderJob[]
   setRenderStatus(id: string, patch: { status?: RenderStatus; pct?: number; outputPath?: string; error?: string }): void
+  // ---- Durable goal-based automation ----
+  createAutomationJob(job: AutomationJob, steps: AutomationWorkflowStep[]): void
+  automationJobs(): AutomationJob[]
+  automationJob(id: string): AutomationJob | undefined
+  automationSteps(jobId: string): AutomationWorkflowStep[]
+  automationItems(jobId: string): AutomationJobItem[]
+  automationLogs(jobId: string, limit?: number): AutomationJobLog[]
+  updateAutomationJob(id: string, patch: Partial<AutomationJob>): void
+  updateAutomationStep(id: string, patch: Partial<AutomationWorkflowStep>): void
+  upsertAutomationItem(item: AutomationJobItem): void
+  addAutomationLog(jobId: string, level: AutomationJobLog['level'], message: string, itemId?: string): void
   /** Remove a single download row from history. */
   deleteDownload(id: string): void
   /** Remove a single render job from the queue. */
@@ -593,6 +679,47 @@ function sourceAutomationToRow(patch: SourceAutomationPatch): Record<string, unk
   put('thumbnailTemplateId', patch.thumbnailTemplateId)
   put('betaOpts', patch.betaOpts ? JSON.stringify(asBetaOpts(patch.betaOpts)) : undefined)
   return row
+}
+
+function jsonObject<T>(raw: unknown, fallback: T): T {
+  if (typeof raw !== 'string' || !raw.trim()) return fallback
+  try { return JSON.parse(raw) as T } catch { return fallback }
+}
+
+function rowToAutomationJob(r: Record<string, unknown>): AutomationJob {
+  const config = jsonObject(r.configJson, {} as AutomationJob['config'])
+  return {
+    ...(r as unknown as AutomationJob),
+    progress: coerceNum(r.progress, 0),
+    config: { ...config, selectedVideoIds: Array.isArray(config.selectedVideoIds) ? config.selectedVideoIds : [] },
+    result: jsonObject<AutomationJob['result'] | undefined>(r.resultJson, undefined),
+    pauseRequested: !!r.pauseRequested,
+    cancelRequested: !!r.cancelRequested,
+    warningCount: coerceNum(r.warningCount, 0),
+    failedCount: coerceNum(r.failedCount, 0),
+    completedCount: coerceNum(r.completedCount, 0),
+    totalItems: coerceNum(r.totalItems, 0)
+  }
+}
+
+function rowToAutomationStep(r: Record<string, unknown>): AutomationWorkflowStep {
+  return {
+    ...(r as unknown as AutomationWorkflowStep),
+    ord: coerceNum(r.ord, 0),
+    progress: coerceNum(r.progress, 0),
+    attempts: coerceNum(r.attempts, 0),
+    maxAttempts: coerceNum(r.maxAttempts, 1),
+    optional: !!r.optional,
+    checkpoint: jsonObject<Record<string, unknown> | undefined>(r.checkpointJson, undefined)
+  }
+}
+
+function rowToAutomationItem(r: Record<string, unknown>): AutomationJobItem {
+  return {
+    ...(r as unknown as AutomationJobItem),
+    progress: coerceNum(r.progress, 0),
+    attempts: coerceNum(r.attempts, 0)
+  }
 }
 
 function buildRepositories(d: Database.Database): Repositories {
@@ -971,6 +1098,94 @@ function buildRepositories(d: Database.Database): Repositories {
       d.prepare(`UPDATE render_jobs SET ${sets.join(', ')} WHERE id=@id`).run(params)
     },
 
+    createAutomationJob: (job, steps) => {
+      const tx = d.transaction(() => {
+        d.prepare(
+          `INSERT INTO automation_jobs
+           (id,name,goal,status,progress,currentStep,configJson,resultJson,errorKind,error,createdAt,updatedAt,startedAt,completedAt,lastCheckpointAt,nextRetryAt,pauseRequested,cancelRequested,warningCount,failedCount,completedCount,totalItems)
+           VALUES (@id,@name,@goal,@status,@progress,@currentStep,@configJson,@resultJson,@errorKind,@error,@createdAt,@updatedAt,@startedAt,@completedAt,@lastCheckpointAt,@nextRetryAt,@pauseRequested,@cancelRequested,@warningCount,@failedCount,@completedCount,@totalItems)`
+        ).run({
+          ...job,
+          configJson: JSON.stringify(job.config),
+          resultJson: job.result ? JSON.stringify(job.result) : null,
+          errorKind: job.errorKind ?? null,
+          error: job.error ?? null,
+          startedAt: job.startedAt ?? null,
+          completedAt: job.completedAt ?? null,
+          lastCheckpointAt: job.lastCheckpointAt ?? null,
+          nextRetryAt: job.nextRetryAt ?? null,
+          pauseRequested: job.pauseRequested ? 1 : 0,
+          cancelRequested: job.cancelRequested ? 1 : 0
+        })
+        const ins = d.prepare(
+          `INSERT INTO automation_job_steps
+           (id,jobId,key,label,description,ord,status,progress,attempts,maxAttempts,runsOn,optional,startedAt,completedAt,error,checkpointJson)
+           VALUES (@id,@jobId,@key,@label,@description,@ord,@status,@progress,@attempts,@maxAttempts,@runsOn,@optional,@startedAt,@completedAt,@error,@checkpointJson)`
+        )
+        for (const step of steps) ins.run({
+          ...step,
+          optional: step.optional ? 1 : 0,
+          startedAt: step.startedAt ?? null,
+          completedAt: step.completedAt ?? null,
+          error: step.error ?? null,
+          checkpointJson: step.checkpoint ? JSON.stringify(step.checkpoint) : null
+        })
+      })
+      tx()
+    },
+    automationJobs: () =>
+      (d.prepare('SELECT * FROM automation_jobs ORDER BY createdAt DESC').all() as Array<Record<string, unknown>>).map(rowToAutomationJob),
+    automationJob: (id) => {
+      const row = d.prepare('SELECT * FROM automation_jobs WHERE id=?').get(id) as Record<string, unknown> | undefined
+      return row ? rowToAutomationJob(row) : undefined
+    },
+    automationSteps: (jobId) =>
+      (d.prepare('SELECT * FROM automation_job_steps WHERE jobId=? ORDER BY ord').all(jobId) as Array<Record<string, unknown>>).map(rowToAutomationStep),
+    automationItems: (jobId) =>
+      (d.prepare('SELECT * FROM automation_job_items WHERE jobId=? ORDER BY updatedAt,id').all(jobId) as Array<Record<string, unknown>>).map(rowToAutomationItem),
+    automationLogs: (jobId, limit = 200) =>
+      (d.prepare('SELECT * FROM automation_job_logs WHERE jobId=? ORDER BY id DESC LIMIT ?').all(jobId, Math.max(1, Math.min(1000, limit))) as AutomationJobLog[]).reverse(),
+    updateAutomationJob: (id, patch) => {
+      const allow = new Set(['name','goal','status','progress','currentStep','createdAt','updatedAt','startedAt','completedAt','lastCheckpointAt','nextRetryAt','pauseRequested','cancelRequested','warningCount','failedCount','completedCount','totalItems','errorKind','error'])
+      const sets: string[] = []
+      const params: Record<string, unknown> = { id }
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === undefined) continue
+        if (key === 'config') { sets.push('configJson=@configJson'); params.configJson = JSON.stringify(value); continue }
+        if (key === 'result') { sets.push('resultJson=@resultJson'); params.resultJson = JSON.stringify(value); continue }
+        if (!allow.has(key)) continue
+        sets.push(`${key}=@${key}`)
+        params[key] = key === 'pauseRequested' || key === 'cancelRequested' ? (value ? 1 : 0) : value
+      }
+      if (!sets.length) return
+      if (!sets.some((s) => s.startsWith('updatedAt='))) { sets.push('updatedAt=@autoUpdatedAt'); params.autoUpdatedAt = new Date().toISOString() }
+      d.prepare(`UPDATE automation_jobs SET ${sets.join(', ')} WHERE id=@id`).run(params)
+    },
+    updateAutomationStep: (id, patch) => {
+      const allow = new Set(['status','progress','attempts','maxAttempts','startedAt','completedAt','error'])
+      const sets: string[] = []
+      const params: Record<string, unknown> = { id }
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === undefined) continue
+        if (key === 'checkpoint') { sets.push('checkpointJson=@checkpointJson'); params.checkpointJson = JSON.stringify(value); continue }
+        if (!allow.has(key)) continue
+        sets.push(`${key}=@${key}`)
+        params[key] = value
+      }
+      if (sets.length) d.prepare(`UPDATE automation_job_steps SET ${sets.join(', ')} WHERE id=@id`).run(params)
+    },
+    upsertAutomationItem: (item) => {
+      d.prepare(
+        `INSERT INTO automation_job_items (id,jobId,sourceVideoId,title,status,currentStep,progress,attempts,projectId,renderJobId,outputPath,warning,error,updatedAt)
+         VALUES (@id,@jobId,@sourceVideoId,@title,@status,@currentStep,@progress,@attempts,@projectId,@renderJobId,@outputPath,@warning,@error,@updatedAt)
+         ON CONFLICT(id) DO UPDATE SET title=@title,status=@status,currentStep=@currentStep,progress=@progress,attempts=@attempts,projectId=@projectId,renderJobId=@renderJobId,outputPath=@outputPath,warning=@warning,error=@error,updatedAt=@updatedAt`
+      ).run({ ...item, projectId: item.projectId ?? null, renderJobId: item.renderJobId ?? null, outputPath: item.outputPath ?? null, warning: item.warning ?? null, error: item.error ?? null })
+    },
+    addAutomationLog: (jobId, level, message, itemId) => {
+      d.prepare('INSERT INTO automation_job_logs (jobId,itemId,level,message,createdAt) VALUES (?,?,?,?,?)')
+        .run(jobId, itemId ?? null, level, message, new Date().toISOString())
+    },
+
     resetAll: () => {
       const tx = d.transaction(() => {
         for (const t of DATA_TABLES) d.prepare(`DELETE FROM ${t}`).run()
@@ -1146,7 +1361,8 @@ function buildRepositories(d: Database.Database): Repositories {
       const softTables = [
         'my_channels', 'source_channels', 'source_videos', 'downloaded_videos', 'uploads',
         'profiles', 'render_jobs', 'activity_log',
-        'projects', 'project_images', 'transcript_words'
+        'projects', 'project_images', 'transcript_words',
+        'automation_jobs', 'automation_job_steps', 'automation_job_items', 'automation_job_logs'
       ]
       const tx = d.transaction(() => {
         for (const t of softTables) d.prepare(`DELETE FROM ${t}`).run()

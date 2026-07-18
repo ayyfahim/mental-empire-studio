@@ -2,6 +2,10 @@ import { create } from 'zustand'
 import type {
   ActivityRow,
   AutomationEvent,
+  AutomationJob,
+  AutomationJobDetail,
+  AutomationJobDraft,
+  AutomationPreflight,
   DownloadProgress,
   DownloadedVideo,
   MyChannel,
@@ -74,6 +78,7 @@ interface DataState {
   runningProfileId: string | null
   automationEvents: Record<string, AutomationEvent>
   automationErrors: Record<string, string>
+  automationJobs: AutomationJob[]
   workItems: WorkItem[]
   niches: Niche[]
   nichePools: NichePoolHealth[]
@@ -134,6 +139,13 @@ interface DataState {
   saveProfile: (p: Profile) => Promise<void>
   deleteProfile: (id: string) => Promise<void>
   runNow: () => Promise<void>
+  loadAutomationJobs: () => Promise<void>
+  preflightAutomation: (draft: AutomationJobDraft) => Promise<AutomationPreflight | null>
+  createAutomationJob: (draft: AutomationJobDraft) => Promise<AutomationJobDetail | null>
+  pauseAutomationJob: (id: string) => Promise<void>
+  resumeAutomationJob: (id: string) => Promise<void>
+  cancelAutomationJob: (id: string) => Promise<void>
+  retryAutomationJob: (id: string) => Promise<void>
   loadWorkItems: () => Promise<void>
   detectUploads: () => Promise<void>
   setItemUploaded: (videoId: string, uploaded: boolean) => Promise<void>
@@ -215,6 +227,7 @@ export const useData = create<DataState>((set, get) => ({
   runningProfileId: null,
   automationEvents: {},
   automationErrors: {},
+  automationJobs: [],
   workItems: [],
   niches: [],
   nichePools: [],
@@ -227,7 +240,7 @@ export const useData = create<DataState>((set, get) => ({
       set({ ready: true })
       return
     }
-    await Promise.all([get().loadChannels(), get().loadDownloads(), get().loadActivity(), get().loadProfiles(), get().loadRenderJobs(), get().loadWorkItems(), get().loadNiches(), get().loadSources()])
+    await Promise.all([get().loadChannels(), get().loadDownloads(), get().loadActivity(), get().loadProfiles(), get().loadRenderJobs(), get().loadWorkItems(), get().loadNiches(), get().loadSources(), get().loadAutomationJobs()])
     set({ ready: true })
     a.reminders.check().catch(() => {})
 
@@ -260,6 +273,7 @@ export const useData = create<DataState>((set, get) => ({
           : s.automationErrors
       }))
     })
+    a.onAutomationJob(() => { void get().loadAutomationJobs() })
   },
 
   loadChannels: async () => {
@@ -730,6 +744,37 @@ export const useData = create<DataState>((set, get) => ({
     if (!a) return
     await a.automation.tick()
     await Promise.all([get().loadActivity(), get().loadRenderJobs(), get().loadProfiles(), get().loadSources()])
+  },
+  loadAutomationJobs: async () => {
+    const a = api()
+    if (a) set({ automationJobs: await a.automation.jobs() })
+  },
+  preflightAutomation: async (draft) => {
+    const a = api()
+    return a ? a.automation.preflight(draft) : null
+  },
+  createAutomationJob: async (draft) => {
+    const a = api()
+    if (!a) return null
+    const job = await a.automation.createJob(draft)
+    await get().loadAutomationJobs()
+    return job
+  },
+  pauseAutomationJob: async (id) => {
+    const a = api(); if (!a) return
+    await a.automation.pauseJob(id); await get().loadAutomationJobs()
+  },
+  resumeAutomationJob: async (id) => {
+    const a = api(); if (!a) return
+    await a.automation.resumeJob(id); await get().loadAutomationJobs()
+  },
+  cancelAutomationJob: async (id) => {
+    const a = api(); if (!a) return
+    await a.automation.cancelJob(id); await get().loadAutomationJobs()
+  },
+  retryAutomationJob: async (id) => {
+    const a = api(); if (!a) return
+    await a.automation.retryJob(id); await get().loadAutomationJobs()
   },
 
   loadWorkItems: async () => {

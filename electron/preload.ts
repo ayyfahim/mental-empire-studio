@@ -17,7 +17,9 @@ import type {
   ThumbnailTemplate,
   TranscribeProgress,
   RenderProgress,
-  AutomationEvent
+  AutomationEvent,
+  AutomationJobDraft,
+  AutomationJob
 } from '../shared/types'
 
 /** Subscribe to a main→renderer event; returns an unsubscribe fn. */
@@ -188,7 +190,15 @@ const api: NativeApi = {
     runSource: (sourceId: string, headless?: boolean) => ipcRenderer.invoke('automation:runSource', sourceId, headless),
     upsertProfile: (profile: Profile) => ipcRenderer.invoke('automation:upsertProfile', profile),
     deleteProfile: (profileId: string) => ipcRenderer.invoke('automation:deleteProfile', profileId),
-    tick: () => ipcRenderer.invoke('automation:tick')
+    tick: () => ipcRenderer.invoke('automation:tick'),
+    preflight: (draft: AutomationJobDraft) => ipcRenderer.invoke('automation:preflight', draft),
+    createJob: (draft: AutomationJobDraft) => ipcRenderer.invoke('automation:createJob', draft),
+    jobs: () => ipcRenderer.invoke('automation:jobs'),
+    job: (id: string) => ipcRenderer.invoke('automation:job', id),
+    pauseJob: (id: string) => ipcRenderer.invoke('automation:pauseJob', id),
+    resumeJob: (id: string) => ipcRenderer.invoke('automation:resumeJob', id),
+    cancelJob: (id: string) => ipcRenderer.invoke('automation:cancelJob', id),
+    retryJob: (id: string) => ipcRenderer.invoke('automation:retryJob', id)
   },
 
   chooseFolder: () => ipcRenderer.invoke('fs:chooseFolder'),
@@ -226,7 +236,8 @@ const api: NativeApi = {
   onDownloadProgress: (cb: (p: DownloadProgress) => void) => subscribe('download:progress', cb),
   onTranscribeProgress: (cb: (p: TranscribeProgress) => void) => subscribe('transcribe:progress', cb),
   onRenderProgress: (cb: (p: RenderProgress) => void) => subscribe('render:progress', cb),
-  onAutomation: (cb: (e: AutomationEvent) => void) => subscribe('automation:event', cb)
+  onAutomation: (cb: (e: AutomationEvent) => void) => subscribe('automation:event', cb),
+  onAutomationJob: (cb: (job: AutomationJob) => void) => subscribe('automation:job', cb)
 }
 
 contextBridge.exposeInMainWorld('api', api)

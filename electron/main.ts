@@ -34,6 +34,7 @@ import { instrumentIpcMain, setSentryEnabled, telemetryForcedOff } from './servi
 import { runAll, lastMaxActive } from './services/queue'
 import { destroyGpuWorker } from './services/engine/gpu/host'
 import { runProfile, newVideos } from './ipc/automation'
+import { startAutomationSupervisor, stopAutomationSupervisor } from './services/automation-supervisor'
 import { postWebhook } from './services/webhook'
 import { createServer } from 'node:http'
 
@@ -1727,6 +1728,7 @@ app.whenReady().then(() => {
   buildTray()
   applyLoginItem(getSettings())
   scheduler.start()
+  startAutomationSupervisor()
   // M8 auto-update (packaged production builds only).
   void initAutoUpdate()
 
@@ -1739,6 +1741,7 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   isQuitting = true
   scheduler.stop()
+  stopAutomationSupervisor()
   // Tear down the hidden GPU render-worker window if it was created.
   destroyGpuWorker()
   // Close the DB here too: with the tray enabled, the real quit comes through here

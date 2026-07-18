@@ -1,5 +1,5 @@
 import { ipcMain } from 'electron'
-import { asBetaOpts, type AutomationEvent, type DownloadedVideo, type Profile, type ScrapedVideo, type SourceAutomationPatch, type SourceChannel } from '../../shared/types'
+import { asBetaOpts, type AutomationEvent, type AutomationJobDraft, type DownloadedVideo, type Profile, type ScrapedVideo, type SourceAutomationPatch, type SourceChannel } from '../../shared/types'
 import { getRepos } from '../db'
 import { sourceVideos, warmSourceBrollLibrary } from './scrape'
 import { startDownloads } from './download'
@@ -9,6 +9,16 @@ import { getSettings } from '../store/settings'
 import { postWebhook } from '../services/webhook'
 import { notifyMessage } from '../services/notify'
 import { L } from '../services/logger'
+import {
+  cancelAutomationJob,
+  createAutomationJob,
+  getAutomationJob,
+  listAutomationJobs,
+  pauseAutomationJob,
+  preflightAutomation,
+  resumeAutomationJob,
+  retryAutomationJob
+} from '../services/automation-supervisor'
 
 // Profile run orchestrator (req #2 / #3). Reuses the scrape → download → compose →
 // render functions. Interactive runs return the new project ids so the renderer can
@@ -271,4 +281,12 @@ export function registerAutomationIpc(): void {
   ipcMain.handle('automation:runSource', (_e, id: string, headless?: boolean) => runSource(id, !!headless))
   ipcMain.handle('automation:upsertProfile', (_e, p: Profile) => upsertProfileAndWarm(p))
   ipcMain.handle('automation:deleteProfile', (_e, id: string) => getRepos().deleteProfile(id))
+  ipcMain.handle('automation:preflight', (_e, draft: AutomationJobDraft) => preflightAutomation(draft))
+  ipcMain.handle('automation:createJob', (_e, draft: AutomationJobDraft) => createAutomationJob(draft))
+  ipcMain.handle('automation:jobs', () => listAutomationJobs())
+  ipcMain.handle('automation:job', (_e, id: string) => getAutomationJob(id))
+  ipcMain.handle('automation:pauseJob', (_e, id: string) => pauseAutomationJob(id))
+  ipcMain.handle('automation:resumeJob', (_e, id: string) => resumeAutomationJob(id))
+  ipcMain.handle('automation:cancelJob', (_e, id: string) => cancelAutomationJob(id))
+  ipcMain.handle('automation:retryJob', (_e, id: string) => retryAutomationJob(id))
 }
