@@ -34,7 +34,7 @@ jobs:
         run: npm run build
       - name: Commit validated implementation
         run: |
-          rm .github/automation_fix.py .github/workflows/apply-automation-fixes.yml
+          rm -f .github/automation_fix.py .github/automation-trigger .github/workflows/apply-automation-fixes.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
