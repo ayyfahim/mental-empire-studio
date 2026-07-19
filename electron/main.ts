@@ -1502,7 +1502,8 @@ async function runSmokeAutomation(): Promise<void> {
         sourceKind: 'local-files', sourceId: '', sourceUrl: '', sourceName: 'sample.mp3', sourceOrder: 'Latest', sourceCount: 1,
         selectedVideoIds: [], localMediaPaths: [fixture('audio/sample.mp3')], assetPaths: [fixture('images/img1.png')],
         style: 'Clean', captionPreset: 'Hormozi', aspectRatios: ['16:9'], execution: 'local',
-        rules: { minDurationSec: 0, skipDownloaded: true, continueOnError: true, maxRetries: 1, minimumFreeSpaceGb: 1, captions: false, autoBroll: false, removeSilence: false, reduceFillerWords: false, keepAwake: false },
+        styleConfig: { videoStyle: 'Clean', captionPreset: 'Hormozi', captionFont: 'Montserrat', captionAnimation: 'Pop-in', captionPosition: 'bottom', captionLines: 1, captionPace: 'auto', wordsPerCaption: 2, highlightColor: '#f5b323', boxColor: '#111111', imageMode: 'sequence', crossfadeSec: 0.8, motionPreset: 'subtle', gradientEdge: 'none', gradientIntensity: 50, aspectRatio: '16:9', brollMode: 'off', brollDensity: 'sparse', brollPoolSize: 18, brollFallbackPolicy: 'prefer-selected', brollShufflePolicy: 'per-video' },
+        rules: { minDurationSec: 0, skipDownloaded: true, continueOnError: true, maxRetries: 1, minimumFreeSpaceGb: 1, captions: false, autoBroll: false, removeSilence: false, reduceFillerWords: false, keepAwake: false, skipUploaded: true, fillSkippedSelections: false, allowStaleUploadCache: true, uploadFreshnessMinutes: 360, downloadDelaySec: 0, retryBaseDelaySec: 1, retryMaxDelaySec: 2 },
         notify: { desktop: false, webhook: false, sound: false, email: false }
       }
     }
@@ -1526,6 +1527,11 @@ async function runSmokeAutomation(): Promise<void> {
     check(!!outputPath && existsSync(outputPath), `verified output exists (${outputPath || 'missing'})`)
     const media = outputPath ? ffprobe(outputPath) : null
     check(!!media?.video && !!media?.audio && media.duration > 11 && media.duration < 13, `output has video+audio and expected duration (${media?.duration ?? 0}s)`)
+    const durableAsset = repos.listAssets()[0]
+    const renderedItem = finished?.items.find((item) => !!item.projectId)
+    const projectImage = renderedItem?.projectId ? repos.getProjectImages(renderedItem.projectId)[0] : undefined
+    check(!!durableAsset && existsSync(durableAsset.canonicalPath) && durableAsset.canonicalPath.includes(join(app.getPath('userData'), 'asset-library')), 'asset is stored in the canonical shared library')
+    check(!!projectImage && !!durableAsset && projectImage.path !== durableAsset.canonicalPath, 'project uses an independent asset copy, so project cleanup cannot remove the library original')
 
     const recoveryDraft: AutomationJobDraft = {
       ...draft,
@@ -1839,10 +1845,14 @@ app.whenReady().then(() => {
   }
 
   // M7 background automation: tray, start-on-sign-in, and the auto-watch scheduler.
-  buildTray()
-  applyLoginItem(getSettings())
-  scheduler.start()
-  startAutomationSupervisor()
+  // Screenshot validation is read-only unless its explicit seed/run flags are set;
+  // never let a UI capture unexpectedly advance the user's queued Automation jobs.
+  if (!process.env['ME_SHOOT']) {
+    buildTray()
+    applyLoginItem(getSettings())
+    scheduler.start()
+    startAutomationSupervisor()
+  }
   // M8 auto-update (packaged production builds only).
   void initAutoUpdate()
 

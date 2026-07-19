@@ -12,6 +12,7 @@ import { buildAss } from './captions'
 import { LONG_FORM_FAST_SEC, CAPTION_PHRASE_WORD_COUNT, BROLL_MAX_SEGMENTS_DEFAULT, BROLL_MAX_SEGMENTS_LONG, type RenderEngine } from './engine/render-config'
 import { runRender, dimensions, consumeCancelIntent, hasCancelIntent, canUseCudaFinalFilters } from './render'
 import { buildBrollManifest, cachedBrollClipCount, hasConfiguredBrollSource, recordClipUsage, type BrollManifestSegment } from './broll'
+import { effectiveBrollPool } from '../../shared/automationBroll'
 import { buildGpuRenderSpec } from './engine/gpu/spec'
 import { runGpuRender, probeGpuEngine, runGpuSelfTest } from './engine/gpu/host'
 import { probeRenderCapabilities } from './engine/caps'
@@ -284,9 +285,10 @@ export async function runJob(job: RenderJob): Promise<void> {
   // row + log can say so instead of the user wondering why the output looks different.
   let brollFallback = false
   if (beta.broll.enabled) {
-    const poolKey = beta.broll.poolKey || repos.nicheKeyForDownload(project.downloadId)
+    const effectivePool = effectiveBrollPool({ projectBroll: beta.broll, sourceNichePoolKey: repos.nicheKeyForDownload(project.downloadId) })
+    const poolKey = effectivePool.poolKey
     // A warmed pool remains fully usable offline or after an API key is removed.
-    const hasStockSource = hasConfiguredBrollSource(settings) || cachedBrollClipCount(poolKey) > 0
+    const hasStockSource = (effectivePool.allowLive && hasConfiguredBrollSource(settings)) || cachedBrollClipCount(poolKey) > 0
     if (!hasStockSource) {
       const msg = 'Stock B-roll unavailable: add a Pexels, Pixabay, or Coverr key in Settings'
       if (renderLogPath) appendFileSync(renderLogPath, `[broll:warn] ${msg}\n`)
@@ -311,7 +313,9 @@ export async function runJob(job: RenderJob): Promise<void> {
         jobId: job.id,
         maxSegments,
         poolKey,
-        shuffleSeed: beta.broll.shuffle === false ? undefined : (beta.broll.shuffleSeed ?? renderProject.seed),
+        allowLive: effectivePool.allowLive,
+        seed: beta.broll.seed ?? project.seed,
+        shuffle: beta.broll.shufflePolicy !== 'ranked',
         shouldCancel: () => hasCancelIntent(job.id),
         logPath,
         onProgress: (phase, done, total, ffmpeg) => {
@@ -334,7 +338,7 @@ export async function runJob(job: RenderJob): Promise<void> {
           filterDetail = 'CUDA scale + CPU captions'
           filterDevice = 'gpu'
         }
-        if (renderLogPath) appendFileSync(renderLogPath, `[broll]\npool=${poolKey || 'all'}\nshuffleSeed=${beta.broll.shuffle === false ? 'off' : (beta.broll.shuffleSeed ?? renderProject.seed)}\nmanifest=${planned.manifestPath}\njson=${planned.jsonPath}\nsegments=${planned.segments.length}\n`)
+        if (renderLogPath) appendFileSync(renderLogPath, `[broll]\nmanifest=${planned.manifestPath}\njson=${planned.jsonPath}\nsegments=${planned.segments.length}\n`)
         emitStage('assembling', 100, `Using B-roll manifest (${planned.segments.length} clips)`)
       } else {
         const msg = 'No downloadable B-roll clips found'
@@ -394,7 +398,7 @@ export async function runJob(job: RenderJob): Promise<void> {
           settings,
           zoomHits,
           plan,
-          defaultTransition: { type: transition ?? 'fade', durationSec: Math.max(0.3, Math.min(0.8, renderProject.crossfade || 0.4)) },
+          defaultTransition: { type: transition ?? 'fade', durationSec: Math.max(0, Math.min(0.8, renderProject.crossfade ?? 0.4)) },
           voicePath: renderProject.mp3Path,
           sfxPath,
           hookText,

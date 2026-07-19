@@ -165,6 +165,59 @@ button {
 }
 
 /* Automation Studio — responsive guided setup and durable job dashboard. */
+
+.automation-modal-backdrop { position: fixed; inset: 0; z-index: 500; display: grid; place-items: center; padding: 24px; background: rgba(2,4,8,.78); backdrop-filter: blur(8px); }
+.automation-modal { width: min(940px, 96vw); max-height: 88vh; overflow: auto; border: 1px solid var(--border-2); border-radius: 16px; padding: 18px; background: var(--bg-card); box-shadow: 0 24px 80px rgba(0,0,0,.55); }
+.automation-modal-heading { display: flex; align-items: flex-start; gap: 16px; border-bottom: 1px solid var(--border); padding-bottom: 13px; }
+.automation-modal-heading > div { flex: 1; }
+.automation-modal-heading h2 { margin: 0; color: var(--text-bright); font-size: 19px; }
+.automation-modal-heading p { margin: 5px 0 0; color: var(--text-dim); font-size: 11px; }
+.automation-modal-toolbar { display: flex; gap: 8px; margin: 14px 0; }
+.automation-modal-toolbar input, .automation-modal-toolbar select, .automation-modal-toolbar button { border: 1px solid var(--border-2); border-radius: 8px; padding: 9px 10px; background: var(--bg-inset); color: var(--text-bright); }
+.automation-modal-toolbar input { flex: 1; }
+.automation-modal-state { padding: 36px; text-align: center; color: var(--text-dim); }
+.automation-modal-state.error { color: var(--err-2); }
+.automation-source-card-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(240px,1fr)); gap: 10px; }
+.automation-source-picker-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px; background: var(--bg-inset); }
+.automation-source-picker-card.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.automation-source-picker-card > button:first-child { width: 100%; display: flex; align-items: center; gap: 10px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.automation-source-picker-card img, .automation-selected-source img, .automation-source-picker-card i, .automation-selected-source i { width: 42px; height: 42px; flex: none; display: grid; place-items: center; object-fit: cover; border-radius: 50%; background: var(--border); color: var(--text-muted); font: 700 11px var(--font-mono); font-style: normal; }
+.automation-source-picker-card strong, .automation-selected-source strong { display: block; color: var(--text-bright); font-size: 12px; }
+.automation-source-picker-card small, .automation-selected-source span, .automation-selected-source small { display: block; color: var(--text-dim); font-size: 9.5px; margin-top: 2px; }
+.automation-source-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 9px 0 7px; }
+.automation-source-chips span { border-radius: 999px; padding: 3px 6px; background: #242a34; color: var(--text-dim); font-size: 8.5px; }
+.automation-selected-source { display: flex; align-items: center; gap: 10px; min-height: 62px; border: 1px solid var(--border-2); border-radius: 10px; padding: 9px; background: var(--bg-inset); }
+.automation-selected-source > div { flex: 1; min-width: 0; }
+.automation-selected-source button, .automation-browse-source, .automation-asset-actions button, .automation-selection-actions button { border: 1px solid var(--border-2); border-radius: 7px; padding: 7px 9px; background: var(--bg-card); color: var(--text-muted); cursor: pointer; }
+.automation-browse-source { width: 100%; min-height: 62px; border-style: dashed; color: var(--accent); }
+.automation-asset-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; color: var(--text-dim); font-size: 10px; }
+.automation-asset-actions span { flex: 1; }
+.automation-folder-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(220px,1fr)); gap: 10px; }
+.automation-folder-grid > button { border: 1px solid var(--border); border-radius: 12px; padding: 11px; background: var(--bg-inset); color: var(--text-muted); text-align: left; cursor: pointer; }
+.automation-folder-grid > button > div:first-child { display: grid; grid-template-columns: 38px 1fr; gap: 2px 9px; align-items: center; }
+.automation-folder-grid img, .automation-folder-grid > button > div:first-child > span { grid-row: 1 / span 2; width: 38px; height: 38px; border-radius: 50%; object-fit: cover; display: grid; place-items: center; background: var(--border-2); }
+.automation-folder-grid strong { color: var(--text-bright); }
+.automation-folder-grid small { color: var(--text-dim); font-size: 9px; }
+.automation-folder-strip { display: flex; gap: 4px; margin: 10px 0 7px; }
+.automation-folder-strip img, .automation-folder-strip span { width: 54px; height: 36px; border-radius: 5px; object-fit: cover; background: var(--border); }
+.automation-selection-actions { display: flex; gap: 7px; margin-bottom: 10px; }
+.automation-asset-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(150px,1fr)); gap: 9px; }
+.automation-asset-grid > label { position: relative; border: 1px solid var(--border); border-radius: 10px; padding: 7px; background: var(--bg-inset); cursor: pointer; }
+.automation-asset-grid > label.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.automation-asset-grid input { position: absolute; z-index: 1; top: 11px; left: 11px; }
+.automation-asset-thumb { height: 90px; display: grid; place-items: center; overflow: hidden; border-radius: 7px; background: #0c0f14; color: var(--text-faint); font-size: 9px; }
+.automation-asset-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.automation-asset-grid strong, .automation-asset-grid small { display: block; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.automation-asset-grid strong { color: var(--text-bright); font-size: 9.5px; }
+.automation-asset-grid small { color: var(--text-dim); font-size: 8.5px; }
+.automation-asset-grid em { color: var(--err-2); font-size: 8.5px; font-style: normal; }
+.automation-modal-footer { position: sticky; bottom: -18px; display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin: 15px -18px -18px; padding: 12px 18px; border-top: 1px solid var(--border); background: var(--bg-card); }
+.automation-modal-footer span { margin-right: auto; color: var(--text-dim); font-size: 10px; }
+.automation-pool-status { margin-top: 10px; border-radius: 8px; padding: 8px 10px; font-size: 9.5px; }
+.automation-pool-status.ready { background: rgba(54,201,142,.1); color: var(--ok-2); }
+.automation-pool-status.empty { background: rgba(255,90,110,.1); color: var(--err-2); }
+.automation-rule-fields { display: grid; gap: 10px; }
+@media (max-width: 720px) { .automation-modal-backdrop { padding: 8px; } .automation-modal { width: 100%; max-height: 96vh; } .automation-modal-toolbar { flex-direction: column; } }
 .automation-header,
 .automation-jobs-heading,
 .automation-job-title {
@@ -238,6 +291,8 @@ button {
 .automation-library-assets label { display: flex; gap: 8px; align-items: center; border: 1px solid var(--border-2); background: var(--bg-inset); border-radius: 8px; padding: 7px 9px; cursor: pointer; color: var(--text-muted); font-size: 10.5px; min-width: 0; }
 .automation-video-grid label.selected,
 .automation-library-assets label.selected { border-color: var(--accent); background: var(--accent-soft); }
+.automation-video-grid label.uploaded { border-color: rgba(245,179,35,.45); }
+.automation-video-grid label.uploaded small { color: var(--warn); }
 .automation-video-grid input,
 .automation-library-assets input { accent-color: var(--accent); }
 .automation-video-grid span,

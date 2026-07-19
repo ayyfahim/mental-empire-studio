@@ -402,7 +402,7 @@ export class Compositor {
     }
     const fallback = this.spec.defaultTransition ?? { type: 'fade', durationSec: 0.4 }
     const chosen = best ?? { type: fallback.type, dur: fallback.durationSec }
-    return { mode: transitionModeFor(chosen.type), dur: Math.max(0.25, Math.min(1, chosen.dur)) }
+    return { mode: transitionModeFor(chosen.type), dur: Math.max(0, Math.min(1, chosen.dur)) }
   }
 
   /** Draw one frame at time `t`. Assumes updateCaption() already ran for this frame. */

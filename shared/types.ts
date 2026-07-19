@@ -213,9 +213,27 @@ export interface RecentUpload {
 /** An image previously used in some project, kept around so a later project targeting the
  *  same channel can reuse the same set instead of re-picking from disk. */
 export interface LibraryAsset {
+  /** Stable content-addressed id. Legacy rows derive this during migration. */
+  id: string
+  /** Canonical shared-library file. `path` is retained as a compatibility alias. */
   path: string
+  canonicalPath: string
+  originalPath?: string
+  sourceId?: string
   channel: string
+  channelHandle?: string
+  channelAvatar?: string
+  thumbnailPath?: string
+  mimeType?: string
+  width?: number
+  height?: number
+  fileSize?: number
   addedAt: string
+  firstAddedAt: string
+  lastUsedAt: string
+  usageCount: number
+  missing: boolean
+  projectId?: string
 }
 
 export interface GoalsPatch {
@@ -328,8 +346,6 @@ export type AutomationErrorKind =
 export interface AutomationRules {
   minDurationSec: number
   skipDownloaded: boolean
-  skipUploaded?: boolean
-  downloadDelaySec?: number
   continueOnError: boolean
   maxRetries: number
   minimumFreeSpaceGb: number
@@ -338,6 +354,65 @@ export interface AutomationRules {
   removeSilence: boolean
   reduceFillerWords: boolean
   keepAwake: boolean
+  /** Skip videos already published to the linked owned channel. */
+  skipUploaded: boolean
+  /** Explicit selections are never substituted unless this opt-in is true. */
+  fillSkippedSelections: boolean
+  allowStaleUploadCache: boolean
+  uploadFreshnessMinutes: number
+  /** Delay immediately before a real YouTube request; cache/local paths bypass it. */
+  downloadDelaySec: number
+  retryBaseDelaySec: number
+  retryMaxDelaySec: number
+}
+
+export type AutomationBrollFallbackPolicy = 'selected-only' | 'prefer-selected' | 'all-sources'
+export type AutomationBrollShufflePolicy = 'per-video' | 'ranked'
+export type AutomationGradientEdge = 'none' | 'top' | 'bottom' | 'left' | 'right'
+
+/** One shared style contract from setup through project, preview, and final render. */
+export interface AutomationStyleConfig {
+  videoStyle: VideoStyle
+  captionPreset: string
+  captionFont: string
+  captionAnimation: string
+  captionPosition: 'top' | 'middle' | 'bottom'
+  captionOffsetY?: number
+  captionLines: 1 | 2 | 3
+  captionPace: 'auto' | 'word' | 'phrase'
+  wordsPerCaption: 1 | 2 | 3
+  highlightColor: string
+  boxColor: string
+  imageMode: ImageMode
+  crossfadeSec: number
+  motionPreset: MotionPreset
+  gradientEdge: AutomationGradientEdge
+  gradientIntensity: number
+  aspectRatio: '16:9' | '1:1' | '9:16'
+  brollMode: 'off' | 'full' | 'overlay'
+  brollDensity: BrollDensity
+  brollPoolSize: number
+  brollPoolKey?: string
+  brollFallbackPolicy: AutomationBrollFallbackPolicy
+  brollShufflePolicy: AutomationBrollShufflePolicy
+}
+
+export type AutomationUploadMatchType = 'exact-id' | 'high-title' | 'ambiguous-title' | 'manual' | 'none'
+export interface AutomationSelectionDecision {
+  videoId: string
+  title: string
+  matchType: AutomationUploadMatchType
+  score: number
+  action: 'selected' | 'skipped-uploaded' | 'eligible-ambiguous' | 'excluded-duration'
+  matchedUploadId?: string
+  matchedTitle?: string
+}
+
+export interface AutomationItemStepState {
+  attempts: number
+  status: 'pending' | 'completed' | 'warning' | 'failed'
+  checkpoint?: Record<string, unknown>
+  error?: string
 }
 
 export interface AutomationJobConfig {
@@ -355,23 +430,9 @@ export interface AutomationJobConfig {
   assetPaths: string[]
   style: VideoStyle
   captionPreset: string
-  captionFont?: string
-  captionAnim?: string
-  captionLines?: 1 | 2 | 3
-  captionPosition?: 'top' | 'middle' | 'bottom'
-  captionPace?: 'auto' | 'word' | 'phrase'
-  captionHighlightColor?: string
-  captionBoxColor?: string
-  captionWordsPerPage?: 1 | 2 | 3
-  imageMode?: ImageMode
-  crossfadeSec?: number
-  overlay?: BetaVideoOpts['overlay']
-  brollPoolKey?: string
-  brollDensity?: BrollDensity
-  brollPoolSize?: number
-  brollMode?: 'full' | 'overlay'
-  brollShuffle?: boolean
   aspectRatios: Array<'16:9' | '1:1' | '9:16'>
+  /** Canonical style contract. Legacy mirrors above remain readable. */
+  styleConfig: AutomationStyleConfig
   rules: AutomationRules
   notify: { desktop: boolean; webhook: boolean; sound: boolean; email: boolean }
   execution: 'local'
@@ -412,6 +473,11 @@ export interface AutomationJobItem {
   currentStep: string
   progress: number
   attempts: number
+  stepStates?: Record<string, AutomationItemStepState>
+  selectionDecision?: AutomationSelectionDecision
+  brollSeed?: number
+  brollClipIds?: string[]
+  retryAt?: string
   projectId?: string
   renderJobId?: string
   outputPath?: string
@@ -469,6 +535,7 @@ export interface AutomationPreflight {
   sourceItems: number
   powerMessage: string
   appMessage: string
+  uploadDataState?: 'fresh' | 'stale' | 'unavailable' | 'not-linked'
 }
 
 // ---- Thumbnail editor model (req #4) ----
@@ -668,11 +735,10 @@ export interface BetaVideoOpts {
     density: BrollDensity
     poolSize: number
     mode: 'full' | 'overlay'
-    /** explicit cached pool selected by Automation; source-linked niche remains fallback */
     poolKey?: string
-    /** stable per-project shuffle: different videos differ, rerenders stay deterministic */
-    shuffle?: boolean
-    shuffleSeed?: number
+    fallbackPolicy?: AutomationBrollFallbackPolicy
+    shufflePolicy?: AutomationBrollShufflePolicy
+    seed?: number
   }
   // ---- phase 3: style + transition/text-effect plan ----
   style: VideoStyle
@@ -695,7 +761,7 @@ export const DEFAULT_BETA_OPTS: BetaVideoOpts = {
   autoHighlight: false,
   overlay: { bottom: false, top: false, left: false, right: false, intensity: 50 },
   autoZoom: { atStart: false, atKeyPhrases: false },
-  broll: { enabled: false, density: 'sparse', poolSize: 18, mode: 'full', poolKey: undefined, shuffle: true, shuffleSeed: undefined },
+  broll: { enabled: false, density: 'sparse', poolSize: 18, mode: 'full', fallbackPolicy: 'prefer-selected', shufflePolicy: 'per-video' },
   style: 'None',
   effectPlanJson: ''
 }
@@ -754,9 +820,10 @@ export function asBetaOpts(v: unknown): BetaVideoOpts {
       density,
       poolSize: Math.round(clampNumber(broll.poolSize, DEFAULT_BETA_OPTS.broll.poolSize, 1, 200)),
       mode,
-      poolKey: typeof broll.poolKey === 'string' && broll.poolKey.trim() ? broll.poolKey.trim().slice(0, 160) : undefined,
-      shuffle: boolValue(broll.shuffle, DEFAULT_BETA_OPTS.broll.shuffle ?? true),
-      shuffleSeed: Number.isFinite(Number(broll.shuffleSeed)) ? Math.max(0, Math.floor(Number(broll.shuffleSeed))) : undefined
+      poolKey: typeof broll.poolKey === 'string' && broll.poolKey.trim() ? broll.poolKey.trim() : undefined,
+      fallbackPolicy: broll.fallbackPolicy === 'selected-only' || broll.fallbackPolicy === 'all-sources' ? broll.fallbackPolicy : 'prefer-selected',
+      shufflePolicy: broll.shufflePolicy === 'ranked' ? 'ranked' : 'per-video',
+      seed: broll.seed == null ? undefined : Math.round(clampNumber(broll.seed, 0, 0, 2_147_483_647))
     },
     style,
     effectPlanJson: stringValue(o.effectPlanJson, DEFAULT_BETA_OPTS.effectPlanJson)
@@ -839,6 +906,10 @@ export interface TranscribeProgress {
 export interface DownloadOptions {
   bitrate: number
   sourceUrl: string
+  /** Automation-only pacing before a real network request. */
+  delaySec?: number
+  /** Let the visible Automation supervisor own retry semantics. */
+  supervised?: boolean
 }
 
 // ---- Render pipeline (M6) ----
@@ -1235,6 +1306,8 @@ export interface NativeApi {
   assets: {
     /** every image used in a past project, grouped client-side by channel */
     list(): Promise<LibraryAsset[]>
+    /** Copy/dedupe images into the canonical library before project use. */
+    import(paths: string[], context?: { sourceId?: string; channel?: string; channelHandle?: string; channelAvatar?: string; projectId?: string }): Promise<LibraryAsset[]>
   }
   publish: {
     /** every finished render, with a fuzzy-matched upload status */

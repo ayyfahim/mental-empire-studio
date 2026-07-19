@@ -1,10 +1,14 @@
-import { useEffect, useMemo, useState, type CSSProperties, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from 'react'
 import { useStore } from '../store/useStore'
 import { useData } from '../store/useData'
 import { ScreenPad } from '../components/primitives'
 import { Banner, Btn, EmptyState, Panel, Section, SectionLabel, ToggleRow } from '../components/ui/kit'
-import { AssetLibraryModal, SelectedAssetStrip, SourcePickerModal } from './AutomationPickers'
 import { AUTOMATION_GOALS, buildAutomationWorkflow, formatGoal } from '@shared/automation'
+import { DEFAULT_AUTOMATION_RULES, DEFAULT_AUTOMATION_STYLE } from '@shared/automationConfig'
+import { automationDraftReducer, createDefaultDraft } from '@shared/automationDraft'
+import { SourcePickerModal } from '../features/automation/SourcePickerModal'
+import { AssetLibraryModal } from '../features/automation/AssetLibraryModal'
+import { mediaSrc } from '../lib/media'
 import type {
   AutomationGoal,
   AutomationJob,
@@ -13,6 +17,7 @@ import type {
   AutomationPreflight,
   LibraryAsset,
   Niche,
+  NichePoolHealth,
   ScrapeOrder,
   ScrapedVideo,
   VideoStyle
@@ -94,7 +99,15 @@ function WorkflowPreview({ draft }: { draft: AutomationJobDraft }): JSX.Element 
 }
 
 function JobDetails({ detail }: { detail: AutomationJobDetail }): JSX.Element {
+  const style = detail.config.styleConfig
   return <div style={{ borderTop: '1px solid var(--border)', padding: 15, background: 'var(--bg-inset)' }}>
+    <SectionLabel>Effective configuration</SectionLabel>
+    <div className="automation-job-metrics" style={{ marginBottom: 14 }}>
+      <div><span>CAPTIONS</span><b>{detail.config.rules.captions ? `${style.captionPreset} · ${style.captionFont} · ${style.captionPosition}${style.captionOffsetY != null ? ` @ ${style.captionOffsetY}%` : ''} · ${style.captionLines} line${style.captionLines === 1 ? '' : 's'} · ${style.captionPace}` : 'Disabled'}</b></div>
+      <div><span>VISUALS</span><b>{detail.config.assetPaths.length} assets · {style.imageMode} · {style.motionPreset} · {style.crossfadeSec}s · gradient {style.gradientEdge} {style.gradientIntensity}%</b></div>
+      <div><span>B-ROLL</span><b>{detail.config.rules.autoBroll ? `${style.brollPoolKey || 'automatic pool'} · ${style.brollFallbackPolicy} · ${style.brollShufflePolicy}` : 'Disabled'}</b></div>
+      <div><span>EXPORT</span><b>{style.videoStyle} · {style.aspectRatio}</b></div>
+    </div>
     <SectionLabel>Workflow checkpoints</SectionLabel>
     <div className="automation-checkpoint-grid">
       {detail.steps.map((step) => <div key={step.id} style={{ border: '1px solid var(--border)', borderRadius: 9, padding: 9, background: 'var(--bg-card)' }}>
@@ -110,7 +123,10 @@ function JobDetails({ detail }: { detail: AutomationJobDetail }): JSX.Element {
       <SectionLabel style={{ marginTop: 16 }}>Items</SectionLabel>
       <div style={{ marginTop: 7, display: 'flex', flexDirection: 'column', gap: 5 }}>
         {detail.items.map((item) => <div key={item.id} className="automation-item-row" style={{ fontSize: 10.5, padding: '7px 9px', borderRadius: 7, background: 'var(--bg-card)', color: 'var(--text-muted)' }}>
-          <span className="me-ellipsis">{item.title}</span><span>{item.currentStep}</span><span style={{ color: item.status === 'failed' ? 'var(--err-2)' : item.status === 'completed' ? 'var(--ok-2)' : 'var(--accent)', textAlign: 'right' }}>{item.status}</span>
+          <span className="me-ellipsis">{item.title}</span><span>{item.retryAt ? `Waiting for retry · attempt ${item.attempts + 1}/${detail.config.rules.maxRetries + 1} · ${new Date(item.retryAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : item.currentStep}</span><span style={{ color: item.status === 'failed' ? 'var(--err-2)' : item.status === 'completed' ? 'var(--ok-2)' : item.status === 'skipped' ? 'var(--warn)' : 'var(--accent)', textAlign: 'right' }}>{item.status}</span>
+          {item.selectionDecision && <span style={{ gridColumn: '1 / -1', color: item.selectionDecision.matchType === 'ambiguous-title' ? 'var(--warn)' : 'var(--text-faint)' }}>Upload decision: {item.selectionDecision.matchType} · confidence {item.selectionDecision.score.toFixed(2)} · {item.selectionDecision.action}</span>}
+          {(item.brollSeed !== undefined || item.brollClipIds?.length) && <span style={{ gridColumn: '1 / -1', color: 'var(--text-faint)' }}>B-roll seed {item.brollSeed ?? '—'} · {item.brollClipIds?.length ?? 0} recorded clips</span>}
+          {item.outputPath && <span className="me-ellipsis" title={item.outputPath} style={{ gridColumn: '1 / -1', color: 'var(--ok-2)' }}>Output: {item.outputPath}</span>}
           {(item.error || item.warning) && <span style={{ gridColumn: '1 / -1', color: item.error ? 'var(--err-2)' : 'var(--warn)' }}>{item.error || item.warning}</span>}
         </div>)}
       </div>
@@ -125,6 +141,7 @@ function JobDetails({ detail }: { detail: AutomationJobDetail }): JSX.Element {
 export function Profiles(): JSX.Element {
   const sourceChannels = useData((state) => state.sourceChannels)
   const automationJobs = useData((state) => state.automationJobs)
+  const workItems = useData((state) => state.workItems)
   const loadSources = useData((state) => state.loadSources)
   const loadAutomationJobs = useData((state) => state.loadAutomationJobs)
   const preflightAutomation = useData((state) => state.preflightAutomation)
@@ -138,69 +155,104 @@ export function Profiles(): JSX.Element {
 
   const [view, setView] = useState<'setup' | 'jobs'>('setup')
   const [stage, setStage] = useState(0)
-  const [goal, setGoal] = useState<AutomationGoal>('source-to-export')
-  const [sourceKind, setSourceKind] = useState<SourceKind>('saved-source')
-  const [sourceId, setSourceId] = useState('')
-  const [sourceUrl, setSourceUrl] = useState('')
-  const [localMediaPaths, setLocalMediaPaths] = useState<string[]>([])
-  const [sourceCount, setSourceCount] = useState(3)
-  const [sourceOrder, setSourceOrder] = useState<ScrapeOrder>('Latest')
+  const [draftState, dispatchDraft] = useReducer(automationDraftReducer, settings, () => createDefaultDraft(settings))
   const [availableVideos, setAvailableVideos] = useState<ScrapedVideo[]>([])
-  const [selectedVideoIds, setSelectedVideoIds] = useState<string[]>([])
-  const [assets, setAssets] = useState<string[]>([])
   const [libraryAssets, setLibraryAssets] = useState<LibraryAsset[]>([])
   const [niches, setNiches] = useState<Niche[]>([])
-  const [sourcePickerOpen, setSourcePickerOpen] = useState(false)
-  const [assetPickerOpen, setAssetPickerOpen] = useState(false)
-  const [style, setStyle] = useState<VideoStyle>('Clean')
-  const [captionPreset, setCaptionPreset] = useState('Hormozi')
-  const [captionFont, setCaptionFont] = useState('Montserrat')
-  const [captionAnim, setCaptionAnim] = useState('Pop-in')
-  const [captionLines, setCaptionLines] = useState<1 | 2 | 3>(1)
-  const [captionPosition, setCaptionPosition] = useState<'top' | 'middle' | 'bottom'>('bottom')
-  const [captionPace, setCaptionPace] = useState<'auto' | 'word' | 'phrase'>('auto')
-  const [captionHighlightColor, setCaptionHighlightColor] = useState('#f5b323')
-  const [captionBoxColor, setCaptionBoxColor] = useState('#111111')
-  const [captionWordsPerPage, setCaptionWordsPerPage] = useState<1 | 2 | 3>(2)
-  const [imageMode, setImageMode] = useState<'sequence' | 'pool'>('pool')
-  const [crossfadeSec, setCrossfadeSec] = useState(0.8)
-  const [gradientEdge, setGradientEdge] = useState<'none' | 'bottom' | 'top' | 'left' | 'right'>('bottom')
-  const [gradientIntensity, setGradientIntensity] = useState(50)
-  const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9')
-  const [captions, setCaptions] = useState(!!settings.transcription.apiKey.trim())
-  const [autoBroll, setAutoBroll] = useState(false)
-  const [brollPoolKey, setBrollPoolKey] = useState('')
-  const [brollDensity, setBrollDensity] = useState<'full' | 'sparse' | 'keywords'>('sparse')
-  const [brollPoolSize, setBrollPoolSize] = useState(18)
-  const [brollMode, setBrollMode] = useState<'full' | 'overlay'>('full')
-  const [brollShuffle, setBrollShuffle] = useState(true)
-  const [continueOnError, setContinueOnError] = useState(true)
-  const [skipDownloaded, setSkipDownloaded] = useState(true)
-  const [skipUploaded, setSkipUploaded] = useState(true)
-  const [downloadDelaySec, setDownloadDelaySec] = useState(3)
-  const [minDuration, setMinDuration] = useState(0)
-  const [retries, setRetries] = useState(Math.max(1, settings.autoScrape.retries || 2))
-  const [reserveGb, setReserveGb] = useState(2)
-  const [desktopNotify, setDesktopNotify] = useState(settings.background.notifications)
-  const [webhookNotify, setWebhookNotify] = useState(!!settings.background.webhook)
+  const [poolHealth, setPoolHealth] = useState<NichePoolHealth[]>([])
   const [preflight, setPreflight] = useState<AutomationPreflight | null>(null)
   const [starting, setStarting] = useState(false)
   const [expanded, setExpanded] = useState<AutomationJobDetail | null>(null)
   const [setupError, setSetupError] = useState('')
+  const [sourceModalOpen, setSourceModalOpen] = useState(false)
+  const [assetModalOpen, setAssetModalOpen] = useState(false)
+  const [sourceLoadError, setSourceLoadError] = useState('')
+  const sourceBrowseRef = useRef<HTMLButtonElement>(null)
+  const assetBrowseRef = useRef<HTMLButtonElement>(null)
+  const activeDraftId = useRef(draftState.id)
+  activeDraftId.current = draftState.id
+
+  const config = draftState.draft.config
+  const goal = draftState.draft.goal
+  const sourceKind = config.sourceKind
+  const sourceId = config.sourceId
+  const sourceUrl = config.sourceUrl
+  const localMediaPaths = config.localMediaPaths
+  const sourceCount = config.sourceCount
+  const sourceOrder = config.sourceOrder
+  const selectedVideoIds = config.selectedVideoIds
+  const assets = config.assetPaths
+  const style = config.styleConfig.videoStyle
+  const captionPreset = config.styleConfig.captionPreset
+  const aspectRatio = config.styleConfig.aspectRatio
+  const captions = config.rules.captions
+  const autoBroll = config.rules.autoBroll
+  const continueOnError = config.rules.continueOnError
+  const skipDownloaded = config.rules.skipDownloaded
+  const minDuration = config.rules.minDurationSec
+  const retries = config.rules.maxRetries
+  const reserveGb = config.rules.minimumFreeSpaceGb
+  const desktopNotify = config.notify.desktop
+  const webhookNotify = config.notify.webhook
+
+  const updateConfig = <K extends keyof typeof config>(key: K, value: SetStateAction<(typeof config)[K]>): void => {
+    const next = typeof value === 'function' ? (value as (previous: (typeof config)[K]) => (typeof config)[K])(config[key]) : value
+    dispatchDraft({ type: 'patch-config', patch: { [key]: next } })
+  }
+  const updateRule = <K extends keyof typeof config.rules>(key: K, value: SetStateAction<(typeof config.rules)[K]>): void => {
+    const next = typeof value === 'function' ? (value as (previous: (typeof config.rules)[K]) => (typeof config.rules)[K])(config.rules[key]) : value
+    dispatchDraft({ type: 'patch-rules', patch: { [key]: next } })
+  }
+  const updateStyle = <K extends keyof typeof config.styleConfig>(key: K, value: (typeof config.styleConfig)[K]): void => dispatchDraft({ type: 'patch-style', patch: { [key]: value } })
+  const setGoal = (value: AutomationGoal): void => dispatchDraft({ type: 'goal', goal: value })
+  const setSourceKind = (value: SetStateAction<SourceKind>): void => updateConfig('sourceKind', value)
+  const setSourceUrl = (value: SetStateAction<string>): void => updateConfig('sourceUrl', value)
+  const setLocalMediaPaths: Dispatch<SetStateAction<string[]>> = (value) => updateConfig('localMediaPaths', value)
+  const setSourceCount: Dispatch<SetStateAction<number>> = (value) => updateConfig('sourceCount', value)
+  const setSourceOrder: Dispatch<SetStateAction<ScrapeOrder>> = (value) => updateConfig('sourceOrder', value)
+  const setSelectedVideoIds: Dispatch<SetStateAction<string[]>> = (value) => updateConfig('selectedVideoIds', value)
+  const setAssets: Dispatch<SetStateAction<string[]>> = (value) => updateConfig('assetPaths', value)
+  const setStyle = (value: VideoStyle): void => updateStyle('videoStyle', value)
+  const setCaptionPreset = (value: string): void => updateStyle('captionPreset', value)
+  const setAspectRatio = (value: AspectRatio): void => updateStyle('aspectRatio', value)
+  const setCaptions = (value: SetStateAction<boolean>): void => updateRule('captions', value)
+  const setAutoBroll = (value: SetStateAction<boolean>): void => {
+    const next = typeof value === 'function' ? value(autoBroll) : value
+    updateRule('autoBroll', next)
+    updateStyle('brollMode', next && config.styleConfig.brollMode === 'off' ? 'full' : next ? config.styleConfig.brollMode : 'off')
+  }
+  const setContinueOnError = (value: SetStateAction<boolean>): void => updateRule('continueOnError', value)
+  const setSkipDownloaded = (value: SetStateAction<boolean>): void => updateRule('skipDownloaded', value)
+  const setMinDuration = (value: number): void => updateRule('minDurationSec', value)
+  const setRetries = (value: number): void => updateRule('maxRetries', value)
+  const setReserveGb = (value: number): void => updateRule('minimumFreeSpaceGb', value)
+  const setDesktopNotify = (value: SetStateAction<boolean>): void => {
+    const next = typeof value === 'function' ? value(desktopNotify) : value
+    dispatchDraft({ type: 'patch-config', patch: { notify: { ...config.notify, desktop: next, sound: next } } })
+  }
+  const setWebhookNotify = (value: SetStateAction<boolean>): void => {
+    const next = typeof value === 'function' ? value(webhookNotify) : value
+    dispatchDraft({ type: 'patch-config', patch: { notify: { ...config.notify, webhook: next } } })
+  }
 
   useEffect(() => {
-    void Promise.all([loadSources(), loadAutomationJobs(), window.api.assets.list().then(setLibraryAssets), window.api.niche.list().then(setNiches)])
+    const requestId = draftState.id
+    void Promise.all([loadSources(), loadAutomationJobs(), window.api.assets.list(), window.api.niche.list(), window.api.niche.poolHealth()])
+      .then(([, , assetRows, nicheRows, healthRows]) => { if (activeDraftId.current === requestId) { setLibraryAssets(assetRows); setNiches(nicheRows); setPoolHealth(healthRows) } })
       .catch((error) => setSetupError(error instanceof Error ? error.message : String(error)))
-  }, [loadSources, loadAutomationJobs])
-  useEffect(() => { if (!sourceId && sourceChannels[0]) setSourceId(sourceChannels[0].id) }, [sourceChannels, sourceId])
+  }, [loadSources, loadAutomationJobs, draftState.id])
   useEffect(() => {
     if (sourceKind !== 'saved-source' || !sourceId) { setAvailableVideos([]); return }
-    void window.api.sources.videos(sourceId).then(setAvailableVideos).catch(() => setAvailableVideos([]))
-  }, [sourceId, sourceKind])
+    const requestId = draftState.id
+    void window.api.sources.videos(sourceId).then((rows) => { if (activeDraftId.current === requestId) setAvailableVideos(rows) }).catch((error) => { if (activeDraftId.current === requestId) { setAvailableVideos([]); setSourceLoadError(error instanceof Error ? error.message : String(error)) } })
+  }, [sourceId, sourceKind, draftState.id])
   useEffect(() => {
     if (!expanded?.id) return
     void window.api.automation.job(expanded.id).then((next) => { if (next) setExpanded(next) })
   }, [automationJobs, expanded?.id])
+  useEffect(() => {
+    document.querySelectorAll<HTMLInputElement>('.automation-file-picker input[type="file"]').forEach((node) => { node.value = '' })
+  }, [draftState.id])
 
   const source = sourceChannels.find((candidate) => candidate.id === sourceId)
   const sourceReady = sourceKind === 'saved-source' ? !!source : sourceKind === 'youtube-url' ? validYoutubeUrl(sourceUrl) : localMediaPaths.length > 0
@@ -213,34 +265,14 @@ export function Profiles(): JSX.Element {
     name: `${sourceLabel} · ${formatGoal(goal)}`,
     goal,
     config: {
-      sourceKind,
+      ...config,
       sourceId: sourceKind === 'saved-source' ? source?.id ?? '' : '',
       sourceUrl: sourceKind === 'saved-source' ? source?.url ?? '' : sourceKind === 'youtube-url' ? sourceUrl.trim() : '',
       sourceName: sourceLabel,
-      sourceOrder,
       sourceCount: sourceKind === 'local-files' ? Math.max(1, localMediaPaths.length) : sourceCount,
-      selectedVideoIds: sourceKind === 'saved-source' ? selectedVideoIds : [],
-      localMediaPaths,
-      assetPaths: assets,
-      style,
-      captionPreset,
-      captionFont, captionAnim, captionLines, captionPosition, captionPace,
-      captionHighlightColor, captionBoxColor, captionWordsPerPage,
-      imageMode, crossfadeSec,
-      overlay: {
-        bottom: gradientEdge === 'bottom', top: gradientEdge === 'top',
-        left: gradientEdge === 'left', right: gradientEdge === 'right', intensity: gradientIntensity
-      },
-      brollPoolKey, brollDensity, brollPoolSize, brollMode, brollShuffle,
-      aspectRatios: [aspectRatio],
-      execution: 'local',
-      rules: {
-        minDurationSec: minDuration, skipDownloaded, skipUploaded, downloadDelaySec, continueOnError, maxRetries: retries,
-        minimumFreeSpaceGb: reserveGb, captions, autoBroll, removeSilence: false, reduceFillerWords: false, keepAwake: true
-      },
-      notify: { desktop: desktopNotify, webhook: webhookNotify, sound: desktopNotify, email: false }
+      selectedVideoIds: sourceKind === 'saved-source' ? selectedVideoIds : []
     }
-  }), [sourceLabel, goal, sourceKind, source, sourceUrl, sourceOrder, sourceCount, localMediaPaths, selectedVideoIds, assets, style, captionPreset, captionFont, captionAnim, captionLines, captionPosition, captionPace, captionHighlightColor, captionBoxColor, captionWordsPerPage, imageMode, crossfadeSec, gradientEdge, gradientIntensity, brollPoolKey, brollDensity, brollPoolSize, brollMode, brollShuffle, aspectRatio, minDuration, skipDownloaded, skipUploaded, downloadDelaySec, continueOnError, retries, reserveGb, captions, autoBroll, desktopNotify, webhookNotify])
+  }), [config, sourceLabel, goal, sourceKind, source, sourceUrl, sourceCount, localMediaPaths, selectedVideoIds])
 
   const chooseGoal = (next: AutomationGoal): void => {
     const definition = AUTOMATION_GOALS.find((candidate) => candidate.id === next)
@@ -255,19 +287,22 @@ export function Profiles(): JSX.Element {
     const paths = Array.from(files).map((file) => window.api.pathForFile(file)).filter(Boolean)
     setter((current) => [...new Set([...current, ...paths])])
   }
-  const resetSetup = (): void => {
-    setStage(0); setGoal('source-to-export'); setSourceKind('saved-source'); setSourceUrl('')
-    setLocalMediaPaths([]); setSelectedVideoIds([]); setAssets([]); setPreflight(null); setSetupError('')
-    setStyle('Clean'); setCaptionPreset('Hormozi'); setCaptionFont('Montserrat'); setCaptionAnim('Pop-in')
-    setCaptionLines(1); setCaptionPosition('bottom'); setCaptionPace('auto'); setImageMode('pool'); setCrossfadeSec(0.8)
-    setGradientEdge('bottom'); setGradientIntensity(50); setAutoBroll(false); setBrollPoolKey('')
-    setBrollDensity('sparse'); setBrollPoolSize(18); setBrollMode('full'); setBrollShuffle(true)
-    setSkipUploaded(true); setDownloadDelaySec(3); setSourceCount(3); setSourceOrder('Latest')
-    setSourcePickerOpen(false); setAssetPickerOpen(false); setView('setup')
+  const chooseAssetFiles = async (files: FileList | null): Promise<void> => {
+    if (!files) return
+    const paths = Array.from(files).map((file) => window.api.pathForFile(file)).filter(Boolean)
+    if (!paths.length) return
+    const requestId = draftState.id
+    try {
+      const imported = await window.api.assets.import(paths, { sourceId: source?.id, channel: source?.name || sourceLabel || 'Unsorted', channelHandle: source?.handle, channelAvatar: source?.avatar })
+      if (activeDraftId.current !== requestId) return
+      setAssets((current) => [...new Set([...current, ...imported.filter((asset) => !asset.missing).map((asset) => asset.canonicalPath)])])
+      setLibraryAssets(await window.api.assets.list())
+    } catch (error) { if (activeDraftId.current === requestId) setSetupError(error instanceof Error ? error.message : String(error)) }
   }
   const goReview = async (): Promise<void> => {
     setSetupError(''); setPreflight(null); setStage(4)
-    try { setPreflight(await preflightAutomation(draft)) }
+    const requestId = draftState.id
+    try { const result = await preflightAutomation(draft); if (activeDraftId.current === requestId) setPreflight(result) }
     catch (error) { setSetupError(error instanceof Error ? error.message : String(error)) }
   }
   const start = async (): Promise<void> => {
@@ -287,21 +322,12 @@ export function Profiles(): JSX.Element {
     catch (error) { setSetupError(error instanceof Error ? error.message : String(error)) }
   }
   const duplicate = (job: AutomationJob): void => {
-    setGoal(job.goal); setSourceKind(job.config.sourceKind); setSourceId(job.config.sourceId); setSourceUrl(job.config.sourceUrl)
-    setLocalMediaPaths(job.config.localMediaPaths); setSourceCount(job.config.sourceCount); setSourceOrder(job.config.sourceOrder)
-    setSelectedVideoIds(job.config.selectedVideoIds); setAssets(job.config.assetPaths); setStyle(job.config.style)
-    setCaptionPreset(job.config.captionPreset); setAspectRatio(job.config.aspectRatios[0] ?? '16:9'); setCaptions(job.config.rules.captions)
-    setCaptionFont(job.config.captionFont ?? 'Montserrat'); setCaptionAnim(job.config.captionAnim ?? 'Pop-in')
-    setCaptionLines(job.config.captionLines ?? 1); setCaptionPosition(job.config.captionPosition ?? 'bottom'); setCaptionPace(job.config.captionPace ?? 'auto')
-    setCaptionHighlightColor(job.config.captionHighlightColor ?? '#f5b323'); setCaptionBoxColor(job.config.captionBoxColor ?? '#111111'); setCaptionWordsPerPage(job.config.captionWordsPerPage ?? 2)
-    setImageMode(job.config.imageMode ?? 'pool'); setCrossfadeSec(job.config.crossfadeSec ?? 0.8)
-    const overlay = job.config.overlay
-    setGradientEdge(overlay?.bottom ? 'bottom' : overlay?.top ? 'top' : overlay?.left ? 'left' : overlay?.right ? 'right' : 'none')
-    setGradientIntensity(overlay?.intensity ?? 50)
-    setBrollPoolKey(job.config.brollPoolKey ?? ''); setBrollDensity(job.config.brollDensity ?? 'sparse'); setBrollPoolSize(job.config.brollPoolSize ?? 18); setBrollMode(job.config.brollMode ?? 'full'); setBrollShuffle(job.config.brollShuffle !== false)
-    setAutoBroll(job.config.rules.autoBroll); setContinueOnError(job.config.rules.continueOnError); setSkipDownloaded(job.config.rules.skipDownloaded)
-    setSkipUploaded(job.config.rules.skipUploaded !== false); setDownloadDelaySec(job.config.rules.downloadDelaySec ?? 3)
-    setRetries(job.config.rules.maxRetries); setReserveGb(job.config.rules.minimumFreeSpaceGb); setStage(0); setPreflight(null); setSetupError(''); setView('setup')
+    dispatchDraft({ type: 'duplicate', job })
+    setAvailableVideos([]); setSourceModalOpen(false); setAssetModalOpen(false); setStage(0); setPreflight(null); setSetupError(''); setView('setup')
+  }
+  const newAutomation = (): void => {
+    dispatchDraft({ type: 'new', settings })
+    setAvailableVideos([]); setPreflight(null); setExpanded(null); setStarting(false); setSourceModalOpen(false); setAssetModalOpen(false); setSourceLoadError(''); setSetupError(''); setStage(0); setView('setup')
   }
 
   const activeJob = automationJobs.find((job) => job.status === 'running' || job.status === 'pausing')
@@ -309,7 +335,7 @@ export function Profiles(): JSX.Element {
   return <ScreenPad>
     <div className="automation-header">
       <div style={{ flex: 1 }}><div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '1px', color: 'var(--accent)', marginBottom: 6 }}>AUTOMATION STUDIO</div><h1 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 27, fontWeight: 600, color: 'var(--text-bright)' }}>Choose an outcome. Come back to finished work.</h1><div style={{ color: 'var(--text-dim)', fontSize: 12.5, marginTop: 7, maxWidth: 760, lineHeight: 1.5 }}>Configure one production goal. A persistent local supervisor advances the workflow, saves checkpoints, retries safe failures, and pauses only when your input is needed.</div></div>
-      <div role="tablist" aria-label="Automation views" className="automation-view-tabs"><button type="button" role="tab" aria-selected={view === 'setup'} onClick={resetSetup} className={view === 'setup' ? 'active' : ''}>New automation</button><button type="button" role="tab" aria-selected={view === 'jobs'} onClick={() => setView('jobs')} className={view === 'jobs' ? 'active' : ''}>Jobs {automationJobs.length ? `(${automationJobs.length})` : ''}</button></div>
+      <div role="tablist" aria-label="Automation views" className="automation-view-tabs"><button type="button" role="tab" aria-selected={view === 'setup'} onClick={() => setView('setup')} className={view === 'setup' ? 'active' : ''}>New automation</button><button type="button" role="tab" aria-selected={view === 'jobs'} onClick={() => setView('jobs')} className={view === 'jobs' ? 'active' : ''}>Jobs {automationJobs.length ? `(${automationJobs.length})` : ''}</button></div>
     </div>
     <Banner kind="info" style={{ marginBottom: 16, whiteSpace: 'normal' }}><b style={{ color: 'var(--text-bright)' }}>Local background execution:</b> you can leave this tab, and with tray mode enabled you can close the window. The app process and computer must remain running. Sleep pauses work; shutdown stops it until the next app start.</Banner>
 
@@ -320,39 +346,44 @@ export function Profiles(): JSX.Element {
 
       {stage === 1 && <>
         <Panel><SectionLabel>Choose source and content</SectionLabel>
-          <div role="radiogroup" aria-label="Content source type" className="automation-source-types">{([['saved-source','Saved source'],['youtube-url','YouTube URL'],['local-files','Local files']] as const).map(([kind, label]) => <button type="button" role="radio" aria-checked={sourceKind === kind} key={kind} onClick={() => { setSourceKind(kind); setSelectedVideoIds([]); setSetupError('') }} className={sourceKind === kind ? 'active' : ''}>{label}</button>)}</div>
+          <div role="radiogroup" aria-label="Content source type" className="automation-source-types">{([['saved-source','Saved source'],['youtube-url','YouTube URL'],['local-files','Local files']] as const).map(([kind, label]) => <button type="button" role="radio" aria-checked={sourceKind === kind} key={kind} onClick={() => { dispatchDraft({ type: 'patch-config', patch: { sourceKind: kind, sourceId: kind === 'saved-source' ? sourceId : '', sourceUrl: '', selectedVideoIds: [], localMediaPaths: [] } }); setPreflight(null); setSetupError('') }} className={sourceKind === kind ? 'active' : ''}>{label}</button>)}</div>
           {sourceKind === 'saved-source' && (sourceChannels.length === 0
             ? <EmptyState title="No saved sources yet" body="Add a source in Sources, paste a YouTube link here, or choose local media. You are not blocked on a separate setup screen." action={<Btn variant="soft" onClick={() => setActive('sources')}>Open Sources</Btn>} />
-            : <div className="automation-source-grid"><Field label="Saved source"><button type="button" onClick={() => setSourcePickerOpen(true)} style={{ ...input, textAlign: 'left', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ flex: 1 }}>{source?.name || source?.handle || 'Choose a source'}</span><span style={{ color: 'var(--accent)' }}>Browse cards…</span></button></Field><SourceRuleFields count={sourceCount} setCount={setSourceCount} order={sourceOrder} setOrder={setSourceOrder} /></div>)}
+            : <div className="automation-source-grid"><div><span style={{ display: 'block', color: 'var(--text-dim)', fontSize: 10.5, marginBottom: 6 }}>Saved source</span>{source ? <div className="automation-selected-source">{source.avatar ? <img src={mediaSrc(source.avatar)} alt="" /> : <i aria-hidden="true">{(source.name || source.handle).slice(0, 2).toUpperCase()}</i>}<div><strong>{source.name || source.handle}</strong><span>{source.handle}</span><small>{source.videoCount || 0} cached videos · {source.linkedMyChannelId ? 'upload check linked' : 'upload check unavailable'}</small></div><button ref={sourceBrowseRef} type="button" onClick={() => setSourceModalOpen(true)}>Change source</button></div> : <button ref={sourceBrowseRef} type="button" className="automation-browse-source" onClick={() => setSourceModalOpen(true)}>Browse saved sources</button>}</div><SourceRuleFields count={sourceCount} setCount={setSourceCount} order={sourceOrder} setOrder={setSourceOrder} /></div>)}
           {sourceKind === 'youtube-url' && <div className="automation-source-grid"><Field label="Channel, playlist, or video URL" hint="HTTPS YouTube links only. The worker reads the source when the job starts."><input type="url" aria-invalid={sourceUrl.trim() ? !validYoutubeUrl(sourceUrl) : undefined} value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder="https://www.youtube.com/watch?v=…" style={{ ...input, borderColor: sourceUrl.trim() && !validYoutubeUrl(sourceUrl) ? 'var(--err)' : undefined }} />{sourceUrl.trim() && !validYoutubeUrl(sourceUrl) && <span role="alert" style={{ display: 'block', color: 'var(--err-2)', fontSize: 9.5, marginTop: 5 }}>Enter a valid HTTPS youtube.com or youtu.be link.</span>}</Field><SourceRuleFields count={sourceCount} setCount={setSourceCount} order={sourceOrder} setOrder={setSourceOrder} /></div>}
-          {sourceKind === 'local-files' && <div style={{ marginTop: 13 }}><label className="automation-file-picker"><input type="file" accept="audio/*,video/*,.mkv,.webm" multiple onChange={(event) => { chooseFiles(event.target.files, setLocalMediaPaths); event.currentTarget.value = '' }} />＋ Choose local audio or video files</label><div aria-live="polite" style={{ marginTop: 9, color: localMediaPaths.length ? 'var(--ok-2)' : 'var(--text-faint)', fontSize: 10.5 }}>{localMediaPaths.length ? `${localMediaPaths.length} local file${localMediaPaths.length === 1 ? '' : 's'} selected` : 'MP3, WAV, M4A, MP4, MOV, MKV, and WebM are supported'}</div>{localMediaPaths.map((path) => <div key={path} className="me-ellipsis" title={path} style={{ color: 'var(--text-dim)', fontSize: 10, marginTop: 5 }}>{path}</div>)}</div>}
+          {sourceKind === 'local-files' && <div style={{ marginTop: 13 }}><label className="automation-file-picker"><input type="file" accept="audio/*,video/*,.mkv,.webm" multiple onChange={(event) => chooseFiles(event.target.files, setLocalMediaPaths)} />＋ Choose local audio or video files</label><div aria-live="polite" style={{ marginTop: 9, color: localMediaPaths.length ? 'var(--ok-2)' : 'var(--text-faint)', fontSize: 10.5 }}>{localMediaPaths.length ? `${localMediaPaths.length} local file${localMediaPaths.length === 1 ? '' : 's'} selected` : 'MP3, WAV, M4A, MP4, MOV, MKV, and WebM are supported'}</div>{localMediaPaths.map((path) => <div key={path} className="me-ellipsis" title={path} style={{ color: 'var(--text-dim)', fontSize: 10, marginTop: 5 }}>{path}</div>)}</div>}
           <div className="automation-rule-summary">{sourceKind === 'local-files' ? `The worker imports ${localMediaPaths.length || 'your selected'} file${localMediaPaths.length === 1 ? '' : 's'} and preserves the originals.` : `Process ${sourceCount} ${sourceOrder.toLowerCase()} video${sourceCount === 1 ? '' : 's'}${minDuration ? ` longer than ${Math.round(minDuration / 60)} minutes` : ''}; reuse valid downloads.`}</div>
         </Panel>
-        {sourceKind === 'saved-source' && availableVideos.length > 0 && <Panel style={{ marginTop: 10 }}><div style={{ display: 'flex', alignItems: 'center' }}><SectionLabel style={{ flex: 1 }}>Pick individual videos (optional)</SectionLabel>{selectedVideoIds.length > 0 && <button type="button" onClick={() => setSelectedVideoIds([])} className="automation-link-button">Use automatic rules</button>}</div><div style={{ color: 'var(--text-dim)', fontSize: 10.5, marginTop: 6 }}>Select exact cached videos, or leave all unchecked to use count, order, and duration rules.</div><div className="automation-video-grid">{availableVideos.slice(0, 20).map((video) => <label key={video.id} className={selectedVideoIds.includes(video.id) ? 'selected' : ''}><input type="checkbox" checked={selectedVideoIds.includes(video.id)} onChange={(event) => setSelectedVideoIds((current) => event.target.checked ? [...current, video.id] : current.filter((id) => id !== video.id))} /><span className="me-ellipsis">{video.title}</span><small>{Math.max(1, Math.round(video.durationSec / 60))}m</small></label>)}</div></Panel>}
+        {sourceKind === 'saved-source' && availableVideos.length > 0 && <Panel style={{ marginTop: 10 }}><div style={{ display: 'flex', alignItems: 'center' }}><SectionLabel style={{ flex: 1 }}>Pick individual videos (optional)</SectionLabel>{selectedVideoIds.length > 0 && <button type="button" onClick={() => setSelectedVideoIds([])} className="automation-link-button">Use automatic rules</button>}</div><div style={{ color: 'var(--text-dim)', fontSize: 10.5, marginTop: 6 }}>Select exact cached videos, or leave all unchecked to use count, order, and duration rules. Known uploaded selections are kept explicit and shown as skipped; automatic replacement remains opt-in.</div><div className="automation-video-grid">{availableVideos.slice(0, 20).map((video) => { const uploaded = config.rules.skipUploaded && workItems.some((item) => item.videoId === video.id && item.uploaded); return <label key={video.id} className={`${selectedVideoIds.includes(video.id) ? 'selected' : ''} ${uploaded ? 'uploaded' : ''}`}><input type="checkbox" checked={selectedVideoIds.includes(video.id)} onChange={(event) => setSelectedVideoIds((current) => event.target.checked ? [...current, video.id] : current.filter((id) => id !== video.id))} /><span className="me-ellipsis">{video.title}</span><small>{uploaded ? 'Uploaded · will skip' : `${Math.max(1, Math.round(video.durationSec / 60))}m`}</small></label> })}</div>{selectedVideoIds.length > 0 && <div className="automation-help">Selected {selectedVideoIds.length}; known eligible {selectedVideoIds.filter((id) => !(config.rules.skipUploaded && workItems.some((item) => item.videoId === id && item.uploaded))).length}. The final upload refresh may identify additional skips.</div>}</Panel>}
       </>}
 
-      {stage === 2 && <div className="automation-two-column">
-        <Panel><SectionLabel>Visual assets</SectionLabel><div className="automation-help">A new automation starts empty. Add new images or open the channel-grouped thumbnail library.</div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><label className="automation-file-picker"><input type="file" accept="image/*" multiple onChange={(event) => { chooseFiles(event.target.files, setAssets); event.currentTarget.value = '' }} />＋ Add new assets</label><Btn variant="soft" onClick={() => setAssetPickerOpen(true)} disabled={!libraryAssets.length}>Browse previous assets</Btn></div><SelectedAssetStrip paths={assets} onRemove={(path) => setAssets((current) => current.filter((candidate) => candidate !== path))} onClear={() => setAssets([])} /><ToggleRow label="Use automatic B-roll" hint="Choose a warmed saved pool below or allow configured stock providers." on={autoBroll} onToggle={() => setAutoBroll((value) => !value)} />{autoBroll && <div className="automation-config-grid"><Field label="Saved B-roll pool"><select value={brollPoolKey} onChange={(event) => setBrollPoolKey(event.target.value)} style={input}><option value="">All pools / live stock</option>{niches.map((niche) => <option key={niche.id} value={`niche-${niche.id}`}>{niche.name}</option>)}</select></Field><Field label="Clip order"><select value={brollShuffle ? 'shuffle' : 'ranked'} onChange={(event) => setBrollShuffle(event.target.value === 'shuffle')} style={input}><option value="shuffle">Shuffle per video</option><option value="ranked">Same relevance order</option></select></Field><Field label="Density"><select value={brollDensity} onChange={(event) => setBrollDensity(event.target.value as typeof brollDensity)} style={input}><option value="full">Full</option><option value="sparse">Sparse</option><option value="keywords">Keywords</option></select></Field><Field label="Pool size"><input type="number" min={1} max={200} value={brollPoolSize} onChange={(event) => setBrollPoolSize(Math.max(1, Math.min(200, Number(event.target.value) || 18)))} style={input} /></Field><Field label="B-roll mode"><select value={brollMode} onChange={(event) => setBrollMode(event.target.value as typeof brollMode)} style={input}><option value="full">Replace visual track</option><option value="overlay">Overlay mode</option></select></Field></div>}</Panel>
-        <Panel><SectionLabel>Editing and export</SectionLabel><div className="automation-style-grid">{STYLES.map((candidate) => <button type="button" key={candidate} onClick={() => setStyle(candidate)} className={style === candidate ? 'active' : ''}>{candidate}</button>)}</div><div className="automation-config-grid"><Field label="Subtitle preset"><select value={captionPreset} onChange={(event) => setCaptionPreset(event.target.value)} style={input}><option>Hormozi</option><option>Submagic</option><option>Clean</option><option>Minimal</option></select></Field><Field label="Caption font"><select value={captionFont} onChange={(event) => setCaptionFont(event.target.value)} style={input}><option>Montserrat</option><option>Anton</option><option>Hanken Grotesk</option><option>Space Grotesk</option></select></Field><Field label="Caption animation"><select value={captionAnim} onChange={(event) => setCaptionAnim(event.target.value)} style={input}><option>Pop-in</option><option>Fade</option><option>None</option></select></Field><Field label="Caption position"><select value={captionPosition} onChange={(event) => setCaptionPosition(event.target.value as typeof captionPosition)} style={input}><option value="top">Top</option><option value="middle">Middle</option><option value="bottom">Bottom</option></select></Field><Field label="Caption lines"><select value={captionLines} onChange={(event) => setCaptionLines(Number(event.target.value) as 1 | 2 | 3)} style={input}><option value={1}>1 line</option><option value={2}>2 lines</option><option value={3}>3 lines</option></select></Field><Field label="Caption pace"><select value={captionPace} onChange={(event) => setCaptionPace(event.target.value as typeof captionPace)} style={input}><option value="auto">Automatic</option><option value="word">Word</option><option value="phrase">Phrase</option></select></Field><Field label="Highlight colour"><input type="color" value={captionHighlightColor} onChange={(event) => setCaptionHighlightColor(event.target.value)} style={{ ...input, height: 39, padding: 4 }} /></Field><Field label="Box colour"><input type="color" value={captionBoxColor} onChange={(event) => setCaptionBoxColor(event.target.value)} style={{ ...input, height: 39, padding: 4 }} /></Field><Field label="Words per caption"><select value={captionWordsPerPage} onChange={(event) => setCaptionWordsPerPage(Number(event.target.value) as 1 | 2 | 3)} style={input}><option value={1}>1</option><option value={2}>2</option><option value={3}>3</option></select></Field><Field label="Image order"><select value={imageMode} onChange={(event) => setImageMode(event.target.value as typeof imageMode)} style={input}><option value="pool">Shuffle</option><option value="sequence">In order</option></select></Field><Field label="Crossfade seconds"><input type="number" min={0} max={3} step={0.1} value={crossfadeSec} onChange={(event) => setCrossfadeSec(Math.max(0, Math.min(3, Number(event.target.value) || 0)))} style={input} /></Field><Field label="Legibility gradient"><select value={gradientEdge} onChange={(event) => setGradientEdge(event.target.value as typeof gradientEdge)} style={input}><option value="none">Off</option><option value="bottom">Bottom</option><option value="top">Top</option><option value="left">Left</option><option value="right">Right</option></select></Field>{gradientEdge !== 'none' && <Field label={`Gradient intensity · ${gradientIntensity}%`}><input type="range" min={0} max={100} value={gradientIntensity} onChange={(event) => setGradientIntensity(Number(event.target.value))} style={{ width: '100%' }} /></Field>}<Field label="Export aspect ratio"><select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as AspectRatio)} style={input}><option value="16:9">16:9 · Landscape</option><option value="9:16">9:16 · Vertical</option><option value="1:1">1:1 · Square</option></select></Field></div><ToggleRow label="Transcribe and add captions" hint={settings.transcription.apiKey.trim() ? 'Uses the configured online transcription service; timed words are stored locally.' : 'Needs a Groq key in Settings. Turn this off to continue without captions.'} on={captions} onToggle={() => setCaptions((value) => !value)} /></Panel>
+      {stage === 2 && <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div className="automation-two-column"><Panel><SectionLabel>Visual assets</SectionLabel><div className="automation-help">New images are content-hashed into the shared library before they are copied into a project.</div><label className="automation-file-picker"><input key={`asset-input-${draftState.id}`} type="file" accept="image/*" multiple onChange={(event) => void chooseAssetFiles(event.target.files)} />＋ Add images, logos, or visual assets</label><div className="automation-asset-actions"><span>{assets.length ? `${assets.length} asset${assets.length === 1 ? '' : 's'} selected` : 'No assets selected'}</span><button ref={assetBrowseRef} type="button" onClick={() => setAssetModalOpen(true)}>Browse previous assets</button>{assets.length > 0 && <button type="button" onClick={() => dispatchDraft({ type: 'clear-assets' })}>Clear</button>}</div></Panel>
+        <Panel><SectionLabel>Video style and export</SectionLabel><div className="automation-style-grid">{STYLES.map((candidate) => <button type="button" key={candidate} onClick={() => setStyle(candidate)} className={style === candidate ? 'active' : ''}>{candidate}</button>)}</div><div className="automation-config-grid"><Field label="Aspect ratio"><select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as AspectRatio)} style={input}><option value="16:9">16:9 · Landscape</option><option value="9:16">9:16 · Vertical</option><option value="1:1">1:1 · Square</option></select></Field><Field label="Image order"><select value={config.styleConfig.imageMode} onChange={(event) => updateStyle('imageMode', event.target.value as 'sequence' | 'pool')} style={input}><option value="sequence">Sequence</option><option value="pool">Seeded pool</option></select></Field><Field label="Crossfade seconds"><input type="number" min={0} max={5} step={0.1} value={config.styleConfig.crossfadeSec} onChange={(event) => updateStyle('crossfadeSec', Number(event.target.value))} style={input} /></Field><Field label="Motion"><select value={config.styleConfig.motionPreset} onChange={(event) => updateStyle('motionPreset', event.target.value as 'off' | 'subtle' | 'cinematic')} style={input}><option value="off">Off</option><option value="subtle">Subtle</option><option value="cinematic">Cinematic</option></select></Field><Field label="Gradient edge"><select value={config.styleConfig.gradientEdge} onChange={(event) => updateStyle('gradientEdge', event.target.value as typeof config.styleConfig.gradientEdge)} style={input}><option value="none">None</option><option value="bottom">Bottom</option><option value="top">Top</option><option value="left">Left</option><option value="right">Right</option></select></Field><Field label="Gradient intensity"><input type="number" min={0} max={100} value={config.styleConfig.gradientIntensity} onChange={(event) => updateStyle('gradientIntensity', Number(event.target.value))} style={input} /></Field></div></Panel></div>
+        <div className="automation-two-column"><Panel><SectionLabel>Captions</SectionLabel><ToggleRow label="Transcribe and add captions" hint={settings.transcription.apiKey.trim() ? 'Timed words are stored locally.' : 'Needs a Groq key in Settings. Turn this off to continue without captions.'} on={captions} onToggle={() => setCaptions((value) => !value)} /><div className="automation-config-grid"><Field label="Preset"><select value={captionPreset} onChange={(event) => setCaptionPreset(event.target.value)} style={input}><option>Hormozi</option><option>Submagic</option><option>Clean</option><option>Minimal</option></select></Field><Field label="Font"><select value={config.styleConfig.captionFont} onChange={(event) => updateStyle('captionFont', event.target.value)} style={input}><option>Montserrat</option><option>Anton</option><option>Oswald</option><option>Bebas Neue</option><option>Archivo Black</option></select></Field><Field label="Animation"><select value={config.styleConfig.captionAnimation} onChange={(event) => updateStyle('captionAnimation', event.target.value)} style={input}><option>Pop-in</option><option>Fade</option><option>None</option></select></Field><Field label="Position"><select value={config.styleConfig.captionPosition} onChange={(event) => updateStyle('captionPosition', event.target.value as 'top' | 'middle' | 'bottom')} style={input}><option value="top">Top</option><option value="middle">Middle</option><option value="bottom">Bottom</option></select></Field><Field label="Vertical offset %" hint="Optional fine placement; blank uses the selected position."><input type="number" min={4} max={96} value={config.styleConfig.captionOffsetY ?? ''} onChange={(event) => updateStyle('captionOffsetY', event.target.value === '' ? undefined : Number(event.target.value))} style={input} /></Field><Field label="Lines"><select value={config.styleConfig.captionLines} onChange={(event) => updateStyle('captionLines', Number(event.target.value) as 1 | 2 | 3)} style={input}><option value={1}>1</option><option value={2}>2</option><option value={3}>3</option></select></Field><Field label="Pace"><select value={config.styleConfig.captionPace} onChange={(event) => updateStyle('captionPace', event.target.value as 'auto' | 'word' | 'phrase')} style={input}><option value="auto">Auto</option><option value="word">Word</option><option value="phrase">Phrase</option></select></Field><Field label="Words per caption"><select value={config.styleConfig.wordsPerCaption} onChange={(event) => updateStyle('wordsPerCaption', Number(event.target.value) as 1 | 2 | 3)} style={input}><option value={1}>1</option><option value={2}>2</option><option value={3}>3</option></select></Field><Field label="Highlight colour"><input type="color" value={config.styleConfig.highlightColor} onChange={(event) => updateStyle('highlightColor', event.target.value)} style={input} /></Field><Field label="Box colour"><input type="color" value={config.styleConfig.boxColor} onChange={(event) => updateStyle('boxColor', event.target.value)} style={input} /></Field></div></Panel>
+        <Panel><SectionLabel>Saved B-roll pool</SectionLabel><ToggleRow label="Use automatic B-roll" hint="Selected pools are resolved consistently in preflight, preview, validation, and render." on={autoBroll} onToggle={() => setAutoBroll((value) => !value)} /><div className="automation-config-grid"><Field label="Mode"><select disabled={!autoBroll} value={config.styleConfig.brollMode} onChange={(event) => updateStyle('brollMode', event.target.value as 'off' | 'full' | 'overlay')} style={input}><option value="full">Full background</option><option value="overlay">Overlay</option><option value="off">Off</option></select></Field><Field label="Density"><select disabled={!autoBroll} value={config.styleConfig.brollDensity} onChange={(event) => updateStyle('brollDensity', event.target.value as 'full' | 'sparse' | 'keywords')} style={input}><option value="full">Full</option><option value="sparse">Sparse</option><option value="keywords">Keywords</option></select></Field><Field label="Pool size"><input disabled={!autoBroll} type="number" min={1} max={200} value={config.styleConfig.brollPoolSize} onChange={(event) => updateStyle('brollPoolSize', Number(event.target.value))} style={input} /></Field><Field label="Saved pool"><select disabled={!autoBroll} value={config.styleConfig.brollPoolKey || ''} onChange={(event) => updateStyle('brollPoolKey', event.target.value || undefined)} style={input}><option value="">Source-linked / global</option>{niches.map((niche) => { const health = poolHealth.find((row) => row.nicheId === niche.id); return <option key={niche.id} value={`niche-${niche.id}`} disabled={!health?.clips}>{niche.name} · {health?.clips || 0} clips · {niche.orientation}</option> })}</select></Field><Field label="Fallback"><select disabled={!autoBroll} value={config.styleConfig.brollFallbackPolicy} onChange={(event) => updateStyle('brollFallbackPolicy', event.target.value as typeof config.styleConfig.brollFallbackPolicy)} style={input}><option value="selected-only">Selected pool only</option><option value="prefer-selected">Prefer selected, then live stock</option><option value="all-sources">All saved pools and live stock</option></select></Field><Field label="Ordering"><select disabled={!autoBroll} value={config.styleConfig.brollShufflePolicy} onChange={(event) => updateStyle('brollShufflePolicy', event.target.value as typeof config.styleConfig.brollShufflePolicy)} style={input}><option value="per-video">Shuffle per video</option><option value="ranked">Ranked order</option></select></Field></div>{config.styleConfig.brollPoolKey && (() => { const id = config.styleConfig.brollPoolKey.replace(/^niche-/, ''); const niche = niches.find((row) => row.id === id); const health = poolHealth.find((row) => row.nicheId === id); return <div className={`automation-pool-status ${health?.clips ? 'ready' : 'empty'}`}>{niche?.name || 'Selected pool'} · {health?.clips || 0} clips · {health?.updatedAt ? `warmed ${new Date(health.updatedAt).toLocaleDateString()}` : 'never warmed'} · {health?.clips ? 'ready' : 'empty'}</div> })()}</Panel></div>
       </div>}
 
-      {stage === 3 && <Panel><SectionLabel>How should the supervisor behave?</SectionLabel><div className="automation-two-column rules"><div><ToggleRow label="Continue when one item fails" hint="Isolate failed items while the rest of the batch keeps moving." on={continueOnError} onToggle={() => setContinueOnError((value) => !value)} /><ToggleRow label="Reuse completed downloads" hint="Validate and reuse an existing local download instead of repeating it." on={skipDownloaded} onToggle={() => setSkipDownloaded((value) => !value)} />{sourceKind === 'saved-source' && <ToggleRow label="Skip videos already uploaded" hint="Uses exact IDs and high-confidence title matches from the linked My Channel, then keeps scanning until the requested count is filled." on={skipUploaded} onToggle={() => setSkipUploaded((value) => !value)} />}<ToggleRow label="Desktop completion notification" hint="Receive completion or action-needed messages while the window is hidden." on={desktopNotify} onToggle={() => setDesktopNotify((value) => !value)} /><ToggleRow label="Send configured webhook" hint={settings.background.webhook ? 'Send a structured completion summary to the configured endpoint.' : 'No webhook is configured in Settings.'} on={webhookNotify} onToggle={() => setWebhookNotify((value) => !value)} disabled={!settings.background.webhook} /></div><div><Field label="Automatic retry limit"><input type="number" min={0} max={8} value={retries} onChange={(event) => setRetries(Math.max(0, Math.min(8, Number(event.target.value) || 0)))} style={input} /></Field>{sourceKind !== 'local-files' && <Field label="Safe delay before each download (seconds)"><input type="number" min={0} max={30} value={downloadDelaySec} onChange={(event) => setDownloadDelaySec(Math.max(0, Math.min(30, Number(event.target.value) || 0)))} style={input} /></Field>}{sourceKind !== 'local-files' && <Field label="Minimum duration (minutes)"><input type="number" min={0} max={600} value={Math.round(minDuration / 60)} onChange={(event) => setMinDuration(Math.max(0, Number(event.target.value) * 60 || 0))} style={input} /></Field>}<Field label="Keep free-space reserve (GB)"><input type="number" min={1} max={100} value={reserveGb} onChange={(event) => setReserveGb(Math.max(1, Number(event.target.value) || 1))} style={input} /></Field></div></div><Section label="Advanced automation" defaultOpen={false}><div className="automation-help">Download 403/429/network failures use bounded retries with increasing delays. Explicit login, cookie, and credential failures stop immediately with an actionable message. Silence removal, filler-word reduction, scheduling, multi-output variants, and post-job sleep/shutdown remain disabled because the current media engine does not expose them safely.</div></Section></Panel>}
+      {stage === 3 && <Panel><SectionLabel>How should the supervisor behave?</SectionLabel><div className="automation-two-column rules"><div><ToggleRow label="Continue when one item fails" hint="Mark it failed and continue the remaining batch." on={continueOnError} onToggle={() => setContinueOnError((value) => !value)} /><ToggleRow label="Reuse completed downloads" hint="Only validated finished files bypass a network request." on={skipDownloaded} onToggle={() => setSkipDownloaded((value) => !value)} /><ToggleRow label="Skip already-uploaded videos" hint="Exact IDs and high-confidence title matches are skipped; ambiguous matches stay eligible." on={config.rules.skipUploaded} onToggle={() => updateRule('skipUploaded', !config.rules.skipUploaded)} /><ToggleRow label="Fill skipped manual selections" hint="Off by default; when enabled, unrelated eligible candidates may fill explicitly selected uploaded videos." on={config.rules.fillSkippedSelections} onToggle={() => updateRule('fillSkippedSelections', !config.rules.fillSkippedSelections)} /><ToggleRow label="Allow stale upload cache" hint="Continue with a warning if refreshing the linked upload list fails." on={config.rules.allowStaleUploadCache} onToggle={() => updateRule('allowStaleUploadCache', !config.rules.allowStaleUploadCache)} /><ToggleRow label="Desktop completion notification" hint="Receive completion or action-needed messages while the window is hidden." on={desktopNotify} onToggle={() => setDesktopNotify((value) => !value)} /><ToggleRow label="Send configured webhook" hint={settings.background.webhook ? 'Send a structured completion summary to the configured endpoint.' : 'No webhook is configured in Settings.'} on={webhookNotify} onToggle={() => setWebhookNotify((value) => !value)} disabled={!settings.background.webhook} /></div><div className="automation-rule-fields"><Field label="Additional retry attempts"><input type="number" min={0} max={8} value={retries} onChange={(event) => setRetries(Number(event.target.value))} style={input} /></Field>{sourceKind !== 'local-files' && <Field label="Minimum duration (minutes)"><input type="number" min={0} max={600} value={minDuration / 60} onChange={(event) => setMinDuration(Number(event.target.value) * 60)} style={input} /></Field>}<Field label="Download delay (seconds)"><input type="number" min={0} max={600} step={0.5} value={config.rules.downloadDelaySec} onChange={(event) => updateRule('downloadDelaySec', Number(event.target.value))} style={input} /></Field><Field label="Retry base delay (seconds)"><input type="number" min={1} max={120} value={config.rules.retryBaseDelaySec} onChange={(event) => updateRule('retryBaseDelaySec', Number(event.target.value))} style={input} /></Field><Field label="Retry maximum delay (seconds)"><input type="number" min={1} max={300} value={config.rules.retryMaxDelaySec} onChange={(event) => updateRule('retryMaxDelaySec', Number(event.target.value))} style={input} /></Field><Field label="Upload cache freshness (minutes)"><input type="number" min={5} max={43200} value={config.rules.uploadFreshnessMinutes} onChange={(event) => updateRule('uploadFreshnessMinutes', Number(event.target.value))} style={input} /></Field><Field label="Keep free-space reserve (GB)"><input type="number" min={1} max={100} value={reserveGb} onChange={(event) => setReserveGb(Number(event.target.value))} style={input} /></Field></div></div><Section label="Advanced automation" defaultOpen={false}><div className="automation-help">Item retries cover download, transcription, and render work. Step retries cover source discovery and service-wide failures. Completed item checkpoints are not rerun.</div></Section></Panel>}
 
-      {stage === 4 && <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}><Panel><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><SectionLabel style={{ flex: 1 }}>Generated workflow</SectionLabel><span style={{ fontSize: 9.5, color: 'var(--ok-2)', fontFamily: 'var(--font-mono)' }}>AUTO-BUILT FROM YOUR GOAL</span></div><div style={{ marginTop: 12 }}><WorkflowPreview draft={draft} /></div></Panel><div className="automation-review-grid"><Panel><SectionLabel>Ready-to-run summary</SectionLabel><div className="automation-summary"><span>Final goal</span><b>{formatGoal(goal)}</b><span>Source & items</span><b>{sourceLabel} · {sourceKind === 'local-files' ? localMediaPaths.length : selectedVideoIds.length || sourceCount} item(s)</b><span>Editing preset</span><b>{style} · {captions ? `${captionPreset} captions` : 'captions off'} · {aspectRatio} · {assets.length} assets{autoBroll ? ' + Auto B-roll' : ''}</b><span>Retry / failure</span><b>{retries} automatic retries · {continueOnError ? 'continue other items' : 'pause the batch'}</b><span>Execution</span><b>Local background worker · {settings.encoder === 'cpu' ? 'CPU' : settings.encoder.toUpperCase()} · {settings.quality}</b><span>Notifications</span><b>{[desktopNotify && 'desktop', webhookNotify && 'webhook'].filter(Boolean).join(' + ') || 'in-app only'}</b></div></Panel><Panel><SectionLabel>Preflight</SectionLabel>{!preflight ? <div aria-live="polite" style={{ color: 'var(--text-dim)', fontSize: 11, marginTop: 12 }}>Checking configuration…</div> : <><div style={{ marginTop: 11, color: preflight.ok ? 'var(--ok-2)' : 'var(--err-2)', fontWeight: 700, fontSize: 12 }}>{preflight.ok ? '✓ Ready to run unattended' : 'Action required before start'}</div><div style={{ marginTop: 10, color: 'var(--text-dim)', fontSize: 10.5, lineHeight: 1.55 }}>~{preflight.estimatedStorageGb.toFixed(1)} GB · ~{preflight.estimatedMinutes} min<br />{preflight.appMessage}<br />{preflight.powerMessage}</div>{preflight.blockers.map((message) => <div key={message} style={{ color: 'var(--err-2)', fontSize: 10.5, marginTop: 7 }}>• {message}</div>)}{preflight.warnings.map((message) => <div key={message} style={{ color: 'var(--warn)', fontSize: 10.5, marginTop: 7 }}>• {message}</div>)}</>}</Panel></div></div>}
+      {stage === 4 && <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}><Panel><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><SectionLabel style={{ flex: 1 }}>Generated workflow</SectionLabel><span style={{ fontSize: 9.5, color: 'var(--ok-2)', fontFamily: 'var(--font-mono)' }}>EFFECTIVE CONTRACT</span></div><div style={{ marginTop: 12 }}><WorkflowPreview draft={draft} /></div></Panel><div className="automation-review-grid"><Panel><SectionLabel>Ready-to-run summary</SectionLabel><div className="automation-summary"><span>Final goal</span><b>{formatGoal(goal)}</b><span>Source & items</span><b>{sourceLabel} · {sourceKind === 'local-files' ? localMediaPaths.length : selectedVideoIds.length || sourceCount} item(s)</b><span>Caption</span><b>{captions ? `${config.styleConfig.captionPreset} · ${config.styleConfig.captionFont} · ${config.styleConfig.captionAnimation} · ${config.styleConfig.captionPosition}${config.styleConfig.captionOffsetY == null ? '' : ` @ ${config.styleConfig.captionOffsetY}%`} · ${config.styleConfig.captionLines} line(s) · ${config.styleConfig.captionPace} · ${config.styleConfig.wordsPerCaption} words · ${config.styleConfig.highlightColor}/${config.styleConfig.boxColor}` : 'Disabled'}</b><span>Gradient</span><b>{config.styleConfig.gradientEdge} · {config.styleConfig.gradientIntensity}%</b><span>Images</span><b>{config.styleConfig.imageMode} · {config.styleConfig.crossfadeSec}s crossfade · {config.styleConfig.motionPreset} motion · {assets.length} assets</b><span>B-roll</span><b>{autoBroll ? `${config.styleConfig.brollMode} · ${config.styleConfig.brollDensity} · ${config.styleConfig.brollPoolSize} clips · ${config.styleConfig.brollPoolKey || 'resolved source/global pool'} · ${config.styleConfig.brollFallbackPolicy} · ${config.styleConfig.brollShufflePolicy}` : 'Disabled'}</b><span>Aspect / style</span><b>{config.styleConfig.aspectRatio} · {config.styleConfig.videoStyle}</b><span>Retry / pacing</span><b>{retries} additional attempts · {config.rules.downloadDelaySec}s download delay · {continueOnError ? 'continue other items' : 'pause the batch'}</b><span>Upload data</span><b>{preflight?.uploadDataState || 'checking'} · {config.rules.skipUploaded ? 'skip exact/high matches' : 'skip disabled'}</b><span>Execution</span><b>Local · {settings.encoder === 'cpu' ? 'CPU' : settings.encoder.toUpperCase()} · {settings.quality}</b><span>Notifications</span><b>{[desktopNotify && 'desktop', webhookNotify && 'webhook'].filter(Boolean).join(' + ') || 'in-app only'}</b></div></Panel><Panel><SectionLabel>Preflight</SectionLabel>{!preflight ? <div aria-live="polite" style={{ color: 'var(--text-dim)', fontSize: 11, marginTop: 12 }}>Checking configuration…</div> : <><div style={{ marginTop: 11, color: preflight.ok ? 'var(--ok-2)' : 'var(--err-2)', fontWeight: 700, fontSize: 12 }}>{preflight.ok ? '✓ Ready to run unattended' : 'Action required before start'}</div><div style={{ marginTop: 10, color: 'var(--text-dim)', fontSize: 10.5, lineHeight: 1.55 }}>~{preflight.estimatedStorageGb.toFixed(1)} GB · ~{preflight.estimatedMinutes} min<br />Upload data: {preflight.uploadDataState || 'not linked'}<br />{preflight.appMessage}<br />{preflight.powerMessage}</div>{preflight.blockers.map((message) => <div key={message} style={{ color: 'var(--err-2)', fontSize: 10.5, marginTop: 7 }}>• {message}</div>)}{preflight.warnings.map((message) => <div key={message} style={{ color: 'var(--warn)', fontSize: 10.5, marginTop: 7 }}>• {message}</div>)}</>}</Panel></div></div>}
 
       {setupError && <div role="alert" style={{ marginTop: 12 }}><Banner kind="error"><b>Couldn’t continue:</b> {setupError}</Banner></div>}
       <div className="automation-footer-actions"><Btn disabled={stage === 0} onClick={() => { setStage(Math.max(0, stage - 1)); setSetupError('') }}>Back</Btn><div style={{ flex: 1 }} />{stage < 3 && <Btn variant="primary" disabled={(stage === 0 && !AUTOMATION_GOALS.find((definition) => definition.id === goal)?.available) || (stage === 1 && !sourceReady)} onClick={() => { setStage(stage + 1); setSetupError('') }}>Continue</Btn>}{stage === 3 && <Btn variant="primary" disabled={!sourceReady || (!assets.length && !autoBroll)} onClick={() => void goReview()}>Review workflow</Btn>}{stage === 4 && <Btn variant="primary" disabled={!preflight?.ok || starting} onClick={() => void start()} style={{ padding: '11px 20px' }}>{starting ? 'Starting…' : '▶ Start automation and run until complete'}</Btn>}</div>
     </> : <>
-      <div className="automation-jobs-heading"><div><h2>Automation jobs</h2><p>Durable production goals loaded from SQLite—not browser memory.</p></div><Btn variant="soft" onClick={resetSetup}>＋ New automation</Btn></div>
+      <div className="automation-jobs-heading"><div><h2>Automation jobs</h2><p>Durable production goals loaded from SQLite—not browser memory.</p></div><Btn variant="soft" onClick={newAutomation}>＋ New automation</Btn></div>
       {activeJob && <div className="automation-live-strip" aria-live="polite"><span><b>LIVE</b> · {activeJob.currentStep}</span><span>ETA {jobEta(activeJob)}</span><span>Started {activeJob.startedAt ? new Date(activeJob.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'now'}</span><span>{settings.encoder === 'cpu' ? 'CPU' : settings.encoder.toUpperCase()} · {settings.quality}</span></div>}
-      {automationJobs.length === 0 ? <EmptyState title="No automation jobs yet" body="Choose a goal to build your first unattended workflow. It will appear here before processing starts." action={<Btn variant="primary" onClick={() => setView('setup')}>Create automation</Btn>} /> : <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>{automationJobs.map((job) => {
+      {automationJobs.length === 0 ? <EmptyState title="No automation jobs yet" body="Choose a goal to build your first unattended workflow. It will appear here before processing starts." action={<Btn variant="primary" onClick={newAutomation}>Create automation</Btn>} /> : <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>{automationJobs.map((job) => {
         const active = job.status === 'running' || job.status === 'queued' || job.status === 'pausing'
         const needsAttention = job.status === 'attention' || job.status === 'failed'
         return <article key={job.id} className="automation-job-card" style={{ borderColor: needsAttention ? '#4a2530' : job.status === 'completed' ? '#1f382f' : undefined }}><div className="automation-job-body"><div className="automation-job-title"><div aria-hidden="true" className={`automation-job-icon ${active ? 'active' : ''}`}>{active ? '▶' : job.status === 'completed' ? '✓' : needsAttention ? '!' : '■'}</div><div style={{ flex: 1, minWidth: 0 }}><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><strong className="me-ellipsis">{job.name}</strong><JobStatus status={job.status} /></div><div style={{ color: 'var(--text-dim)', fontSize: 10.5, marginTop: 4 }}>{formatGoal(job.goal)} · {job.config.sourceName} · {job.totalItems || job.config.sourceCount} items</div></div><div style={{ textAlign: 'right' }}><b style={{ fontFamily: 'var(--font-mono)', color: job.status === 'completed' ? 'var(--ok-2)' : 'var(--accent)', fontSize: 15 }}>{job.progress}%</b><small>overall</small></div></div><div role="progressbar" aria-label={`${job.name} progress`} aria-valuenow={job.progress} aria-valuemin={0} aria-valuemax={100} className="automation-job-progress"><div style={{ width: `${job.progress}%`, background: needsAttention ? 'var(--err)' : job.status === 'completed' ? 'var(--ok)' : undefined }} /></div><div className="automation-job-metrics"><div><span>CURRENT STEP</span><b>{job.currentStep || 'Waiting'}</b></div><div><span>ITEMS</span><b>{job.completedCount} done · {job.failedCount} failed</b></div><div><span>CHECKPOINT</span><b>{job.lastCheckpointAt ? new Date(job.lastCheckpointAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'not started'}</b></div><div><span>OUTPUT</span><b className="me-ellipsis">{job.result?.outputPaths[0] || settings.libraryFolder || settings.outputFolder || 'Mental Empire Studio library'}</b></div></div>{job.error && <div role="alert" className="automation-job-error"><b>What happened:</b> {job.error}<br /><span>Other items may continue when safe. Completed checkpoints remain available for resume or retry.</span></div>}<div className="automation-job-actions">{(job.status === 'running' || job.status === 'queued') && <Btn size="sm" onClick={() => void pauseJob(job.id)}>Pause</Btn>}{(job.status === 'paused' || job.status === 'attention' || job.status === 'failed') && <Btn size="sm" variant="soft" onClick={() => void resumeJob(job.id)}>Resume</Btn>}{job.failedCount > 0 && ['failed','completed_with_warnings','attention'].includes(job.status) && <Btn size="sm" variant="soft" onClick={() => void retryJob(job.id)}>Retry failed items</Btn>}{(active || job.status === 'paused' || job.status === 'attention' || job.status === 'failed') && <Btn size="sm" variant="danger" onClick={() => void cancelJob(job.id)}>Cancel</Btn>}<Btn size="sm" onClick={() => void showDetails(job)}>{expanded?.id === job.id ? 'Hide details' : 'View details'}</Btn>{job.result?.outputPaths[0] && <Btn size="sm" onClick={() => void window.api.publish.reveal(job.result!.outputPaths[0])}>Open output</Btn>}<Btn size="sm" onClick={() => duplicate(job)}>Duplicate workflow</Btn><Btn size="sm" onClick={() => window.api.openLogs()}>Technical logs</Btn></div></div>{expanded?.id === job.id && <JobDetails detail={expanded} />}</article>
       })}</div>}
       {setupError && <div role="alert" style={{ marginTop: 12 }}><Banner kind="error">{setupError}</Banner></div>}
     </>}
-    {sourcePickerOpen && <SourcePickerModal sources={sourceChannels} selectedId={sourceId} onClose={() => setSourcePickerOpen(false)} onSelect={(next) => { setSourceId(next.id); setSelectedVideoIds([]); setAutoBroll(!!next.betaOpts?.broll.enabled); setBrollPoolKey(next.nicheId ? `niche-${next.nicheId}` : ''); setCaptionPreset(next.captionPreset ?? 'Hormozi'); setCaptionFont(next.captionFont ?? 'Montserrat'); setCaptionAnim(next.captionAnim ?? 'Pop-in'); setCaptionLines(next.captionLines ?? 1); setCaptionPosition(next.captionPosition ?? 'bottom'); setCaptionPace(next.captionPace ?? 'auto'); setSourcePickerOpen(false) }} />}
-    {assetPickerOpen && <AssetLibraryModal assets={libraryAssets} current={assets} onApply={setAssets} onClose={() => setAssetPickerOpen(false)} />}
+    {sourceModalOpen && <SourcePickerModal sources={sourceChannels} selectedId={sourceId} error={sourceLoadError} opener={sourceBrowseRef.current} onClose={() => setSourceModalOpen(false)} onRefresh={async (candidate) => { setSourceLoadError(''); await window.api.sources.refresh(candidate.id); await loadSources(); if (candidate.id === sourceId) setAvailableVideos(await window.api.sources.videos(candidate.id)) }} onSelect={(candidate) => {
+      if (candidate.id !== sourceId && selectedVideoIds.length > 0 && !window.confirm(`Changing sources will clear ${selectedVideoIds.length} exact video selection${selectedVideoIds.length === 1 ? '' : 's'}. Continue?`)) return
+      dispatchDraft({ type: 'change-source', source: candidate }); setAvailableVideos([]); setPreflight(null); setSourceModalOpen(false); setSetupError('')
+    }} />}
+    {assetModalOpen && <AssetLibraryModal key={`assets-${draftState.id}`} assets={libraryAssets} selectedPaths={assets} opener={assetBrowseRef.current} onClose={() => setAssetModalOpen(false)} onApply={(paths) => { setAssets(paths); setAssetModalOpen(false); setPreflight(null) }} />}
   </ScreenPad>
 }

@@ -270,7 +270,9 @@ export async function sourceVideos(url: string, order: ScrapeOrder, count: numbe
   // used to be a no-op that just returned latest order). Fetch a bounded non-flat pool
   // for Popular and sort it; Latest/Oldest stay on the fast flat path.
   const popular = order === 'Popular'
-  const poolLimit = popular ? Math.min(Math.max(count * 4, 20), 40) : count
+  // The Automation selector expands this bounded window until it fills the eligible
+  // batch or reaches its own safety cap. Do not silently clamp Popular to 40 here.
+  const poolLimit = popular ? Math.min(Math.max(count, 20), 200) : Math.min(count, 200)
   const ch = await scrapeChannel(url, settings, { flat: !popular, limit: poolLimit })
   const ordered = orderVideos(ch.videos, order, count)
   const existing = repos.sourceChannelByUrl(channelUrl(url))

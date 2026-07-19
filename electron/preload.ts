@@ -176,7 +176,8 @@ const api: NativeApi = {
   },
 
   assets: {
-    list: () => ipcRenderer.invoke('assets:list')
+    list: () => ipcRenderer.invoke('assets:list'),
+    import: (paths, context) => ipcRenderer.invoke('assets:import', paths, context)
   },
 
   publish: {

@@ -146,6 +146,9 @@ function animationWordTag(animation: string | undefined, active: boolean, scaleP
   const s = Math.round(scalePct)
   const overshoot = Math.round(scalePct * 1.08)
   switch (animation) {
+    case 'None':
+    case 'Fade':
+      return ''
     case 'Bounce':
       return `\\t(0,80,\\fscx${overshoot}\\fscy${overshoot})\\t(80,150,\\fscx${Math.round(scalePct * 0.94)}\\fscy${Math.round(scalePct * 0.94)})\\t(150,230,\\fscx${s}\\fscy${s})`
     case 'Slide':
@@ -167,7 +170,7 @@ function lineLead(
 ): string {
   // The fade is attached only to the first/last word-event of a group so libass
   // updates the active word in place instead of re-fading the whole line (flicker).
-  const inMs = fadeIn ? 20 : 0
+  const inMs = fadeIn ? (animation === 'Fade' ? 160 : animation === 'None' ? 0 : 20) : 0
   const outMs = fadeOut ? 20 : 0
   const fad = `\\fad(${inMs},${outMs})`
   if (animation === 'Slide' && fadeIn) {

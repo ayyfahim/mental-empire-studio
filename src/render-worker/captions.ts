@@ -122,7 +122,9 @@ export class CaptionLayer {
     }
     const group = this.model.groups[gi]
     const wi = this.model.mode === 'word' ? activeWordInGroup(group, timeSec) : -1
-    const phase = wi >= 0 ? popPhase(timeSec, Math.max(group.words[wi].startSec, group.startSec)) : 1
+    const phase = this.model.animation === 'Fade'
+      ? popPhase(timeSec, group.startSec)
+      : wi >= 0 && this.model.animation !== 'None' ? popPhase(timeSec, Math.max(group.words[wi].startSec, group.startSec)) : 1
     const phaseQ = phase >= 1 ? 4 : Math.floor(phase * 4)
     const key = `${gi}:${wi}:${phaseQ}`
     if (key === this.lastKey) return false
@@ -193,13 +195,15 @@ export class CaptionLayer {
     const boxKind = style.activeKind === 'box'
     // Layout reserves the scaled width of the active word so the enlarged word never
     // overlaps its neighbours.
-    const popP = activeWordIdx >= 0
+    const popP = activeWordIdx >= 0 && this.model.animation !== 'None' && this.model.animation !== 'Fade'
       ? easePop(popPhase(timeSec, Math.max(group.words[activeWordIdx]?.startSec ?? 0, group.startSec)))
       : 1
     const ACTIVE_SCALE = 1 + (style.activeScale - 1) * Math.max(0, popP)
+    const fadeAlpha = this.model.animation === 'Fade' ? popPhase(timeSec, group.startSec) : 1
     let size = captionFontSizePx(this.width, this.height, style)
     const fontOf = (px: number): string => `${style.fontWeight} ${px}px ${withFont(style.fontFamily)}`
     ctx.save()
+    ctx.globalAlpha = fadeAlpha
     ctx.font = fontOf(size)
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
@@ -239,13 +243,13 @@ export class CaptionLayer {
         this.roundedRect(cx - lineW / 2 - padX, y - bh / 2, lineW + padX * 2, bh, boxKind ? size * (style.boxRadiusEm ?? 0.18) : size * 0.16)
         if (boxKind) {
           ctx.fillStyle = style.boxColor ?? '#FFD93D'
-          ctx.globalAlpha = 1
+          ctx.globalAlpha = fadeAlpha
         } else {
           ctx.fillStyle = style.band!.color
-          ctx.globalAlpha = style.band!.alpha
+          ctx.globalAlpha = style.band!.alpha * fadeAlpha
         }
         ctx.fill()
-        ctx.globalAlpha = 1
+        ctx.globalAlpha = fadeAlpha
       }
 
       let x = cx - lineW / 2
@@ -275,7 +279,7 @@ export class CaptionLayer {
         if (style.outlinePct > 0 && !boxKind) {
           ctx.lineWidth = size * style.outlinePct * 2 // canvas strokes are centred; ×2 ≈ ASS outline
           ctx.strokeStyle = style.activeKind === 'glow' ? (style.glowColor ?? style.outlineColor) : style.outlineColor
-          ctx.globalAlpha = fill.alpha
+          ctx.globalAlpha = fill.alpha * fadeAlpha
           ctx.strokeText(word, 0, 0)
         }
 
@@ -285,7 +289,7 @@ export class CaptionLayer {
           ctx.shadowBlur = 0
           ctx.shadowOffsetY = 0
         }
-        ctx.globalAlpha = fill.alpha
+        ctx.globalAlpha = fill.alpha * fadeAlpha
         ctx.fillStyle = fill.color
         ctx.fillText(word, 0, 0)
         ctx.restore()

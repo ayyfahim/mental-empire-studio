@@ -764,7 +764,22 @@ function installMock(): void {
       openFolder: async () => {}
     }),
     assets: ns({
-      list: async () => []
+      list: async () => [],
+      import: async (paths: string[], context?: { sourceId?: string; channel?: string; channelHandle?: string; channelAvatar?: string }) => paths.map((path, index) => ({
+        id: `mock-asset-${index}-${path}`,
+        path,
+        canonicalPath: path,
+        originalPath: path,
+        sourceId: context?.sourceId,
+        channel: context?.channel || 'Unsorted',
+        channelHandle: context?.channelHandle,
+        channelAvatar: context?.channelAvatar,
+        addedAt: new Date().toISOString(),
+        firstAddedAt: new Date().toISOString(),
+        lastUsedAt: new Date().toISOString(),
+        usageCount: 1,
+        missing: false
+      }))
     }),
     publish: ns({
       list: async () => renderRows

@@ -13,6 +13,8 @@ import { getSettings } from '../store/settings'
 import { getRepos } from '../db'
 import { splitRanges } from '../services/audio'
 import { importImages, seededShuffle } from '../services/images'
+import { ensureLibraryAssets } from '../services/asset-library'
+import { effectiveBrollPool } from '../../shared/automationBroll'
 import { transcribeAudio } from '../services/transcribe'
 import { emit, hhmm, pushActivity } from './events'
 import { outputDir } from '../services/queue'
@@ -100,7 +102,9 @@ function setImages(projectId: string, paths: string[]): ProjectImage[] {
   const repos = getRepos()
   const project = repos.getProject(projectId)
   if (!project) throw new Error(`Unknown project: ${projectId}`)
-  let copied = importImages(itemImagesDir(itemDirForProject(project)), paths)
+  const source = repos.sourceChannelByUrl(project.channel)
+  const library = ensureLibraryAssets(paths, { sourceId: source?.id, channel: source?.name || project.channel, channelHandle: source?.handle, channelAvatar: source?.avatar, projectId })
+  let copied = importImages(itemImagesDir(itemDirForProject(project)), library.filter((asset) => !asset.missing).map((asset) => asset.canonicalPath))
   if (project.imageMode === 'pool') copied = seededShuffle(copied, project.seed)
   const ranges = splitRanges(project.durationSec, copied.length)
   const rows: ProjectImage[] = copied.map((path, i) => ({
@@ -117,7 +121,6 @@ function setImages(projectId: string, paths: string[]): ProjectImage[] {
   writeProjectManifest(itemDirForProject(project), { imagePaths: rows.map((r) => r.path) })
   // Remember these as reusable library assets for this channel (P2 I) so a later project
   // targeting the same channel can pick the same set again instead of re-selecting from disk.
-  repos.recordAssets(rows.map((r) => r.path), project.channel)
   return rows
 }
 
@@ -154,8 +157,9 @@ function validateRenderReady(projectId: string): void {
   const images = repos.getProjectImages(projectId)
   if (images.length === 0) {
     const broll = projectVideoOpts(project).broll.enabled
-    const poolKey = repos.nicheKeyForDownload(project.downloadId)
-    const brollAvailable = broll && (cachedBrollClipCount(poolKey) > 0 || hasConfiguredBrollSource(getSettings()))
+    const effectivePool = effectiveBrollPool({ projectBroll: projectVideoOpts(project).broll, sourceNichePoolKey: repos.nicheKeyForDownload(project.downloadId) })
+    const poolKey = effectivePool.poolKey
+    const brollAvailable = broll && (cachedBrollClipCount(poolKey) > 0 || (effectivePool.allowLive && hasConfiguredBrollSource(getSettings())))
     if (!brollAvailable) missing.push('visual media (add images or warm/configure Auto B-roll)')
   }
   if (missing.length) throw new Error(`Project is not render-ready. Missing: ${missing.join(', ')}.`)
@@ -354,7 +358,9 @@ function previewSpec(projectId: string, draftOverrides?: Partial<Project>): GpuR
         poolSize: beta.broll.poolSize,
         dims,
         maxSegments: Math.max(1, Math.min(8, Math.ceil(Math.max(1, draftProject.durationSec) / 9))),
-        poolKey: repos.nicheKeyForDownload(draftProject.downloadId)
+        poolKey: effectiveBrollPool({ projectBroll: beta.broll, sourceNichePoolKey: repos.nicheKeyForDownload(draftProject.downloadId) }).poolKey,
+        seed: beta.broll.seed ?? draftProject.seed,
+        shuffle: beta.broll.shufflePolicy !== 'ranked'
       })
     : []
   return buildGpuRenderSpec({
@@ -366,7 +372,7 @@ function previewSpec(projectId: string, draftOverrides?: Partial<Project>): GpuR
     plan,
     defaultTransition: {
       type: style !== 'None' ? styleTransition(style) : 'fade',
-      durationSec: Math.max(0.3, Math.min(0.8, draftProject.crossfade || 0.4))
+      durationSec: Math.max(0, Math.min(0.8, draftProject.crossfade ?? 0.4))
     },
     voicePath: draftProject.mp3Path,
     hookText,

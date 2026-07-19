@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3'
+import { createHash } from 'node:crypto'
 import { traceObject } from '../services/sentry'
 import type {
   DownloadedVideo,
@@ -30,6 +31,7 @@ import type {
   AutomationWorkflowStep
 } from '../../shared/types'
 import { asBetaOpts, DEFAULT_BETA_OPTS } from '../../shared/types'
+import { normalizeAutomationConfig } from '../../shared/automationConfig'
 import { seedIfEmpty, seedDemoData, seedDefaultThumbnailTemplates } from './seed'
 import { planProfileSourceMigration, type SourceMigrationCandidate } from './profile-source-migration'
 
@@ -306,6 +308,25 @@ function migrate(d: Database.Database): void {
   ensureColumn(d, 'projects', 'captionOffsetY', 'REAL')
   ensureColumn(d, 'downloaded_videos', 'error', 'TEXT')
   ensureColumn(d, 'work_item_state', 'uploadConfidence', 'TEXT')
+  // Durable Automation item checkpoints + asset-library metadata. All guarded for old DBs.
+  ensureColumn(d, 'automation_job_items', 'stateJson', 'TEXT')
+  ensureColumn(d, 'assets', 'id', 'TEXT')
+  ensureColumn(d, 'assets', 'canonicalPath', 'TEXT')
+  ensureColumn(d, 'assets', 'originalPath', 'TEXT')
+  ensureColumn(d, 'assets', 'sourceId', 'TEXT')
+  ensureColumn(d, 'assets', 'channelHandle', 'TEXT')
+  ensureColumn(d, 'assets', 'channelAvatar', 'TEXT')
+  ensureColumn(d, 'assets', 'thumbnailPath', 'TEXT')
+  ensureColumn(d, 'assets', 'mimeType', 'TEXT')
+  ensureColumn(d, 'assets', 'width', 'INTEGER')
+  ensureColumn(d, 'assets', 'height', 'INTEGER')
+  ensureColumn(d, 'assets', 'fileSize', 'INTEGER')
+  ensureColumn(d, 'assets', 'firstAddedAt', 'TEXT')
+  ensureColumn(d, 'assets', 'lastUsedAt', 'TEXT')
+  ensureColumn(d, 'assets', 'usageCount', 'INTEGER')
+  ensureColumn(d, 'assets', 'missing', 'INTEGER')
+  ensureColumn(d, 'assets', 'projectId', 'TEXT')
+  d.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_content_id ON assets(id) WHERE id IS NOT NULL')
 
   purgeLegacyDemoSeed(d)
   migrateProfilesToSources(d)
@@ -492,7 +513,8 @@ export interface Repositories {
   getProjectImages(projectId: string): ProjectImage[]
   /** Record images as reusable library assets (dedup by path) so a later project can pick
    *  the same set again instead of re-selecting from disk. */
-  recordAssets(paths: string[], channel: string): void
+  recordAssets(rows: LibraryAsset[]): void
+  replaceAssetPath(oldPath: string, row: LibraryAsset): void
   listAssets(): LibraryAsset[]
   setImageRanges(projectId: string, ranges: Array<{ id: string; rangeStart: number; rangeEnd: number }>): void
   setImageMotion(projectId: string, updates: ProjectImageMotionPatch[]): void
@@ -535,6 +557,7 @@ export interface Repositories {
   setWorkItemArchived(videoId: string, archived: boolean): void
   /** Persist fuzzy upload-detection results (matched channel ids + best score). */
   setDetectedUploads(rows: Array<{ videoId: string; uploadedTo: string[]; score: number; confidence?: 'high' | 'pending' | null }>): void
+  uploadStates(videoIds: string[]): Map<string, { manualUploaded: boolean | null }>
   // ---- P3: niche b-roll pools ----
   /** All user-curated niches. */
   niches(): Niche[]
@@ -687,16 +710,11 @@ function jsonObject<T>(raw: unknown, fallback: T): T {
 }
 
 function rowToAutomationJob(r: Record<string, unknown>): AutomationJob {
-  const config = jsonObject(r.configJson, {} as AutomationJob['config'])
+  const config = normalizeAutomationConfig(jsonObject(r.configJson, {} as AutomationJob['config']))
   return {
     ...(r as unknown as AutomationJob),
     progress: coerceNum(r.progress, 0),
-    config: {
-      ...config,
-      sourceKind: config.sourceKind === 'youtube-url' || config.sourceKind === 'local-files' ? config.sourceKind : 'saved-source',
-      selectedVideoIds: Array.isArray(config.selectedVideoIds) ? config.selectedVideoIds : [],
-      localMediaPaths: Array.isArray(config.localMediaPaths) ? config.localMediaPaths : []
-    },
+    config,
     result: jsonObject<AutomationJob['result'] | undefined>(r.resultJson, undefined),
     pauseRequested: !!r.pauseRequested,
     cancelRequested: !!r.cancelRequested,
@@ -720,8 +738,10 @@ function rowToAutomationStep(r: Record<string, unknown>): AutomationWorkflowStep
 }
 
 function rowToAutomationItem(r: Record<string, unknown>): AutomationJobItem {
+  const state = jsonObject<Partial<AutomationJobItem>>(r.stateJson, {})
   return {
     ...(r as unknown as AutomationJobItem),
+    ...state,
     progress: coerceNum(r.progress, 0),
     attempts: coerceNum(r.attempts, 0)
   }
@@ -1021,16 +1041,58 @@ function buildRepositories(d: Database.Database): Repositories {
     },
     getProjectImages: (projectId) =>
       (d.prepare('SELECT * FROM project_images WHERE projectId=? ORDER BY ord').all(projectId) as Array<Record<string, unknown>>).map(rowToImage),
-    recordAssets: (paths, channel) => {
+    recordAssets: (rows) => {
       const tx = d.transaction(() => {
-        const ins = d.prepare('INSERT INTO assets (path,channel,addedAt) VALUES (?,?,?) ON CONFLICT(path) DO UPDATE SET channel=excluded.channel, addedAt=excluded.addedAt')
-        const now = new Date().toISOString()
-        for (const path of paths) ins.run(path, channel, now)
+        const ins = d.prepare(`INSERT INTO assets
+          (path,channel,addedAt,id,canonicalPath,originalPath,sourceId,channelHandle,channelAvatar,thumbnailPath,mimeType,width,height,fileSize,firstAddedAt,lastUsedAt,usageCount,missing,projectId)
+          VALUES (@path,@channel,@addedAt,@id,@canonicalPath,@originalPath,@sourceId,@channelHandle,@channelAvatar,@thumbnailPath,@mimeType,@width,@height,@fileSize,@firstAddedAt,@lastUsedAt,@usageCount,@missing,@projectId)
+          ON CONFLICT(path) DO UPDATE SET channel=excluded.channel,addedAt=excluded.addedAt,id=excluded.id,canonicalPath=excluded.canonicalPath,
+          originalPath=COALESCE(assets.originalPath,excluded.originalPath),sourceId=COALESCE(excluded.sourceId,assets.sourceId),channelHandle=COALESCE(excluded.channelHandle,assets.channelHandle),
+          channelAvatar=COALESCE(excluded.channelAvatar,assets.channelAvatar),thumbnailPath=excluded.thumbnailPath,mimeType=excluded.mimeType,width=excluded.width,height=excluded.height,
+          fileSize=excluded.fileSize,firstAddedAt=COALESCE(assets.firstAddedAt,excluded.firstAddedAt),lastUsedAt=excluded.lastUsedAt,usageCount=MAX(COALESCE(assets.usageCount,0),excluded.usageCount),missing=excluded.missing,projectId=COALESCE(excluded.projectId,assets.projectId)`)
+        for (const row of rows) ins.run({
+          ...row,
+          originalPath: row.originalPath ?? null, sourceId: row.sourceId ?? null, channelHandle: row.channelHandle ?? null,
+          channelAvatar: row.channelAvatar ?? null, thumbnailPath: row.thumbnailPath ?? null, mimeType: row.mimeType ?? null,
+          width: row.width ?? null, height: row.height ?? null, fileSize: row.fileSize ?? null, projectId: row.projectId ?? null,
+          missing: row.missing ? 1 : 0
+        })
       })
       tx()
     },
-    listAssets: () =>
-      d.prepare('SELECT path, channel, addedAt FROM assets ORDER BY addedAt DESC').all() as LibraryAsset[],
+    replaceAssetPath: (oldPath, row) => {
+      const tx = d.transaction(() => {
+        d.prepare('DELETE FROM assets WHERE path=?').run(oldPath)
+        const now = row.lastUsedAt || new Date().toISOString()
+        d.prepare(`INSERT OR REPLACE INTO assets
+          (path,channel,addedAt,id,canonicalPath,originalPath,sourceId,channelHandle,channelAvatar,thumbnailPath,mimeType,width,height,fileSize,firstAddedAt,lastUsedAt,usageCount,missing,projectId)
+          VALUES (@path,@channel,@addedAt,@id,@canonicalPath,@originalPath,@sourceId,@channelHandle,@channelAvatar,@thumbnailPath,@mimeType,@width,@height,@fileSize,@firstAddedAt,@lastUsedAt,@usageCount,@missing,@projectId)`)
+          .run({ ...row, originalPath: row.originalPath ?? oldPath, sourceId: row.sourceId ?? null, channelHandle: row.channelHandle ?? null, channelAvatar: row.channelAvatar ?? null, thumbnailPath: row.thumbnailPath ?? null, mimeType: row.mimeType ?? null, width: row.width ?? null, height: row.height ?? null, fileSize: row.fileSize ?? null, projectId: row.projectId ?? null, missing: row.missing ? 1 : 0, lastUsedAt: now })
+      })
+      tx()
+    },
+    listAssets: () => (d.prepare('SELECT * FROM assets ORDER BY COALESCE(lastUsedAt,addedAt) DESC').all() as Array<Record<string, unknown>>).map((r) => {
+      const path = String(r.canonicalPath || r.path || '')
+      const addedAt = String(r.firstAddedAt || r.addedAt || new Date(0).toISOString())
+      return {
+        id: String(r.id || createHash('sha256').update(path).digest('hex')),
+        path,
+        canonicalPath: path,
+        originalPath: r.originalPath ? String(r.originalPath) : undefined,
+        sourceId: r.sourceId ? String(r.sourceId) : undefined,
+        channel: String(r.channel || 'Unsorted'),
+        channelHandle: r.channelHandle ? String(r.channelHandle) : undefined,
+        channelAvatar: r.channelAvatar ? String(r.channelAvatar) : undefined,
+        thumbnailPath: r.thumbnailPath ? String(r.thumbnailPath) : undefined,
+        mimeType: r.mimeType ? String(r.mimeType) : undefined,
+        width: r.width == null ? undefined : coerceNum(r.width, 0),
+        height: r.height == null ? undefined : coerceNum(r.height, 0),
+        fileSize: r.fileSize == null ? undefined : coerceNum(r.fileSize, 0),
+        addedAt: String(r.addedAt || addedAt), firstAddedAt: addedAt,
+        lastUsedAt: String(r.lastUsedAt || r.addedAt || addedAt), usageCount: coerceNum(r.usageCount, 1),
+        missing: !!r.missing, projectId: r.projectId ? String(r.projectId) : undefined
+      }
+    }),
     setImageRanges: (projectId, ranges) => {
       const tx = d.transaction(() => {
         const up = d.prepare('UPDATE project_images SET rangeStart=@rangeStart, rangeEnd=@rangeEnd, manual=1 WHERE id=@id AND projectId=@projectId')
@@ -1181,10 +1243,11 @@ function buildRepositories(d: Database.Database): Repositories {
     },
     upsertAutomationItem: (item) => {
       d.prepare(
-        `INSERT INTO automation_job_items (id,jobId,sourceVideoId,title,status,currentStep,progress,attempts,projectId,renderJobId,outputPath,warning,error,updatedAt)
-         VALUES (@id,@jobId,@sourceVideoId,@title,@status,@currentStep,@progress,@attempts,@projectId,@renderJobId,@outputPath,@warning,@error,@updatedAt)
-         ON CONFLICT(id) DO UPDATE SET title=@title,status=@status,currentStep=@currentStep,progress=@progress,attempts=@attempts,projectId=@projectId,renderJobId=@renderJobId,outputPath=@outputPath,warning=@warning,error=@error,updatedAt=@updatedAt`
-      ).run({ ...item, projectId: item.projectId ?? null, renderJobId: item.renderJobId ?? null, outputPath: item.outputPath ?? null, warning: item.warning ?? null, error: item.error ?? null })
+        `INSERT INTO automation_job_items (id,jobId,sourceVideoId,title,status,currentStep,progress,attempts,projectId,renderJobId,outputPath,warning,error,updatedAt,stateJson)
+         VALUES (@id,@jobId,@sourceVideoId,@title,@status,@currentStep,@progress,@attempts,@projectId,@renderJobId,@outputPath,@warning,@error,@updatedAt,@stateJson)
+         ON CONFLICT(id) DO UPDATE SET title=@title,status=@status,currentStep=@currentStep,progress=@progress,attempts=@attempts,projectId=@projectId,renderJobId=@renderJobId,outputPath=@outputPath,warning=@warning,error=@error,updatedAt=@updatedAt,stateJson=@stateJson`
+      ).run({ ...item, projectId: item.projectId ?? null, renderJobId: item.renderJobId ?? null, outputPath: item.outputPath ?? null, warning: item.warning ?? null, error: item.error ?? null,
+        stateJson: JSON.stringify({ stepStates: item.stepStates, selectionDecision: item.selectionDecision, brollSeed: item.brollSeed, brollClipIds: item.brollClipIds, retryAt: item.retryAt }) })
     },
     addAutomationLog: (jobId, level, message, itemId) => {
       d.prepare('INSERT INTO automation_job_logs (jobId,itemId,level,message,createdAt) VALUES (?,?,?,?,?)')
@@ -1303,6 +1366,16 @@ function buildRepositories(d: Database.Database): Repositories {
       })
       tx()
     },
+    uploadStates: (videoIds) => {
+      const result = new Map<string, { manualUploaded: boolean | null }>()
+      if (!videoIds.length) return result
+      const read = d.prepare('SELECT manualUploaded FROM work_item_state WHERE videoId=?')
+      for (const videoId of videoIds) {
+        const row = read.get(videoId) as { manualUploaded?: number | null } | undefined
+        result.set(videoId, { manualUploaded: row?.manualUploaded == null ? null : !!row.manualUploaded })
+      }
+      return result
+    },
     niches: () =>
       (d.prepare('SELECT * FROM niches ORDER BY name').all() as Array<Record<string, unknown>>).map((r) => ({
         id: String(r.id),
@@ -1419,7 +1492,7 @@ function rowToProject(r: Record<string, unknown>): Project {
   const captionHighlightColor = typeof r.captionHighlightColor === 'string' && r.captionHighlightColor ? r.captionHighlightColor : undefined
   const captionBoxColor = typeof r.captionBoxColor === 'string' && r.captionBoxColor ? r.captionBoxColor : undefined
   const captionOffsetY = r.captionOffsetY == null ? undefined : Math.max(4, Math.min(96, coerceNum(r.captionOffsetY, 74)))
-  return { ...(r as unknown as Project), captionLines, captionPosition: (r.captionPosition as Project['captionPosition']) ?? 'bottom', captionOffsetY, captionPace, captionHighlightColor, captionBoxColor, captionWordsPerPage, durationSec: coerceNum(r.durationSec, 0), poolSize: coerceNum(r.poolSize, 10), kenBurns: !!r.kenBurns, crossfade: coerceNum(r.crossfade, 0.8) || 0.8, emphasis: !!r.emphasis, keywords: !!r.keywords, punchZoom: !!r.punchZoom, lookStrength: r.lookStrength == null ? undefined : coerceNum(r.lookStrength, 0), lookAdjust: parseLookAdjust(r.lookAdjust), motionPreset: parseMotionPreset(r.motionPreset), betaOpts: parseBetaOpts(r) }
+  return { ...(r as unknown as Project), captionLines, captionPosition: (r.captionPosition as Project['captionPosition']) ?? 'bottom', captionOffsetY, captionPace, captionHighlightColor, captionBoxColor, captionWordsPerPage, durationSec: coerceNum(r.durationSec, 0), poolSize: coerceNum(r.poolSize, 10), kenBurns: !!r.kenBurns, crossfade: coerceNum(r.crossfade, 0.8), emphasis: !!r.emphasis, keywords: !!r.keywords, punchZoom: !!r.punchZoom, lookStrength: r.lookStrength == null ? undefined : coerceNum(r.lookStrength, 0), lookAdjust: parseLookAdjust(r.lookAdjust), motionPreset: parseMotionPreset(r.motionPreset), betaOpts: parseBetaOpts(r) }
 }
 function rowToImage(r: Record<string, unknown>): ProjectImage {
   return {
