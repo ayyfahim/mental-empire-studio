@@ -118,7 +118,13 @@ function runYtdlpDownload(
       '--js-runtimes', 'node',
       // Self-recover from transient network stalls before our watchdog has to step in.
       '--socket-timeout', '30',
-      '--retries', '3',
+      '--retries', '5',
+      '--fragment-retries', '5',
+      // YouTube/CDN 403 and 429 responses are often temporary. Pace requests and let
+      // yt-dlp retry before the Automation supervisor performs its own bounded retry.
+      '--retry-sleep', 'http:5',
+      '--retry-sleep', 'fragment:3',
+      '--sleep-requests', '1',
       '-o', dest.replace(/\.mp3$/, '.%(ext)s')
     ]
     const ffmpegDir = vendoredFfmpegDir()

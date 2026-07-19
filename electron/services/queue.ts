@@ -284,7 +284,7 @@ export async function runJob(job: RenderJob): Promise<void> {
   // row + log can say so instead of the user wondering why the output looks different.
   let brollFallback = false
   if (beta.broll.enabled) {
-    const poolKey = repos.nicheKeyForDownload(project.downloadId)
+    const poolKey = beta.broll.poolKey || repos.nicheKeyForDownload(project.downloadId)
     // A warmed pool remains fully usable offline or after an API key is removed.
     const hasStockSource = hasConfiguredBrollSource(settings) || cachedBrollClipCount(poolKey) > 0
     if (!hasStockSource) {
@@ -311,6 +311,7 @@ export async function runJob(job: RenderJob): Promise<void> {
         jobId: job.id,
         maxSegments,
         poolKey,
+        shuffleSeed: beta.broll.shuffle === false ? undefined : (beta.broll.shuffleSeed ?? renderProject.seed),
         shouldCancel: () => hasCancelIntent(job.id),
         logPath,
         onProgress: (phase, done, total, ffmpeg) => {
@@ -333,7 +334,7 @@ export async function runJob(job: RenderJob): Promise<void> {
           filterDetail = 'CUDA scale + CPU captions'
           filterDevice = 'gpu'
         }
-        if (renderLogPath) appendFileSync(renderLogPath, `[broll]\nmanifest=${planned.manifestPath}\njson=${planned.jsonPath}\nsegments=${planned.segments.length}\n`)
+        if (renderLogPath) appendFileSync(renderLogPath, `[broll]\npool=${poolKey || 'all'}\nshuffleSeed=${beta.broll.shuffle === false ? 'off' : (beta.broll.shuffleSeed ?? renderProject.seed)}\nmanifest=${planned.manifestPath}\njson=${planned.jsonPath}\nsegments=${planned.segments.length}\n`)
         emitStage('assembling', 100, `Using B-roll manifest (${planned.segments.length} clips)`)
       } else {
         const msg = 'No downloadable B-roll clips found'

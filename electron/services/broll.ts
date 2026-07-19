@@ -125,6 +125,27 @@ export interface BrollLibraryWarmResult {
 
 // ---------- pure core (offline, unit-tested) ----------
 
+function seededUnit(seed: number, key: string): number {
+  let h = (seed >>> 0) || 0x9e3779b9
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  h ^= h >>> 16
+  h = Math.imul(h, 0x7feb352d)
+  h ^= h >>> 15
+  return (h >>> 0) / 0x100000000
+}
+
+/** Keep a relevant shortlist, then shuffle it deterministically for one project. */
+export function seededBrollOrder<T extends { id: string }>(items: T[], seed?: number): T[] {
+  if (seed == null) return items
+  return [...items]
+    .map((item, index) => ({ item, index, key: seededUnit(seed, `${item.id}:${index}`) }))
+    .sort((a, b) => a.key - b.key || a.index - b.index)
+    .map((entry) => entry.item)
+}
+
 /** Top recurring content words across the transcript — the video's themes. */
 export function extractThemes(words: TranscriptWord[], n = 4): string[] {
   const freq = new Map<string, number>()
@@ -373,7 +394,7 @@ export async function fetchPool(
   target: { w: number; h: number },
   poolSize: number,
   logPath?: string,
-  opts: { skipLibrary?: boolean; poolKey?: string } = {}
+  opts: { skipLibrary?: boolean; poolKey?: string; shuffleSeed?: number } = {}
 ): Promise<BrollCandidate[]> {
   brollInfo(logPath, `themes selected=${themes.join(',') || 'cinematic background'} target=${target.w}x${target.h} requested=${poolSize}`)
   // Local real-clip seam (genuine assembly, offline).
@@ -390,7 +411,7 @@ export async function fetchPool(
     brollInfo(logPath, `provider fixture pool count=${fixturePool.length} requested=${poolSize} dir=${fixture}`)
     return fixturePool
   }
-  const cached = opts.skipLibrary ? [] : libraryCandidates(themes, target, poolSize, logPath, opts.poolKey)
+  const cached = opts.skipLibrary ? [] : libraryCandidates(themes, target, poolSize, logPath, opts.poolKey, opts.shuffleSeed)
   const out: BrollCandidate[] = [...cached]
   const seen = new Set<string>(out.map((c) => `${c.provider}:${c.id}`))
   if (out.length >= poolSize) return out.slice(0, poolSize)
@@ -563,7 +584,7 @@ function themeTokens(themes: string[]): string[] {
     .filter((t) => t.length >= 3 && !STOPWORDS.has(t))
 }
 
-function libraryCandidates(themes: string[], target: { w: number; h: number }, poolSize: number, logPath?: string, poolKey?: string): BrollCandidate[] {
+function libraryCandidates(themes: string[], target: { w: number; h: number }, poolSize: number, logPath?: string, poolKey?: string, shuffleSeed?: number): BrollCandidate[] {
   const tokens = themeTokens(themes)
   const wanted = new Set(tokens)
   const landscape = target.w >= target.h
@@ -587,7 +608,7 @@ function libraryCandidates(themes: string[], target: { w: number; h: number }, p
         if ((clip.width >= clip.height) === landscape) score += 3
         if (clip.width >= target.w && clip.height >= target.h) score += 2
         if (clip.durationSec >= 4) score += 1
-        score += Math.random() * 0.5
+        score += shuffleSeed == null ? Math.random() * 0.5 : seededUnit(shuffleSeed, `${index.sourceKey}:${clip.id}`) * 0.5
         const item = {
           score,
           candidate: {
@@ -606,7 +627,10 @@ function libraryCandidates(themes: string[], target: { w: number; h: number }, p
     }
   }
   const ranked = scored.length ? scored : fallback
-  const out = ranked.sort((a, b) => b.score - a.score).slice(0, poolSize).map((s) => s.candidate)
+  // Preserve relevance by limiting to the best 3× pool, then vary the actual clip order.
+  const shortlist = ranked.sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(poolSize, Math.min(ranked.length, poolSize * 3))).map((s) => s.candidate)
+  const out = seededBrollOrder(shortlist, shuffleSeed).slice(0, poolSize)
   if (out.length) brollInfo(logPath, `library pool hit count=${out.length} requested=${poolSize} themes=${themes.join(',')}`)
   return out
 }
@@ -622,10 +646,11 @@ export function buildCachedBrollPreviewSegments(opts: {
   dims: { w: number; h: number }
   maxSegments?: number
   poolKey?: string
+  shuffleSeed?: number
   logPath?: string
 }): BrollManifestSegment[] {
   const themes = extractThemes(opts.words)
-  const candidates = libraryCandidates(themes, opts.dims, Math.max(1, opts.poolSize), opts.logPath, opts.poolKey)
+  const candidates = libraryCandidates(themes, opts.dims, Math.max(1, opts.poolSize), opts.logPath, opts.poolKey, opts.shuffleSeed)
   const clips = candidates.map((c) => ({
     path: c.url,
     durationSec: c.durationSec || probeDurationSec(c.url)
@@ -1018,6 +1043,7 @@ export async function buildBrollManifest(opts: {
   maxSegments?: number
   /** scope library selection to a single niche pool (niche-<id>) */
   poolKey?: string
+  shuffleSeed?: number
   shouldCancel?: () => boolean
   logPath?: string
   onProgress?: (phase: 'fetch' | 'download' | 'normalize' | 'manifest', done: number, total: number, ffmpeg?: FfmpegProgress) => void
@@ -1032,6 +1058,7 @@ export async function buildBrollManifest(opts: {
     dims: opts.dims,
     maxSegments: opts.maxSegments,
     poolKey: opts.poolKey,
+    shuffleSeed: opts.shuffleSeed,
     logPath: opts.logPath,
     onProgress: (phase, done, total) => opts.onProgress?.(phase, done, total)
   })
@@ -1195,11 +1222,12 @@ export async function buildBrollSegments(opts: {
   logPath?: string
   /** scope library selection to a single niche pool (niche-<id>) */
   poolKey?: string
+  shuffleSeed?: number
   onProgress?: (phase: 'fetch' | 'download', done: number, total: number) => void
 }): Promise<BrollPlanResult | null> {
   const themes = extractThemes(opts.words)
   opts.onProgress?.('fetch', 0, opts.poolSize)
-  const cands = await fetchPool(opts.settings, themes, opts.dims, opts.poolSize, opts.logPath, { poolKey: opts.poolKey })
+  const cands = await fetchPool(opts.settings, themes, opts.dims, opts.poolSize, opts.logPath, { poolKey: opts.poolKey, shuffleSeed: opts.shuffleSeed })
   opts.onProgress?.('fetch', cands.length, opts.poolSize)
   const clips = await downloadPool(cands, opts.poolSize, (done, total) => opts.onProgress?.('download', done, total), opts.logPath)
   if (clips.length === 0) return null

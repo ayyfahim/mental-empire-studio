@@ -15,6 +15,7 @@ import type {
   ScrapedVideo
 } from '../../shared/types'
 import { asBetaOpts } from '../../shared/types'
+import { DEFAULT_UPLOAD_MATCH_THRESHOLD, titleMatchScore } from '../../shared/match'
 import { buildAutomationWorkflow, isAutomationGoalAvailable, workflowProgress } from '../../shared/automation'
 import { getRepos } from '../db'
 import { getSettings } from '../store/settings'
@@ -28,7 +29,7 @@ import { emit, hhmm, pushActivity } from '../ipc/events'
 import { notifyMessage } from './notify'
 import { postWebhook } from './webhook'
 import { logger } from './logger'
-import { hasConfiguredBrollSource } from './broll'
+import { cachedBrollClipCount, hasConfiguredBrollSource } from './broll'
 import { probeDuration } from './audio'
 
 const LOG = logger.scope('automation-supervisor')
@@ -95,19 +96,34 @@ function saveItem(item: AutomationJobItem, patch: Partial<AutomationJobItem>): A
   return next
 }
 
-function classifyError(error: unknown, step = ''): { kind: AutomationErrorKind; retryable: boolean; message: string } {
+export function classifyAutomationError(error: unknown, step = ''): { kind: AutomationErrorKind; retryable: boolean; message: string } {
   const message = error instanceof Error ? error.message : String(error)
   const s = message.toLowerCase()
   if (/enospc|disk|space/.test(s)) return { kind: 'storage', retryable: false, message }
-  if (/api key|401|403|auth|credential/.test(s)) return { kind: 'authentication', retryable: false, message }
+  if (/api key|401|auth|credential|sign.?in|login required|cookies? required|confirm you.?re not a bot/.test(s)) return { kind: 'authentication', retryable: false, message }
   if (/unsupported|not available yet/.test(s)) return { kind: 'unsupported_input', retryable: false, message }
   if (/missing|not found|enoent|visual media|asset/.test(s)) return { kind: 'missing_asset', retryable: false, message }
+  if (step === 'download' && /403|forbidden|429|rate|timeout|timed out|temporar|econn|network|internet|fetch failed/.test(s)) {
+    return { kind: /econn|network|internet|fetch/.test(s) ? 'connection' : 'download', retryable: true, message }
+  }
   if (/429|rate|timeout|timed out|temporar|econn|network|internet|fetch failed/.test(s)) return { kind: /econn|network|internet|fetch/.test(s) ? 'connection' : 'temporary', retryable: true, message }
   if (step === 'download') return { kind: 'download', retryable: true, message }
   if (step === 'transcribe') return { kind: 'transcription', retryable: true, message }
   if (step === 'render' || step === 'quality-check') return { kind: 'export', retryable: true, message }
   if (step === 'prepare' || step === 'edit') return { kind: 'editing', retryable: false, message }
   return { kind: 'user_action', retryable: false, message }
+}
+
+function uploadedMatch(video: ScrapedVideo, uploads: Array<{ youtubeVideoId?: string; title: string }>, threshold: number): { matched: boolean; reason?: string } {
+  const exact = uploads.find((upload) => upload.youtubeVideoId === video.id)
+  if (exact) return { matched: true, reason: `exact upload id (${exact.title})` }
+  let bestTitle = ''
+  let best = 0
+  for (const upload of uploads) {
+    const score = titleMatchScore(video.title, upload.title)
+    if (score > best) { best = score; bestTitle = upload.title }
+  }
+  return best >= threshold ? { matched: true, reason: `${Math.round(best * 100)}% title match (${bestTitle})` } : { matched: false }
 }
 
 function storageRoot(): string {
@@ -147,12 +163,34 @@ function normalizeDraft(draft: AutomationJobDraft): AutomationJobDraft {
     assetPaths: Array.isArray(draft.config?.assetPaths) ? [...new Set(draft.config.assetPaths.filter((p): p is string => typeof p === 'string' && p.length < 2048))].slice(0, 200) : [],
     style: styles.has(draft.config?.style) ? draft.config.style : 'Clean',
     captionPreset: typeof draft.config?.captionPreset === 'string' ? draft.config.captionPreset.slice(0, 80) : 'Hormozi',
+    captionFont: typeof draft.config?.captionFont === 'string' ? draft.config.captionFont.slice(0, 80) : source?.captionFont ?? 'Montserrat',
+    captionAnim: typeof draft.config?.captionAnim === 'string' ? draft.config.captionAnim.slice(0, 80) : source?.captionAnim ?? 'Pop-in',
+    captionLines: draft.config?.captionLines === 2 || draft.config?.captionLines === 3 ? draft.config.captionLines : 1,
+    captionPosition: draft.config?.captionPosition === 'top' || draft.config?.captionPosition === 'middle' ? draft.config.captionPosition : 'bottom',
+    captionPace: draft.config?.captionPace === 'word' || draft.config?.captionPace === 'phrase' ? draft.config.captionPace : 'auto',
+    captionHighlightColor: typeof draft.config?.captionHighlightColor === 'string' ? draft.config.captionHighlightColor.slice(0, 32) : source?.captionHighlightColor,
+    captionBoxColor: typeof draft.config?.captionBoxColor === 'string' ? draft.config.captionBoxColor.slice(0, 32) : source?.captionBoxColor,
+    captionWordsPerPage: draft.config?.captionWordsPerPage === 1 || draft.config?.captionWordsPerPage === 3 ? draft.config.captionWordsPerPage : 2,
+    imageMode: draft.config?.imageMode === 'sequence' ? 'sequence' : 'pool',
+    crossfadeSec: Math.max(0, Math.min(3, Number(draft.config?.crossfadeSec) || 0.8)),
+    overlay: {
+      bottom: !!draft.config?.overlay?.bottom, top: !!draft.config?.overlay?.top,
+      left: !!draft.config?.overlay?.left, right: !!draft.config?.overlay?.right,
+      intensity: Math.max(0, Math.min(100, Number(draft.config?.overlay?.intensity) || 50))
+    },
+    brollPoolKey: typeof draft.config?.brollPoolKey === 'string' ? draft.config.brollPoolKey.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 160) : '',
+    brollDensity: draft.config?.brollDensity === 'full' || draft.config?.brollDensity === 'keywords' ? draft.config.brollDensity : 'sparse',
+    brollPoolSize: Math.max(1, Math.min(200, Number(draft.config?.brollPoolSize) || 18)),
+    brollMode: draft.config?.brollMode === 'overlay' ? 'overlay' : 'full',
+    brollShuffle: draft.config?.brollShuffle !== false,
     aspectRatios: ratios.length ? ratios : ['16:9'],
     execution: 'local',
     scheduledFor: typeof draft.config?.scheduledFor === 'string' ? draft.config.scheduledFor : undefined,
     rules: {
       minDurationSec: Math.max(0, Math.min(36_000, Number(rawRules?.minDurationSec) || 0)),
       skipDownloaded: rawRules?.skipDownloaded !== false,
+      skipUploaded: rawRules?.skipUploaded !== false,
+      downloadDelaySec: Math.max(0, Math.min(30, Number(rawRules?.downloadDelaySec) || 3)),
       continueOnError: rawRules?.continueOnError !== false,
       maxRetries: Math.max(0, Math.min(8, Number(rawRules?.maxRetries) || 0)),
       minimumFreeSpaceGb: Math.max(1, Math.min(100, Number(rawRules?.minimumFreeSpaceGb) || 2)),
@@ -189,7 +227,12 @@ export function preflightAutomation(draft: AutomationJobDraft): AutomationPrefli
   if (!draft.config.assetPaths.length && !draft.config.rules.autoBroll) blockers.push('Add at least one image or enable Auto B-roll so the exports have visual media.')
   const missingAssets = draft.config.assetPaths.filter((path) => !existsSync(path))
   if (missingAssets.length) blockers.push(`${missingAssets.length} selected visual asset${missingAssets.length === 1 ? ' is' : 's are'} no longer available.`)
-  if (draft.config.rules.autoBroll && !hasConfiguredBrollSource(getSettings())) warnings.push('No stock B-roll provider is configured. A warmed local B-roll pool is required or rendering will pause for attention.')
+  if (draft.config.rules.skipUploaded && draft.config.sourceKind === 'saved-source' && !source?.linkedMyChannelId) {
+    warnings.push('Uploaded-video skipping needs this source linked to one of My Channels. The job will continue without that check.')
+  }
+  const cachedPool = draft.config.brollPoolKey ? cachedBrollClipCount(draft.config.brollPoolKey) : 0
+  if (draft.config.rules.autoBroll && draft.config.brollPoolKey && cachedPool === 0) warnings.push('The selected B-roll pool is empty; warm it first or keep a stock provider configured.')
+  if (draft.config.rules.autoBroll && !hasConfiguredBrollSource(getSettings()) && cachedPool === 0) warnings.push('No stock B-roll provider or warmed selected pool is available. Rendering may pause for attention.')
   if (draft.config.notify.email) warnings.push('Email notifications are not connected yet; desktop and webhook notifications will still work.')
   if (draft.config.notify.sound) warnings.push('Sound alerts use the operating system notification sound in this version.')
   const expectedItems = draft.config.sourceKind === 'local-files'
@@ -286,10 +329,12 @@ async function eachItem(
           saveItem(current, { status: control === 'cancel' ? 'cancelled' : 'waiting', currentStep: step.label, progress: current.progress })
           break
         }
-        const failure = classifyError(error, step.key)
+        const failure = classifyAutomationError(error, step.key)
         const attempts = current.attempts + 1
         if (failure.retryable && attempts < step.maxAttempts) {
-          const delay = Math.min(5_000, 500 * (2 ** (attempts - 1)))
+          const delay = step.key === 'download'
+            ? Math.min(60_000, 10_000 * (2 ** (attempts - 1)))
+            : Math.min(5_000, 500 * (2 ** (attempts - 1)))
           current = saveItem(current, { status: 'waiting', currentStep: step.label, progress: 0, attempts, error: failure.message })
           log(job.id, `${current.title}: ${step.label} will retry in ${Math.max(1, Math.round(delay / 1000))} second${delay >= 1500 ? 's' : ''} (attempt ${attempts + 1}/${step.maxAttempts}). ${failure.message}`, 'warning', current)
           await new Promise((resolveDelay) => setTimeout(resolveDelay, delay))
@@ -345,12 +390,27 @@ async function runStep(job: AutomationJob, step: AutomationWorkflowStep): Promis
       log(job.id, `Selected ${config.localMediaPaths.length} local media file${config.localMediaPaths.length === 1 ? '' : 's'}.`)
       return { selected: config.localMediaPaths.map(localMediaId), count: config.localMediaPaths.length, local: true }
     }
-    const videos = await sourceVideos(config.sourceUrl, config.sourceOrder, config.selectedVideoIds.length ? 50 : config.sourceCount)
     const explicit = new Set(config.selectedVideoIds)
-    const selected = videos
-      .filter((v) => explicit.size ? explicit.has(v.id) : v.durationSec >= config.rules.minDurationSec)
-      .slice(0, explicit.size || config.sourceCount)
+    const requestCount = explicit.size ? 50 : Math.min(50, Math.max(config.sourceCount * 5, config.sourceCount + 10))
+    const videos = await sourceVideos(config.sourceUrl, config.sourceOrder, requestCount)
+    const source = repos.sourceChannel(config.sourceId)
+    const uploads = config.rules.skipUploaded && source?.linkedMyChannelId ? repos.getUploads(source.linkedMyChannelId) : []
+    const threshold = getSettings().detection?.confirmBand?.[1] ?? DEFAULT_UPLOAD_MATCH_THRESHOLD
+    const selected: ScrapedVideo[] = []
+    const skipped: Array<{ video: ScrapedVideo; reason: string }> = []
+    for (const video of videos) {
+      if (explicit.size && !explicit.has(video.id)) continue
+      if (!explicit.size && video.durationSec < config.rules.minDurationSec) continue
+      const match = uploads.length ? uploadedMatch(video, uploads, threshold) : { matched: false }
+      if (match.matched) {
+        skipped.push({ video, reason: match.reason || 'uploaded match' })
+        continue
+      }
+      selected.push(video)
+      if (selected.length >= (explicit.size || config.sourceCount)) break
+    }
     if (!selected.length) throw new Error('No source videos matched the selection rules.')
+    skipped.forEach(({ video, reason }) => log(job.id, `Skipped already-uploaded candidate "${video.title}" — ${reason}.`, 'warning'))
     for (const video of selected) {
       const existing = repos.automationItems(job.id).find((i) => i.sourceVideoId === video.id)
       if (existing) continue
@@ -359,8 +419,8 @@ async function runStep(job: AutomationJob, step: AutomationWorkflowStep): Promis
         status: 'waiting', currentStep: 'Waiting', progress: 0, attempts: 0, updatedAt: now()
       })
     }
-    log(job.id, `Selected ${selected.length} video${selected.length === 1 ? '' : 's'} from ${config.sourceName}.`)
-    return { selected: selected.map((v) => v.id), count: selected.length }
+    log(job.id, `Inspected ${videos.length} candidate${videos.length === 1 ? '' : 's'}; selected ${selected.length} eligible video${selected.length === 1 ? '' : 's'} from ${config.sourceName}${skipped.length ? ` and skipped ${skipped.length} uploaded match${skipped.length === 1 ? '' : 'es'}` : ''}.`)
+    return { selected: selected.map((v) => v.id), count: selected.length, inspected: videos.length, skippedUploaded: skipped.length }
   }
   if (step.key === 'download') {
     if (config.sourceKind === 'local-files') {
@@ -391,6 +451,13 @@ async function runStep(job: AutomationJob, step: AutomationWorkflowStep): Promis
       }
       const video = byId.get(item.sourceVideoId)
       if (!video) throw new Error('The selected source video is no longer available.')
+      const delayMs = Math.round((config.rules.downloadDelaySec ?? 3) * 1000)
+      if (delayMs > 0) {
+        const jitter = Math.floor(Math.random() * 1000)
+        const totalDelay = delayMs + jitter
+        log(job.id, `Pacing YouTube request for ${Math.max(1, Math.round(totalDelay / 1000))} seconds before downloading ${item.title}.`, 'info', item)
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, totalDelay))
+      }
       const [download] = await startDownloads([video], { bitrate: 192, sourceUrl: config.sourceUrl })
       if (controlState(job.id) === 'cancel') return saveItem(item, { status: 'cancelled', currentStep: step.label, progress: 0 })
       if (!download?.filePath || download.stage === 'Failed' || !existsSync(download.filePath)) throw new Error(download?.error || 'Download did not produce a usable audio file.')
@@ -404,13 +471,33 @@ async function runStep(job: AutomationJob, step: AutomationWorkflowStep): Promis
       const beta = asBetaOpts(project.betaOpts)
       repos.updateProject(project.id, {
         captionPreset: config.captionPreset,
+        captionFont: config.captionFont ?? 'Montserrat',
+        captionAnim: config.captionAnim ?? 'Pop-in',
         captionAspect: config.aspectRatios[0] ?? '16:9',
+        captionLines: config.captionLines ?? 1,
+        captionPosition: config.captionPosition ?? 'bottom',
+        captionPace: config.captionPace ?? 'auto',
+        captionHighlightColor: config.captionHighlightColor,
+        captionBoxColor: config.captionBoxColor,
+        captionWordsPerPage: config.captionWordsPerPage ?? 2,
+        imageMode: config.imageMode ?? 'pool',
+        crossfade: config.crossfadeSec ?? 0.8,
         betaOpts: {
           ...beta,
           style: config.style,
           autoHighlight: config.style !== 'None',
+          overlay: config.overlay ?? beta.overlay,
           autoZoom: { atStart: config.style !== 'None', atKeyPhrases: config.style === 'Intense' },
-          broll: { ...beta.broll, enabled: config.rules.autoBroll }
+          broll: {
+            ...beta.broll,
+            enabled: config.rules.autoBroll,
+            density: config.brollDensity ?? beta.broll.density,
+            poolSize: config.brollPoolSize ?? beta.broll.poolSize,
+            mode: config.brollMode ?? beta.broll.mode,
+            poolKey: config.brollPoolKey || undefined,
+            shuffle: config.brollShuffle !== false,
+            shuffleSeed: project.seed
+          }
         }
       })
       if (config.assetPaths.length && repos.getProjectImages(project.id).length === 0) setImages(project.id, config.assetPaths)

@@ -328,6 +328,8 @@ export type AutomationErrorKind =
 export interface AutomationRules {
   minDurationSec: number
   skipDownloaded: boolean
+  skipUploaded?: boolean
+  downloadDelaySec?: number
   continueOnError: boolean
   maxRetries: number
   minimumFreeSpaceGb: number
@@ -353,6 +355,22 @@ export interface AutomationJobConfig {
   assetPaths: string[]
   style: VideoStyle
   captionPreset: string
+  captionFont?: string
+  captionAnim?: string
+  captionLines?: 1 | 2 | 3
+  captionPosition?: 'top' | 'middle' | 'bottom'
+  captionPace?: 'auto' | 'word' | 'phrase'
+  captionHighlightColor?: string
+  captionBoxColor?: string
+  captionWordsPerPage?: 1 | 2 | 3
+  imageMode?: ImageMode
+  crossfadeSec?: number
+  overlay?: BetaVideoOpts['overlay']
+  brollPoolKey?: string
+  brollDensity?: BrollDensity
+  brollPoolSize?: number
+  brollMode?: 'full' | 'overlay'
+  brollShuffle?: boolean
   aspectRatios: Array<'16:9' | '1:1' | '9:16'>
   rules: AutomationRules
   notify: { desktop: boolean; webhook: boolean; sound: boolean; email: boolean }
@@ -645,7 +663,17 @@ export interface BetaVideoOpts {
   /** automatic zoom — at the start, and/or punch-zoom on emphasized words */
   autoZoom: { atStart: boolean; atKeyPhrases: boolean }
   // ---- phase 2: themed b-roll pool ----
-  broll: { enabled: boolean; density: BrollDensity; poolSize: number; mode: 'full' | 'overlay' }
+  broll: {
+    enabled: boolean
+    density: BrollDensity
+    poolSize: number
+    mode: 'full' | 'overlay'
+    /** explicit cached pool selected by Automation; source-linked niche remains fallback */
+    poolKey?: string
+    /** stable per-project shuffle: different videos differ, rerenders stay deterministic */
+    shuffle?: boolean
+    shuffleSeed?: number
+  }
   // ---- phase 3: style + transition/text-effect plan ----
   style: VideoStyle
   /** optional manual/LLM-generated effect plan JSON (overrides the style's rule engine) */
@@ -667,7 +695,7 @@ export const DEFAULT_BETA_OPTS: BetaVideoOpts = {
   autoHighlight: false,
   overlay: { bottom: false, top: false, left: false, right: false, intensity: 50 },
   autoZoom: { atStart: false, atKeyPhrases: false },
-  broll: { enabled: false, density: 'sparse', poolSize: 18, mode: 'full' },
+  broll: { enabled: false, density: 'sparse', poolSize: 18, mode: 'full', poolKey: undefined, shuffle: true, shuffleSeed: undefined },
   style: 'None',
   effectPlanJson: ''
 }
@@ -725,7 +753,10 @@ export function asBetaOpts(v: unknown): BetaVideoOpts {
       enabled: boolValue(broll.enabled, DEFAULT_BETA_OPTS.broll.enabled),
       density,
       poolSize: Math.round(clampNumber(broll.poolSize, DEFAULT_BETA_OPTS.broll.poolSize, 1, 200)),
-      mode
+      mode,
+      poolKey: typeof broll.poolKey === 'string' && broll.poolKey.trim() ? broll.poolKey.trim().slice(0, 160) : undefined,
+      shuffle: boolValue(broll.shuffle, DEFAULT_BETA_OPTS.broll.shuffle ?? true),
+      shuffleSeed: Number.isFinite(Number(broll.shuffleSeed)) ? Math.max(0, Math.floor(Number(broll.shuffleSeed))) : undefined
     },
     style,
     effectPlanJson: stringValue(o.effectPlanJson, DEFAULT_BETA_OPTS.effectPlanJson)
