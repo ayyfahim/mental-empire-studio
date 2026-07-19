@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - claude/compose-tab-issues-budb3w
+  pull_request:
+    branches:
+      - build/mental-empire-studio
 
 permissions:
   contents: write
@@ -33,6 +36,7 @@ jobs:
       - name: Production build
         run: npm run build
       - name: Commit validated implementation
+        if: ${{ github.event_name == 'push' }}
         run: |
           rm -f .github/automation_fix.py .github/automation-trigger .github/workflows/apply-automation-fixes.yml
           git config user.name "github-actions[bot]"
