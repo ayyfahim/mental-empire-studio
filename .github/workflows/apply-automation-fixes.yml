@@ -30,15 +30,36 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Typecheck
-        run: npm run typecheck
+        run: npm run typecheck 2>&1 | tee automation-typecheck.log
+      - name: Upload typecheck diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: automation-typecheck-diagnostics
+          path: automation-typecheck.log
+          if-no-files-found: error
       - name: Unit tests
-        run: npm test
+        run: npm test 2>&1 | tee automation-tests.log
+      - name: Upload test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: automation-test-diagnostics
+          path: automation-tests.log
+          if-no-files-found: error
       - name: Production build
-        run: npm run build
+        run: npm run build 2>&1 | tee automation-build.log
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: automation-build-diagnostics
+          path: automation-build.log
+          if-no-files-found: error
       - name: Commit validated implementation
-        if: ${{ github.event_name == 'push' }}
+        if: ${{ github.event_name == 'push' && success() }}
         run: |
-          rm -f .github/automation_fix.py .github/automation-trigger .github/workflows/apply-automation-fixes.yml
+          rm -f .github/automation_fix.py .github/automation-trigger .github/workflows/apply-automation-fixes.yml automation-typecheck.log automation-tests.log automation-build.log
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
