@@ -15,7 +15,7 @@ export const AUTOMATION_GOALS: AutomationGoalDefinition[] = [
   { id: 'download-edit', title: 'Download and edit videos', description: 'Bring selected source videos into projects and apply your assets and style.', outcome: 'Edited and exported videos', available: true },
   { id: 'transcribe-subtitle', title: 'Transcribe and subtitle', description: 'Create styled captions and export captioned videos.', outcome: 'Captioned videos ready to review', available: true },
   { id: 'apply-style', title: 'Apply a saved editing style', description: 'Use one consistent visual and caption recipe across a batch.', outcome: 'Consistently branded exports', available: true },
-  { id: 'review-export', title: 'Prepare for review and export', description: 'Finish projects, validate outputs, and organize result files.', outcome: 'Quality-checked exports', available: true },
+  { id: 'review-export', title: 'Prepare for review and export', description: 'Finish existing projects, validate outputs, and organize result files.', outcome: 'Quality-checked exports', available: false, availabilityNote: 'Needs an existing-project source adapter' },
   { id: 'long-to-shorts', title: 'Turn long videos into shorts', description: 'Find highlights and create short vertical clips.', outcome: 'A set of short-form clips', available: false, availabilityNote: 'Needs timeline cutting and highlight scoring' },
   { id: 'multi-platform', title: 'Repurpose for every platform', description: 'Produce 16:9, 9:16, and 1:1 variants with smart reframing.', outcome: 'Platform-ready variants', available: false, availabilityNote: 'Needs multi-output reframing' },
   { id: 'images-to-video', title: 'Create a video from images', description: 'Build a complete video from selected images and audio.', outcome: 'A finished image-led video', available: false, availabilityNote: 'Audio/source upload flow is not available yet' }
@@ -42,6 +42,8 @@ export function buildAutomationWorkflow(jobId: string, config: AutomationJobConf
     .filter((s) => s.key !== 'transcribe' || config.rules.captions)
     .map((step, ord) => ({
       ...step,
+      label: step.key === 'download' && config.sourceKind === 'local-files' ? 'Import media' : step.label,
+      description: step.key === 'download' && config.sourceKind === 'local-files' ? 'Validate selected local media and register reusable inputs.' : step.description,
       id: `${jobId}-${step.key}`,
       jobId,
       ord,

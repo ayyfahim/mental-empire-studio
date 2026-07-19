@@ -9,7 +9,7 @@ import Database from 'better-sqlite3'
 
 function config(captions = true): AutomationJobConfig {
   return {
-    sourceId: 'src-1', sourceUrl: 'https://youtube.com/@source', sourceName: 'Source', sourceOrder: 'Latest', sourceCount: 3, selectedVideoIds: [],
+    sourceKind: 'saved-source', sourceId: 'src-1', sourceUrl: 'https://youtube.com/@source', sourceName: 'Source', sourceOrder: 'Latest', sourceCount: 3, selectedVideoIds: [], localMediaPaths: [],
     assetPaths: ['D:/assets/a.png'], style: 'Clean', captionPreset: 'Hormozi', aspectRatios: ['16:9'], execution: 'local',
     rules: { minDurationSec: 0, skipDownloaded: true, continueOnError: true, maxRetries: 2, minimumFreeSpaceGb: 2, captions, autoBroll: false, removeSilence: false, reduceFillerWords: false, keepAwake: true },
     notify: { desktop: true, webhook: false, sound: true, email: false }

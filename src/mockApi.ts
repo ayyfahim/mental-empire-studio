@@ -38,6 +38,7 @@ import {
   type WorkItem
 } from '@shared/types'
 import type { GpuRenderSpec } from '@shared/renderSpec'
+import { buildAutomationWorkflow } from '@shared/automation'
 import type { ImageMotionSpec } from '@shared/renderSpec'
 import { resolveCaptionStyle } from '@shared/captionStyle'
 import { LOOKS, lookById } from '@shared/looks'
@@ -843,27 +844,29 @@ function installMock(): void {
       tick: async () => {
         pushActivity('Manual auto-scrape tick completed')
       },
-      preflight: async (draft: AutomationJobDraft) => ({
-        ok: !!draft.config.sourceId,
-        blockers: draft.config.sourceId ? [] : ['Choose a saved source.'],
+      preflight: async (draft: AutomationJobDraft) => {
+        const hasSource = draft.config.sourceKind === 'local-files'
+          ? draft.config.localMediaPaths.length > 0
+          : draft.config.sourceKind === 'youtube-url' ? /^https:\/\/(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\//i.test(draft.config.sourceUrl) : !!draft.config.sourceId
+        const itemCount = draft.config.sourceKind === 'local-files' ? draft.config.localMediaPaths.length : draft.config.selectedVideoIds.length || draft.config.sourceCount
+        return {
+        ok: hasSource,
+        blockers: hasSource ? [] : ['Choose a valid source.'],
         warnings: [],
-        estimatedStorageGb: Math.max(0.3, (draft.config.selectedVideoIds.length || draft.config.sourceCount) * 0.75),
-        estimatedMinutes: (draft.config.selectedVideoIds.length || draft.config.sourceCount) * 18,
-        sourceItems: draft.config.selectedVideoIds.length || draft.config.sourceCount,
+        estimatedStorageGb: Math.max(0.3, itemCount * 0.75),
+        estimatedMinutes: itemCount * 18,
+        sourceItems: itemCount,
         powerMessage: 'This job runs locally. The computer must remain powered on.',
         appMessage: 'You may close this window; the desktop process continues in the tray.'
-      }),
+      }},
       createJob: async (draft: AutomationJobDraft) => {
         const id = `auto-browser-${Date.now()}`
         const at = new Date().toISOString()
         const job: AutomationJobDetail = {
           id, name: draft.name, goal: draft.goal, status: 'queued', progress: 0, currentStep: 'Waiting to start',
           config: draft.config, createdAt: at, updatedAt: at, pauseRequested: false, cancelRequested: false,
-          warningCount: 0, failedCount: 0, completedCount: 0, totalItems: draft.config.sourceCount,
-          steps: ['Preflight','Select content','Download','Build projects','Transcribe','Apply style','Render videos','Quality check','Finish & notify'].map((label, ord) => ({
-            id: `${id}-step-${ord}`, jobId: id, key: slug(label), label, description: label, ord, status: 'pending' as const,
-            progress: 0, attempts: 0, maxAttempts: draft.config.rules.maxRetries + 1, runsOn: label === 'Transcribe' ? 'online-service' as const : 'local' as const, optional: label === 'Transcribe'
-          })),
+          warningCount: 0, failedCount: 0, completedCount: 0, totalItems: draft.config.sourceKind === 'local-files' ? draft.config.localMediaPaths.length : draft.config.sourceCount,
+          steps: buildAutomationWorkflow(id, draft.config),
           items: [], logs: [{ id: 1, jobId: id, level: 'info', message: 'Browser preview job saved.', createdAt: at }]
         }
         automationJobDetails.unshift(job)

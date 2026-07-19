@@ -691,7 +691,12 @@ function rowToAutomationJob(r: Record<string, unknown>): AutomationJob {
   return {
     ...(r as unknown as AutomationJob),
     progress: coerceNum(r.progress, 0),
-    config: { ...config, selectedVideoIds: Array.isArray(config.selectedVideoIds) ? config.selectedVideoIds : [] },
+    config: {
+      ...config,
+      sourceKind: config.sourceKind === 'youtube-url' || config.sourceKind === 'local-files' ? config.sourceKind : 'saved-source',
+      selectedVideoIds: Array.isArray(config.selectedVideoIds) ? config.selectedVideoIds : [],
+      localMediaPaths: Array.isArray(config.localMediaPaths) ? config.localMediaPaths : []
+    },
     result: jsonObject<AutomationJob['result'] | undefined>(r.resultJson, undefined),
     pauseRequested: !!r.pauseRequested,
     cancelRequested: !!r.cancelRequested,

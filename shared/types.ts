@@ -339,6 +339,8 @@ export interface AutomationRules {
 }
 
 export interface AutomationJobConfig {
+  /** Where the production media comes from. Legacy jobs default to saved-source. */
+  sourceKind: 'saved-source' | 'youtube-url' | 'local-files'
   sourceId: string
   sourceUrl: string
   sourceName: string
@@ -346,6 +348,8 @@ export interface AutomationJobConfig {
   sourceCount: number
   /** Optional explicit source video ids; empty means apply the automatic selection rules. */
   selectedVideoIds: string[]
+  /** Local audio/video files selected by the user. Empty for YouTube-backed jobs. */
+  localMediaPaths: string[]
   assetPaths: string[]
   style: VideoStyle
   captionPreset: string

@@ -1,6 +1,8 @@
 import { app, powerSaveBlocker } from 'electron'
 import { existsSync, statfsSync, statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
+import { basename, dirname, extname, resolve } from 'node:path'
+import { createHash } from 'node:crypto'
 import type {
   AutomationErrorKind,
   AutomationJob,
@@ -27,14 +29,30 @@ import { notifyMessage } from './notify'
 import { postWebhook } from './webhook'
 import { logger } from './logger'
 import { hasConfiguredBrollSource } from './broll'
+import { probeDuration } from './audio'
 
 const LOG = logger.scope('automation-supervisor')
 let pumping = false
 let stopped = false
 let wakeTimer: ReturnType<typeof setTimeout> | null = null
+const smokeFailures = new Set<string>()
 
 function now(): string { return new Date().toISOString() }
 function itemId(jobId: string, videoId: string): string { return `${jobId}-item-${videoId}` }
+function localMediaId(path: string): string { return `local-${createHash('sha256').update(resolve(path)).digest('hex').slice(0, 20)}` }
+
+const LOCAL_MEDIA_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.mp4', '.mov', '.mkv', '.webm'])
+
+function validYoutubeSource(value: string): boolean {
+  const trimmed = value.trim()
+  if (/^@[A-Za-z0-9_.-]+$/.test(trimmed)) return true
+  try {
+    const url = new URL(trimmed)
+    return url.protocol === 'https:' && ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'].includes(url.hostname.toLowerCase())
+  } catch {
+    return false
+  }
+}
 
 function detail(id: string): AutomationJobDetail | null {
   const repos = getRepos()
@@ -94,7 +112,13 @@ function classifyError(error: unknown, step = ''): { kind: AutomationErrorKind; 
 
 function storageRoot(): string {
   const settings = getSettings()
-  return settings.libraryFolder || settings.outputFolder || app.getPath('documents')
+  let candidate = resolve(settings.libraryFolder || settings.outputFolder || app.getPath('documents'))
+  while (!existsSync(candidate)) {
+    const parent = dirname(candidate)
+    if (parent === candidate) return app.getPath('documents')
+    candidate = parent
+  }
+  return candidate
 }
 
 function normalizeDraft(draft: AutomationJobDraft): AutomationJobDraft {
@@ -102,13 +126,24 @@ function normalizeDraft(draft: AutomationJobDraft): AutomationJobDraft {
   const styles = new Set(['None', 'Cinematic', 'Intense', 'Heartfelt', 'Clean'])
   const ratios = (Array.isArray(draft.config?.aspectRatios) ? draft.config.aspectRatios : []).filter((r): r is '16:9' | '1:1' | '9:16' => r === '16:9' || r === '1:1' || r === '9:16')
   const rawRules = draft.config?.rules
+  const requestedKind = draft.config?.sourceKind
+  const sourceKind = requestedKind === 'youtube-url' || requestedKind === 'local-files' ? requestedKind : 'saved-source'
+  const localMediaPaths = Array.isArray(draft.config?.localMediaPaths)
+    ? [...new Set(draft.config.localMediaPaths.filter((p): p is string => typeof p === 'string' && p.length < 2048).map((p) => resolve(p)))].slice(0, 50)
+    : []
+  const directUrl = typeof draft.config?.sourceUrl === 'string' ? draft.config.sourceUrl.trim().slice(0, 2048) : ''
   const config: AutomationJobConfig = {
-    sourceId: source?.id ?? '',
-    sourceUrl: source?.url ?? '',
-    sourceName: source?.name || source?.handle || '',
+    sourceKind,
+    sourceId: sourceKind === 'saved-source' ? source?.id ?? '' : '',
+    sourceUrl: sourceKind === 'saved-source' ? source?.url ?? '' : sourceKind === 'youtube-url' ? directUrl : '',
+    sourceName: sourceKind === 'saved-source'
+      ? source?.name || source?.handle || ''
+      : sourceKind === 'youtube-url' ? (typeof draft.config?.sourceName === 'string' && draft.config.sourceName.trim() ? draft.config.sourceName.trim().slice(0, 160) : 'YouTube URL')
+        : localMediaPaths.length === 1 ? basename(localMediaPaths[0]) : `${localMediaPaths.length} local files`,
     sourceOrder: draft.config?.sourceOrder === 'Popular' || draft.config?.sourceOrder === 'Oldest' ? draft.config.sourceOrder : 'Latest',
     sourceCount: Math.max(1, Math.min(50, Number(draft.config?.sourceCount) || 1)),
     selectedVideoIds: Array.isArray(draft.config?.selectedVideoIds) ? [...new Set(draft.config.selectedVideoIds.filter((id): id is string => typeof id === 'string' && /^[A-Za-z0-9_-]{1,160}$/.test(id)))].slice(0, 50) : [],
+    localMediaPaths,
     assetPaths: Array.isArray(draft.config?.assetPaths) ? [...new Set(draft.config.assetPaths.filter((p): p is string => typeof p === 'string' && p.length < 2048))].slice(0, 200) : [],
     style: styles.has(draft.config?.style) ? draft.config.style : 'Clean',
     captionPreset: typeof draft.config?.captionPreset === 'string' ? draft.config.captionPreset.slice(0, 80) : 'Hormozi',
@@ -144,7 +179,11 @@ export function preflightAutomation(draft: AutomationJobDraft): AutomationPrefli
   const repos = getRepos()
   const source = repos.sourceChannel(draft.config.sourceId)
   if (!isAutomationGoalAvailable(draft.goal)) blockers.push('This goal needs media capabilities that are not available in the current version.')
-  if (!source || !draft.config.sourceUrl) blockers.push('Choose a saved YouTube source before starting.')
+  if (draft.config.sourceKind === 'saved-source' && (!source || !draft.config.sourceUrl)) blockers.push('Choose a saved YouTube source before starting.')
+  if (draft.config.sourceKind === 'youtube-url' && !validYoutubeSource(draft.config.sourceUrl)) blockers.push('Enter a valid HTTPS YouTube channel, playlist, or video URL.')
+  if (draft.config.sourceKind === 'local-files' && !draft.config.localMediaPaths.length) blockers.push('Choose at least one local audio or video file.')
+  const invalidLocalMedia = draft.config.localMediaPaths.filter((path) => !existsSync(path) || !LOCAL_MEDIA_EXTENSIONS.has(extname(path).toLowerCase()))
+  if (invalidLocalMedia.length) blockers.push(`${invalidLocalMedia.length} local media file${invalidLocalMedia.length === 1 ? ' is' : 's are'} missing or unsupported.`)
   if (draft.config.sourceCount < 1) blockers.push('Choose at least one source video.')
   if (draft.config.rules.captions && !getSettings().transcription.apiKey.trim()) blockers.push('Add a Groq transcription key in Settings, or turn captions off.')
   if (!draft.config.assetPaths.length && !draft.config.rules.autoBroll) blockers.push('Add at least one image or enable Auto B-roll so the exports have visual media.')
@@ -153,7 +192,9 @@ export function preflightAutomation(draft: AutomationJobDraft): AutomationPrefli
   if (draft.config.rules.autoBroll && !hasConfiguredBrollSource(getSettings())) warnings.push('No stock B-roll provider is configured. A warmed local B-roll pool is required or rendering will pause for attention.')
   if (draft.config.notify.email) warnings.push('Email notifications are not connected yet; desktop and webhook notifications will still work.')
   if (draft.config.notify.sound) warnings.push('Sound alerts use the operating system notification sound in this version.')
-  const expectedItems = draft.config.selectedVideoIds.length || draft.config.sourceCount
+  const expectedItems = draft.config.sourceKind === 'local-files'
+    ? draft.config.localMediaPaths.length
+    : draft.config.selectedVideoIds.length || draft.config.sourceCount
   const estimatedStorageGb = Math.max(0.3, expectedItems * 0.75)
   try {
     const fs = statfsSync(storageRoot())
@@ -233,28 +274,39 @@ async function eachItem(
   for (const original of items) {
     if (controlState(job.id) !== 'run') break
     if (original.status === 'failed' || original.status === 'skipped' || original.status === 'cancelled') { processed++; continue }
-    try {
-      const item = saveItem(original, { status: 'processing', currentStep: step.label, progress: 1, error: undefined })
-      await fn(item)
-    } catch (error) {
-      const control = controlState(job.id)
-      if (control !== 'run') {
-        saveItem(original, { status: control === 'cancel' ? 'cancelled' : 'waiting', currentStep: step.label, progress: original.progress })
+    let current = original
+    while (controlState(job.id) === 'run') {
+      try {
+        current = saveItem(current, { status: 'processing', currentStep: step.label, progress: 1, error: undefined })
+        await fn(current)
+        break
+      } catch (error) {
+        const control = controlState(job.id)
+        if (control !== 'run') {
+          saveItem(current, { status: control === 'cancel' ? 'cancelled' : 'waiting', currentStep: step.label, progress: current.progress })
+          break
+        }
+        const failure = classifyError(error, step.key)
+        const attempts = current.attempts + 1
+        if (failure.retryable && attempts < step.maxAttempts) {
+          const delay = Math.min(5_000, 500 * (2 ** (attempts - 1)))
+          current = saveItem(current, { status: 'waiting', currentStep: step.label, progress: 0, attempts, error: failure.message })
+          log(job.id, `${current.title}: ${step.label} will retry in ${Math.max(1, Math.round(delay / 1000))} second${delay >= 1500 ? 's' : ''} (attempt ${attempts + 1}/${step.maxAttempts}). ${failure.message}`, 'warning', current)
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, delay))
+          continue
+        }
+        if (step.optional && job.config.rules.continueOnError) {
+          const warned = saveItem(current, { status: 'warning', currentStep: step.label, progress: 100, attempts, warning: failure.message, error: undefined })
+          log(job.id, `${current.title}: ${step.label} was skipped after ${attempts} attempt${attempts === 1 ? '' : 's'}, and later steps will continue. ${failure.message}`, 'warning', warned)
+          break
+        }
+        const failed = saveItem(current, { status: 'failed', currentStep: step.label, progress: 0, attempts, error: failure.message })
+        log(job.id, `${current.title}: ${failure.message}`, 'error', failed)
+        if (!job.config.rules.continueOnError) throw error
         break
       }
-      const failure = classifyError(error, step.key)
-      if (step.optional && job.config.rules.continueOnError) {
-        const warned = saveItem(original, { status: 'warning', currentStep: step.label, progress: 100, attempts: original.attempts + 1, warning: failure.message, error: undefined })
-        log(job.id, `${original.title}: ${step.label} was skipped, and later steps will continue. ${failure.message}`, 'warning', warned)
-        processed++
-        repos.updateAutomationStep(step.id, { progress: Math.round((processed / Math.max(1, items.length)) * 100) })
-        refreshJobProgress(job.id, step.label)
-        continue
-      }
-      const failed = saveItem(original, { status: 'failed', currentStep: step.label, progress: 0, attempts: original.attempts + 1, error: failure.message })
-      log(job.id, `${original.title}: ${failure.message}`, 'error', failed)
-      if (!job.config.rules.continueOnError) throw error
     }
+    if (controlState(job.id) !== 'run') break
     processed++
     repos.updateAutomationStep(step.id, { progress: Math.round((processed / Math.max(1, items.length)) * 100) })
     refreshJobProgress(job.id, step.label)
@@ -268,6 +320,12 @@ async function eachItem(
 async function runStep(job: AutomationJob, step: AutomationWorkflowStep): Promise<Record<string, unknown>> {
   const repos = getRepos()
   const config = job.config
+  const injected = process.env['ME_SMOKE'] === 'automation' ? process.env['ME_AUTOMATION_FAIL_ONCE'] : undefined
+  const injectionKey = `${job.id}:${step.key}`
+  if (injected === step.key && !smokeFailures.has(injectionKey)) {
+    smokeFailures.add(injectionKey)
+    throw new Error(`Temporary smoke failure in ${step.label}`)
+  }
   if (step.key === 'preflight') {
     const checked = preflightAutomation({ name: job.name, goal: job.goal, config })
     if (!checked.ok) throw new Error(checked.blockers.join(' '))
@@ -275,6 +333,18 @@ async function runStep(job: AutomationJob, step: AutomationWorkflowStep): Promis
     return { checkedAt: now(), estimatedStorageGb: checked.estimatedStorageGb, estimatedMinutes: checked.estimatedMinutes }
   }
   if (step.key === 'discover') {
+    if (config.sourceKind === 'local-files') {
+      for (const path of config.localMediaPaths) {
+        const id = localMediaId(path)
+        if (repos.automationItems(job.id).some((item) => item.sourceVideoId === id)) continue
+        repos.upsertAutomationItem({
+          id: itemId(job.id, id), jobId: job.id, sourceVideoId: id,
+          title: basename(path, extname(path)), status: 'waiting', currentStep: 'Waiting', progress: 0, attempts: 0, updatedAt: now()
+        })
+      }
+      log(job.id, `Selected ${config.localMediaPaths.length} local media file${config.localMediaPaths.length === 1 ? '' : 's'}.`)
+      return { selected: config.localMediaPaths.map(localMediaId), count: config.localMediaPaths.length, local: true }
+    }
     const videos = await sourceVideos(config.sourceUrl, config.sourceOrder, config.selectedVideoIds.length ? 50 : config.sourceCount)
     const explicit = new Set(config.selectedVideoIds)
     const selected = videos
@@ -293,7 +363,25 @@ async function runStep(job: AutomationJob, step: AutomationWorkflowStep): Promis
     return { selected: selected.map((v) => v.id), count: selected.length }
   }
   if (step.key === 'download') {
-    const cachedVideos = repos.getSourceVideos(config.sourceId)
+    if (config.sourceKind === 'local-files') {
+      const pathById = new Map(config.localMediaPaths.map((path) => [localMediaId(path), path]))
+      await eachItem(job, step, async (item) => {
+        const path = pathById.get(item.sourceVideoId)
+        if (!path || !existsSync(path)) throw new Error(`Local media is missing: ${path || item.title}`)
+        const durationSec = await probeDuration(path)
+        if (!durationSec || durationSec <= 0) throw new Error(`Local media has no usable audio duration: ${basename(path)}`)
+        const downloadId = `dl-${item.sourceVideoId}`
+        repos.upsertDownload({
+          id: downloadId, sourceId: 'local', title: item.title, channel: 'Local files', size: `${(statSync(path).size / 1_000_000).toFixed(1)} MB`,
+          when: 'imported', stage: 'Downloaded only', pct: '100%', action: 'Open', thumb: '', filePath: path, durationSec, error: ''
+        })
+        log(job.id, `Imported ${basename(path)} (${Math.round(durationSec)} seconds).`, 'info', item)
+        return saveItem(item, { status: 'completed', currentStep: step.label, progress: 100 })
+      })
+      return { importedAt: now(), local: true }
+    }
+    const resolvedSource = repos.sourceChannel(config.sourceId) ?? repos.sourceChannelByUrl(config.sourceUrl)
+    const cachedVideos = resolvedSource ? repos.getSourceVideos(resolvedSource.id) : []
     const byId = new Map<string, ScrapedVideo>(cachedVideos.map((v) => [v.id, v]))
     await eachItem(job, step, async (item) => {
       const existing = repos.download(`dl-${item.sourceVideoId}`)

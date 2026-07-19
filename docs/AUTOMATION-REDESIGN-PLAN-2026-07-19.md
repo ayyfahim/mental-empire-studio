@@ -1,5 +1,7 @@
 # Automation redesign and unattended-production plan
 
+> Implementation status: the smallest functional unattended workflow described here is now implemented. Direct YouTube URLs and local media files were added during the recovery pass in addition to saved sources. See [AUTOMATION-FUNCTIONAL-RECOVERY-REPORT-2026-07-19.md](./AUTOMATION-FUNCTIONAL-RECOVERY-REPORT-2026-07-19.md) for the verified behavior, test evidence, and remaining phased work.
+
 ## Architecture findings
 
 - **Current UI:** `src/screens/Profiles.tsx` is a source-card overview. It exposes a one-click run and a five-chip progress strip, but it does not begin with a goal, explain configuration, provide preflight, or show durable jobs/history.
@@ -34,7 +36,7 @@ Exact unattended journey:
 
 ## 3. Supported goals
 
-Core v1 goal: **Produce finished videos automatically from a saved YouTube source to export**. Presets also express download/edit, transcription/subtitles, image-based production, short-form repurposing, batch channel processing, saved-style application, and review/export. Goals only enable steps supported by the current media engine; unsupported local-folder and multi-platform transforms are labeled as later capabilities rather than simulated.
+Core v1 goal: **Produce finished videos automatically from a saved YouTube source, a pasted YouTube video/playlist/channel URL, or selected local media files to export**. Available goal recipes express full production, download/edit, transcription/subtitles, and saved-style batch processing. Goals only enable steps supported by the current media engine; image-only generation, long-to-short reframing, existing-project review/export, and multi-platform transforms remain visibly unavailable rather than simulated.
 
 ## 4. Workflow generation
 

@@ -271,12 +271,13 @@ export function Chip({
   )
 }
 
-export function Switch({ on, onToggle, disabled }: { on: boolean; onToggle: () => void; disabled?: boolean }): JSX.Element {
+export function Switch({ on, onToggle, disabled, label }: { on: boolean; onToggle: () => void; disabled?: boolean; label?: string }): JSX.Element {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={on}
+      aria-label={label}
       disabled={disabled}
       onClick={onToggle}
       className="ed-focus"
@@ -330,7 +331,7 @@ export function ToggleRow({
         <div style={{ fontSize: 12, color: on ? 'var(--text-bright)' : '#cdd2da', fontWeight: on ? 600 : 500 }}>{label}</div>
         {hint && <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2, lineHeight: 1.35 }}>{hint}</div>}
       </div>
-      <Switch on={on} onToggle={onToggle} disabled={disabled} />
+      <Switch on={on} onToggle={onToggle} disabled={disabled} label={label} />
     </div>
   )
 }

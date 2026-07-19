@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { existsSync, mkdirSync, statSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, statSync, writeFileSync, readFileSync, rmSync, unlinkSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { applyLoginItem, trayIconPath } from './services/background'
 import * as scheduler from './services/scheduler'
@@ -16,7 +16,7 @@ import { firedNotifications } from './services/notify'
 import { channelUrl, orderVideos } from './services/scraper'
 import { splitRanges } from './services/audio'
 import { autoArrangeText } from '../shared/thumbnail'
-import { THUMB_W, THUMB_H, DEFAULT_BETA_OPTS, type Project, type TextLayer, type ThumbnailTemplate, type TranscriptWord } from '../shared/types'
+import { THUMB_W, THUMB_H, DEFAULT_BETA_OPTS, type AutomationJobDraft, type Project, type TextLayer, type ThumbnailTemplate, type TranscriptWord } from '../shared/types'
 import { buildAss } from './services/captions'
 import { resolveCaptionStyle } from '../shared/captionStyle'
 import { isAllowedExternalUrl } from '../shared/url'
@@ -34,7 +34,7 @@ import { instrumentIpcMain, setSentryEnabled, telemetryForcedOff } from './servi
 import { runAll, lastMaxActive } from './services/queue'
 import { destroyGpuWorker } from './services/engine/gpu/host'
 import { runProfile, newVideos } from './ipc/automation'
-import { startAutomationSupervisor, stopAutomationSupervisor } from './services/automation-supervisor'
+import { cancelAutomationJob, createAutomationJob, getAutomationJob, pauseAutomationJob, preflightAutomation, resumeAutomationJob, startAutomationSupervisor, stopAutomationSupervisor } from './services/automation-supervisor'
 import { postWebhook } from './services/webhook'
 import { createServer } from 'node:http'
 
@@ -1478,6 +1478,116 @@ async function runDemoRender(): Promise<void> {
   app.exit(job?.status === 'done' ? 0 : 1)
 }
 
+/** Automation-specific end-to-end smoke. Uses a real local audio fixture, real image
+ * import, the durable supervisor, SQLite checkpoints, and a real ffmpeg encode. It
+ * also simulates an interrupted persisted row to prove startup recovery preserves a
+ * completed checkpoint. Run with ME_SMOKE=automation and an isolated user-data dir. */
+async function runSmokeAutomation(): Promise<void> {
+  const repos = getRepos()
+  const problems: string[] = []
+  const check = (ok: boolean, label: string): void => {
+    console.log(`  ${ok ? '✓' : '✗'} ${label}`)
+    if (!ok) problems.push(label)
+  }
+  const fixture = (path: string): string => join(process.cwd(), 'test', 'fixtures', path)
+  const output = join(app.getPath('temp'), `me-automation-smoke-${process.pid}`)
+  delete process.env['ME_RENDER_FIXTURE']
+  try {
+    repos.resetAll()
+    setSettings({ outputFolder: output, libraryFolder: output, quality: '720p', encoder: 'cpu', renderEngine: 'ffmpeg', beta: { enabled: false } })
+    const draft: AutomationJobDraft = {
+      name: 'Local fixture to finished video',
+      goal: 'source-to-export',
+      config: {
+        sourceKind: 'local-files', sourceId: '', sourceUrl: '', sourceName: 'sample.mp3', sourceOrder: 'Latest', sourceCount: 1,
+        selectedVideoIds: [], localMediaPaths: [fixture('audio/sample.mp3')], assetPaths: [fixture('images/img1.png')],
+        style: 'Clean', captionPreset: 'Hormozi', aspectRatios: ['16:9'], execution: 'local',
+        rules: { minDurationSec: 0, skipDownloaded: true, continueOnError: true, maxRetries: 1, minimumFreeSpaceGb: 1, captions: false, autoBroll: false, removeSilence: false, reduceFillerWords: false, keepAwake: false },
+        notify: { desktop: false, webhook: false, sound: false, email: false }
+      }
+    }
+    const preflight = preflightAutomation(draft)
+    check(preflight.ok, `preflight passes (${preflight.blockers.join('; ') || 'no blockers'})`)
+    process.env['ME_AUTOMATION_FAIL_ONCE'] = 'preflight'
+    const created = createAutomationJob(draft)
+    check(created.status === 'queued' && created.steps.length === 8, 'job and generated workflow persist before processing')
+    startAutomationSupervisor()
+    let finished = getAutomationJob(created.id)
+    for (let attempt = 0; attempt < 360 && finished && !['completed','completed_with_warnings','attention','failed','cancelled'].includes(finished.status); attempt++) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 500))
+      finished = getAutomationJob(created.id)
+    }
+    check(finished?.status === 'completed', `job completes (status=${finished?.status}, error=${finished?.error || 'none'})`)
+    check(finished?.steps.find((step) => step.key === 'preflight')?.attempts === 2, 'temporary failure retries automatically and then succeeds')
+    check(finished?.logs.some((row) => row.level === 'warning' && row.message.includes('retry automatically')) === true, 'automatic retry is explained in the job log')
+    delete process.env['ME_AUTOMATION_FAIL_ONCE']
+    check(finished?.steps.every((step) => step.status === 'completed') === true, 'every workflow step has a completed checkpoint')
+    const outputPath = finished?.result?.outputPaths[0]
+    check(!!outputPath && existsSync(outputPath), `verified output exists (${outputPath || 'missing'})`)
+    const media = outputPath ? ffprobe(outputPath) : null
+    check(!!media?.video && !!media?.audio && media.duration > 11 && media.duration < 13, `output has video+audio and expected duration (${media?.duration ?? 0}s)`)
+
+    const recoveryDraft: AutomationJobDraft = {
+      ...draft,
+      name: 'Interrupted recovery fixture',
+      config: { ...draft.config, scheduledFor: new Date(Date.now() + 3_600_000).toISOString() }
+    }
+    const recovery = createAutomationJob(recoveryDraft)
+    const firstStep = recovery.steps[0]
+    repos.updateAutomationStep(firstStep.id, { status: 'completed', progress: 100, checkpoint: { verified: true }, completedAt: new Date().toISOString() })
+    repos.updateAutomationJob(recovery.id, { status: 'running', currentStep: 'Interrupted fixture' })
+    stopAutomationSupervisor()
+    startAutomationSupervisor()
+    const recovered = getAutomationJob(recovery.id)
+    check(recovered?.status === 'queued' && recovered.currentStep.includes('Recovering'), 'startup converts interrupted work to recoverable queued state')
+    check(recovered?.steps[0].status === 'completed' && recovered.steps[0].checkpoint?.verified === true, 'startup preserves completed step checkpoint')
+
+    const control = createAutomationJob({ ...recoveryDraft, name: 'Control fixture', config: { ...recoveryDraft.config, scheduledFor: new Date(Date.now() + 7_200_000).toISOString() } })
+    pauseAutomationJob(control.id)
+    check(getAutomationJob(control.id)?.status === 'paused', 'queued job pauses persistently')
+    resumeAutomationJob(control.id)
+    check(getAutomationJob(control.id)?.status === 'queued', 'paused job resumes to the durable queue')
+    cancelAutomationJob(control.id)
+    check(getAutomationJob(control.id)?.status === 'cancelled', 'queued job cancels without deleting checkpoints')
+
+    stopAutomationSupervisor()
+    mkdirSync(output, { recursive: true })
+    const disappearingMedia = join(output, 'disappearing-after-preflight.mp3')
+    copyFileSync(fixture('audio/sample.mp3'), disappearingMedia)
+    const batchDraft: AutomationJobDraft = {
+      ...draft,
+      name: 'Continue-on-error batch fixture',
+      goal: 'batch-source',
+      config: { ...draft.config, sourceName: 'Two local files', sourceCount: 2, localMediaPaths: [fixture('audio/sample.mp3'), disappearingMedia] }
+    }
+    const batch = createAutomationJob(batchDraft)
+    const batchPreflight = batch.steps.find((step) => step.key === 'preflight')!
+    repos.updateAutomationStep(batchPreflight.id, { status: 'completed', progress: 100, checkpoint: { verifiedBeforeInputDisappeared: true }, completedAt: new Date().toISOString() })
+    unlinkSync(disappearingMedia)
+    startAutomationSupervisor()
+    let batchFinished = getAutomationJob(batch.id)
+    for (let attempt = 0; attempt < 180 && batchFinished && !['completed','completed_with_warnings','attention','failed','cancelled'].includes(batchFinished.status); attempt++) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 250))
+      batchFinished = getAutomationJob(batch.id)
+    }
+    check(batchFinished?.status === 'completed_with_warnings', `batch continues after a permanent item failure (status=${batchFinished?.status})`)
+    check(batchFinished?.failedCount === 1 && batchFinished.completedCount === 1, 'batch summary isolates one failed item and keeps one completed output')
+    check(batchFinished?.items.some((item) => item.status === 'failed' && item.error?.includes('missing')) === true, 'failed item keeps an actionable missing-file explanation')
+    check((batchFinished?.result?.outputPaths.length ?? 0) === 1, 'successful batch item retains its verified output')
+
+    stopAutomationSupervisor()
+    console.log(problems.length ? `AUTOMATION_SMOKE_PROBLEMS ${JSON.stringify(problems)}` : `AUTOMATION_SMOKE_OK output=${outputPath}`)
+    closeDatabase()
+    app.exit(problems.length ? 1 : 0)
+  } catch (error) {
+    stopAutomationSupervisor()
+    console.log(`AUTOMATION_SMOKE_FAIL ${(error as Error).message}`)
+    console.log((error as Error).stack)
+    closeDatabase()
+    app.exit(1)
+  }
+}
+
 /** Remove transient render artifacts (e.g. per-render SFX WAVs) left in temp by a
  *  previous, possibly crashed, run so they don't accumulate. Crash-proof. */
 function sweepTempArtifacts(): void {
@@ -1520,6 +1630,10 @@ app.whenReady().then(() => {
   }
   if (process.env['ME_SMOKE'] === 'e2e') {
     void runSmokeE2E()
+    return
+  }
+  if (process.env['ME_SMOKE'] === 'automation') {
+    void runSmokeAutomation()
     return
   }
   if (process.env['ME_SMOKE'] === 'broll-real') {
