@@ -8,16 +8,20 @@ import type { ProviderConnectionStatus, ProviderJob, TalkingPhotosAspectRatio, T
 const STATUS_LABEL: Record<ProviderConnectionStatus, string> = {
   disconnected: 'Not connected',
   connecting: 'Connecting…',
+  waiting_for_login: 'Waiting for login…',
+  verifying: 'Verifying session…',
   connected: 'Connected',
   reauth_required: 'Reconnect required',
-  error: 'Error'
+  attention: 'Needs attention'
 }
 const STATUS_COLOR: Record<ProviderConnectionStatus, string> = {
   disconnected: '#6a7180',
   connecting: '#f5b323',
+  waiting_for_login: '#f5b323',
+  verifying: '#f5b323',
   connected: '#4fd6a0',
   reauth_required: '#ff8a96',
-  error: '#ff8a96'
+  attention: '#ff8a96'
 }
 
 const JOB_STATUS_LABEL: Record<ProviderJob['status'], string> = {

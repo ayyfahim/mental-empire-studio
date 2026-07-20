@@ -34,10 +34,31 @@ function Card({ label, children }: { label?: string; children: React.ReactNode }
   )
 }
 
+const CONNECTION_STATUS_LABEL: Record<string, string> = {
+  connected: 'Connected',
+  connecting: 'Connecting…',
+  waiting_for_login: 'Waiting for login…',
+  verifying: 'Verifying session…',
+  reauth_required: 'Reconnect required',
+  attention: 'Needs attention',
+  disconnected: 'Not connected'
+}
+
+const CONNECTION_STATUS_DOT: Record<string, string> = {
+  connected: '#4fd6a0',
+  connecting: '#f5b323',
+  waiting_for_login: '#f5b323',
+  verifying: '#f5b323',
+  reauth_required: '#ff8a96',
+  attention: '#ff8a96',
+  disconnected: '#5b616f'
+}
+
 function TalkingPhotosCard({ enabled, onToggle }: { enabled: boolean; onToggle: () => void }): JSX.Element {
   const { connection, connecting, capabilities, connect, reconnect, disconnect, init } = useTalkingPhotos()
   useEffect(() => { if (enabled) void init() }, [enabled, init])
   const status = connection?.status ?? 'disconnected'
+  const canRetryHeadlessly = status === 'reauth_required'
 
   return (
     <Card label="TALKINGPHOTOS.AI">
@@ -45,19 +66,22 @@ function TalkingPhotosCard({ enabled, onToggle }: { enabled: boolean; onToggle: 
       {enabled && (
         <div style={{ marginTop: 4 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, border: '1px solid #1d2129', borderRadius: 9, padding: '9px 13px', background: '#0e1116', marginBottom: 8 }}>
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: status === 'connected' ? '#4fd6a0' : status === 'reauth_required' ? '#ff8a96' : '#5b616f', flex: 'none' }} />
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: CONNECTION_STATUS_DOT[status] ?? '#5b616f', flex: 'none' }} />
             <span style={{ fontSize: 12, color: '#cdd2da', flex: 1 }}>
-              {status === 'connected' ? 'Connected' : status === 'connecting' ? 'Connecting…' : status === 'reauth_required' ? 'Reconnect required' : 'Not connected'}
+              {CONNECTION_STATUS_LABEL[status] ?? 'Not connected'}
               {connection?.lastVerifiedAt && status === 'connected' ? ` · verified ${new Date(connection.lastVerifiedAt).toLocaleTimeString()}` : ''}
             </span>
             {status === 'connected' ? (
               <div className="me-btn" onClick={() => void disconnect()} style={{ border: '1px solid #262b34', borderRadius: 7, padding: '6px 12px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}>Disconnect</div>
             ) : (
-              <div className="me-btn" onClick={() => void (status === 'reauth_required' ? reconnect() : connect())} style={{ border: '1px solid var(--accent)', color: 'var(--accent)', borderRadius: 7, padding: '6px 12px', fontSize: 11, cursor: 'pointer' }}>
-                {connecting ? 'Connecting…' : status === 'reauth_required' ? 'Reconnect' : 'Connect'}
+              <div className="me-btn" onClick={() => void (canRetryHeadlessly ? reconnect() : connect())} style={{ border: '1px solid var(--accent)', color: 'var(--accent)', borderRadius: 7, padding: '6px 12px', fontSize: 11, cursor: 'pointer' }}>
+                {connecting ? (CONNECTION_STATUS_LABEL[status] ?? 'Connecting…') : status === 'reauth_required' ? 'Reconnect' : status === 'attention' ? 'Retry' : 'Connect'}
               </div>
             )}
           </div>
+          {connection?.lastError && status !== 'connected' && (
+            <div style={{ fontSize: 10.5, color: '#ff8a96', marginBottom: 8 }}>{connection.lastError}</div>
+          )}
           {status === 'connected' && capabilities && (
             <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 10.5, color: '#6a7180' }}>
               <span>Max duration <b style={{ color: '#aab0bb' }}>{capabilities.limits.maxDurationSeconds}s</b></span>

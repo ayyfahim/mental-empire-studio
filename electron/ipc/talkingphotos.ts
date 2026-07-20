@@ -118,6 +118,10 @@ export function reqScriptCreateInput(v: unknown): TalkingPhotosScriptCreateInput
 
 export function registerTalkingPhotosIpc(): void {
   ipcMain.handle('talkingphotos:connectionStatus', () => getConnectionStatus(true))
+  // connectTalkingPhotos() itself only opens the login window and resolves — it never
+  // stays pending for the interactive login. Everything after that (waiting for the
+  // user, verifying, and the final connected/attention outcome) is pushed separately
+  // over the 'talkingphotos:connectionStatus' event (see session.ts's setStatus).
   ipcMain.handle('talkingphotos:connect', () => connectTalkingPhotos())
   ipcMain.handle('talkingphotos:reconnect', async () => {
     const conn = await reconnectTalkingPhotos()

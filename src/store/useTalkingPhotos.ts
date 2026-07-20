@@ -1,11 +1,23 @@
 import { create } from 'zustand'
-import type { ProviderCapabilities, ProviderConnection, ProviderJob, ProviderProjectSummary, TalkingPhotosAspectRatio, TalkingPhotosCreateInput, TalkingPhotosScriptCreateInput } from '@shared/talkingphotos'
+import type { ProviderCapabilities, ProviderConnection, ProviderConnectionStatus, ProviderJob, ProviderProjectSummary, TalkingPhotosAspectRatio, TalkingPhotosCreateInput, TalkingPhotosScriptCreateInput } from '@shared/talkingphotos'
 
 // TalkingPhotos live data — kept separate from useData.ts (the local-pipeline data
 // layer) since this is a distinct cloud-provider domain with its own connection
 // lifecycle, capability catalogs, and remote-job list.
+//
+// Connection state is NOT derived from awaiting connect()/reconnect()'s IPC promise —
+// those resolve as soon as the login window opens. The single source of truth for
+// every status change from that point on is the 'talkingphotos:connectionStatus' push
+// event, subscribed to once in init() and reflected straight into `connection`.
 
 const api = (): typeof window.api | undefined => (typeof window !== 'undefined' ? window.api : undefined)
+
+/** True while a connect/reconnect attempt is actively in flight — drives the
+ *  "Connecting…" family of button/status states without a separate boolean that
+ *  could drift out of sync with the pushed connection status. */
+function isConnectingStatus(status?: ProviderConnectionStatus): boolean {
+  return status === 'connecting' || status === 'waiting_for_login' || status === 'verifying'
+}
 
 interface TalkingPhotosState {
   connection: ProviderConnection | null
@@ -50,6 +62,19 @@ export const useTalkingPhotos = create<TalkingPhotosState>((set, get) => ({
       api()?.onProviderJob?.((job) => {
         set((s) => ({ jobs: [job, ...s.jobs.filter((j) => j.id !== job.id)].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) }))
       })
+      api()?.onConnectionStatusChanged?.((connection) => {
+        // Deliberately does NOT touch the generic `error` field — this fires every
+        // ~2.5s while a login flow is active (poll ticks between 'verifying' and
+        // 'waiting_for_login'), and `error` is shared with unrelated actions
+        // (job creation, sync, …) whose message must not be wiped by connection noise.
+        // A failed/timed-out connect attempt is surfaced via connection.lastError.
+        const wasConnected = get().connection?.status === 'connected'
+        set({ connection, connecting: isConnectingStatus(connection.status) })
+        if (connection.status === 'connected' && !wasConnected) {
+          void get().loadCapabilities()
+          void get().sync()
+        }
+      })
     }
     await Promise.all([get().refreshConnection(), get().loadJobs()])
     if (get().connection?.status === 'connected') await get().loadCapabilities()
@@ -58,35 +83,32 @@ export const useTalkingPhotos = create<TalkingPhotosState>((set, get) => ({
   refreshConnection: async () => {
     try {
       const connection = await api()?.talkingPhotos?.connectionStatus?.()
-      if (connection) set({ connection, error: '' })
+      if (connection) set({ connection, connecting: isConnectingStatus(connection.status), error: '' })
     } catch (e) {
       set({ error: (e as Error).message })
     }
   },
 
+  // connect()/reconnect() only await the quick "login window is opening" response —
+  // the eventual success/failure/timeout outcome arrives later via the
+  // onConnectionStatusChanged subscription set up in init(), not from this promise.
   connect: async () => {
-    set({ connecting: true, error: '' })
+    set({ error: '' })
     try {
       const connection = await api()?.talkingPhotos?.connect?.()
-      if (connection) set({ connection })
-      if (connection?.status === 'connected') { await get().loadCapabilities(); await get().sync() }
+      if (connection) set({ connection, connecting: isConnectingStatus(connection.status) })
     } catch (e) {
       set({ error: (e as Error).message })
-    } finally {
-      set({ connecting: false })
     }
   },
 
   reconnect: async () => {
-    set({ connecting: true, error: '' })
+    set({ error: '' })
     try {
       const connection = await api()?.talkingPhotos?.reconnect?.()
-      if (connection) set({ connection })
-      if (connection?.status === 'connected') { await get().loadCapabilities(); await get().sync() }
+      if (connection) set({ connection, connecting: isConnectingStatus(connection.status) })
     } catch (e) {
       set({ error: (e as Error).message })
-    } finally {
-      set({ connecting: false })
     }
   },
 

@@ -1455,6 +1455,10 @@ export interface NativeApi {
   onAutomationJob(cb: (job: AutomationJob) => void): () => void
   /** subscribe to TalkingPhotos provider-job changes; provider_jobs remains source of truth */
   onProviderJob(cb: (job: ProviderJob) => void): () => void
+  /** subscribe to TalkingPhotos connection-status changes; this is the only source of
+   *  progress/outcome once talkingPhotos.connect()'s login window is open — the
+   *  connect() promise itself resolves as soon as the window opens. */
+  onConnectionStatusChanged(cb: (connection: ProviderConnection) => void): () => void
 }
 
 declare global {

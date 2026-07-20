@@ -21,7 +21,7 @@ import type {
   AutomationJobDraft,
   AutomationJob
 } from '../shared/types'
-import type { ProviderJob, ProviderMotionQuery, TalkingPhotosAspectRatio, TalkingPhotosCreateInput, TalkingPhotosScriptCreateInput } from '../shared/talkingphotos'
+import type { ProviderConnection, ProviderJob, ProviderMotionQuery, TalkingPhotosAspectRatio, TalkingPhotosCreateInput, TalkingPhotosScriptCreateInput } from '../shared/talkingphotos'
 
 /** Subscribe to a main→renderer event; returns an unsubscribe fn. */
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -263,7 +263,8 @@ const api: NativeApi = {
   onRenderProgress: (cb: (p: RenderProgress) => void) => subscribe('render:progress', cb),
   onAutomation: (cb: (e: AutomationEvent) => void) => subscribe('automation:event', cb),
   onAutomationJob: (cb: (job: AutomationJob) => void) => subscribe('automation:job', cb),
-  onProviderJob: (cb: (job: ProviderJob) => void) => subscribe('talkingphotos:job', cb)
+  onProviderJob: (cb: (job: ProviderJob) => void) => subscribe('talkingphotos:job', cb),
+  onConnectionStatusChanged: (cb: (connection: ProviderConnection) => void) => subscribe('talkingphotos:connectionStatus', cb)
 }
 
 contextBridge.exposeInMainWorld('api', api)

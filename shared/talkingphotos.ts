@@ -17,7 +17,21 @@ export const TALKINGPHOTOS_APP_HOST = 'app.talkingphotos.ai'
 export const TALKINGPHOTOS_CONNECTION_ID = 'default'
 
 // ---- Connection ----
-export type ProviderConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reauth_required' | 'error'
+/** 'connecting': the login window is being opened, before it's up.
+ *  'waiting_for_login': the login window is open and the user hasn't completed
+ *  auth yet — only the periodic poll/nav/cookie signals are watching.
+ *  'verifying': a health check triggered by one of those signals (or the poll) is
+ *  in flight right now; reverts to 'waiting_for_login' if it comes back not-ok.
+ *  'attention': a connect attempt ended without success (closed early or timed
+ *  out) and needs the user to look at it — never silently left as 'connecting'. */
+export type ProviderConnectionStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'waiting_for_login'
+  | 'verifying'
+  | 'connected'
+  | 'reauth_required'
+  | 'attention'
 
 export interface ProviderConnection {
   id: string
