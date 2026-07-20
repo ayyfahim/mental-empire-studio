@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage } from 'electron'
 import { fileURLToPath } from 'node:url'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
 import { copyFileSync, existsSync, mkdirSync, statSync, writeFileSync, readFileSync, rmSync, unlinkSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { applyLoginItem, trayIconPath } from './services/background'
@@ -37,6 +37,7 @@ import { runProfile, newVideos } from './ipc/automation'
 import { cancelAutomationJob, createAutomationJob, getAutomationJob, pauseAutomationJob, preflightAutomation, resumeAutomationJob, startAutomationSupervisor, stopAutomationSupervisor } from './services/automation-supervisor'
 import { postWebhook } from './services/webhook'
 import { reconcileNonTerminalProviderJobs, startTalkingPhotosPoller, stopTalkingPhotosPoller } from './providers/talkingphotos/poller'
+import { assertDisposableSmokeProfile, prepareSmokeUserDataDir } from './services/smokeSafety'
 import { createServer } from 'node:http'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -55,19 +56,17 @@ app.setName('Mental Empire Studio')
 // (initSettings/getRepos/initDatabase) touches userData. This must run first,
 // synchronously, with a hard process.exit — not app.exit, which only schedules an
 // async quit and would let later userData-touching code run first.
+//
+// prepareSmokeUserDataDir() additionally writes a `.mental-empire-smoke-profile`
+// sentinel into the validated dir — see electron/services/smokeSafety.ts.
+// assertDisposableSmokeProfile() (imported below) re-checks that marker immediately
+// before every destructive resetAll()/seedDemoForSmoke() call site in the smoke
+// harnesses, so the code that actually runs the destructive work is permanently
+// required to re-verify disposability, not just something checked once here at
+// startup — a future refactor of this block can't silently reopen the hole.
 if (process.env['ME_SMOKE'] || process.env['ME_SHOOT']) {
-  const defaultUserData = resolve(app.getPath('userData'))
-  const overrideDir = process.env['ME_SMOKE_USERDATA_DIR']
-  const resolvedOverride = overrideDir ? resolve(overrideDir) : ''
-  if (!overrideDir || resolvedOverride === defaultUserData) {
-    console.error(
-      'FATAL: ME_SMOKE/ME_SHOOT requires ME_SMOKE_USERDATA_DIR to point at an isolated ' +
-      'temp directory distinct from the real userData path. Refusing to start against: ' +
-      defaultUserData
-    )
-    process.exit(1)
-  }
-  mkdirSync(resolvedOverride, { recursive: true })
+  const resolvedOverride = prepareSmokeUserDataDir(process.env['ME_SMOKE_USERDATA_DIR'], app.getPath('userData'))
+  if (!resolvedOverride) process.exit(1) // prepareSmokeUserDataDir's default `fail` already exits; this is belt-and-suspenders.
   app.setPath('userData', resolvedOverride)
 }
 
@@ -884,6 +883,7 @@ async function runSmokeM7(): Promise<void> {
   const repos = getRepos()
   const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
   try {
+    assertDisposableSmokeProfile(app.getPath('userData'))
     repos.resetAll()
     seedDemoForSmoke()
     // pure: frequency map + cursor
@@ -1286,6 +1286,7 @@ async function runSmokeE2E(): Promise<void> {
 
     // Deterministic state: production no longer seeds demo content, and prior smoke
     // runs share this userData DB — so wipe + seed the demo dataset for a clean journey.
+    assertDisposableSmokeProfile(app.getPath('userData'))
     repos.resetAll()
     seedDemoForSmoke()
 
@@ -1523,6 +1524,7 @@ async function runSmokeAutomation(): Promise<void> {
   const output = join(app.getPath('temp'), `me-automation-smoke-${process.pid}`)
   delete process.env['ME_RENDER_FIXTURE']
   try {
+    assertDisposableSmokeProfile(app.getPath('userData'))
     repos.resetAll()
     setSettings({ outputFolder: output, libraryFolder: output, quality: '720p', encoder: 'cpu', renderEngine: 'ffmpeg', beta: { enabled: false } })
     const draft: AutomationJobDraft = {
@@ -1683,6 +1685,7 @@ app.whenReady().then(() => {
   // Demo-dependent smokes (M2–M7) assert against deterministic seeded rows. Production
   // now starts clean, so the harness seeds the demo dataset explicitly here.
   if (['1', 'm3', 'm4', 'm5', 'm6', 'm7'].includes(process.env['ME_SMOKE'] ?? '')) {
+    assertDisposableSmokeProfile(app.getPath('userData'))
     seedDemoForSmoke()
   }
   if (process.env['ME_SMOKE'] === 'm7') {
@@ -1716,6 +1719,7 @@ app.whenReady().then(() => {
   if (process.env['ME_SHOOT'] && process.env['ME_SHOOT_SEED']) {
     try {
       const repos = getRepos()
+      assertDisposableSmokeProfile(app.getPath('userData'))
       repos.resetAll()
       const fixtures = join(process.cwd(), 'test', 'fixtures')
       const dlId = 'dl-shoot-0000000001-0'
