@@ -45,7 +45,7 @@ The upload alone is not treated as proof. The link between steps 3 and 4 is the 
     "parentMotionId": 0,
     "motionPrompt": "",
     "characterResultUuid": "<generated-character-uuid>",
-    "characterDrivingMediaId": 4139604,
+    "characterDrivingMediaId": "<character-driving-media-id>",
     "characterGender": "male",
     "characterEthnicity": "",
     "characterAge": "adult",
@@ -55,7 +55,7 @@ The upload alone is not treated as proof. The link between steps 3 and 4 is the 
     "backgroundPrompt": "",
     "backgroundMediaId": 0,
     "audioSource": "library",
-    "audioMediaId": 4140999,
+    "audioMediaId": "<trimmed-audio-media-id>",
     "audioVocalUrl": "",
     "characterImageMediaId": 0,
     "ttsText": "",
@@ -90,7 +90,7 @@ HTTP 200:
 
 ```json
 {
-  "id": 1041992,
+  "id": "<created-project-id>",
   "parentId": null,
   "title": "<project-title>",
   "user": "<account-object-redacted>",
@@ -104,11 +104,11 @@ HTTP 200:
     "motionId": 0,
     "motionPrompt": "",
     "characterResultUuid": "<generated-character-uuid>",
-    "characterDrivingMediaId": 4139604,
+    "characterDrivingMediaId": "<character-driving-media-id>",
     "backgroundResultUuid": "",
     "backgroundMediaId": 0,
     "audioSource": "library",
-    "audioMediaId": 4140999,
+    "audioMediaId": "<trimmed-audio-media-id>",
     "audioVocalUrl": "",
     "characterImageMediaId": 0,
     "characterAge": "adult",
@@ -145,7 +145,7 @@ HTTP 200:
 }
 ```
 
-Initial project identity and state in the capture: project `1041992`, type `human`, style `high_quality`, status `pending`, step 0 of 2.
+Initial project identity and state in the capture: project `<created-project-id>`, type `human`, style `high_quality`, status `pending`, step 0 of 2.
 
 ## Duration and merge contracts
 
@@ -155,14 +155,18 @@ Initial project identity and state in the capture: project `1041992`, type `huma
 
 ```json
 {
-  "itemsIds": [1041642, 941275, 941278],
+  "itemsIds": ["<merge-child-project-id-1>", "<merge-child-project-id-2>", "<merge-child-project-id-3>"],
   "title": "<merge-title>",
   "audioMediaId": 0
 }
 ```
 
-The HTTP 200 response starts project `1041685` with `type="video_merge"` and `status="pending"`. `itemsIds` order is therefore part of the integration contract; automation sorts durable child jobs by `segmentOrdinal` before submission.
+The HTTP 200 response starts project `<merge-result-project-id>` with `type="video_merge"` and `status="pending"`. `itemsIds` order is therefore part of the integration contract; automation sorts durable child jobs by `segmentOrdinal` before submission.
+
+## TTS + WebSocket resolution (confirmed separately, sanitized)
+
+`POST /text_to_speech/create_audio_vc` returns only `{ success, uuid, textValue }` — no media id. The frontend then opens `wss://ws.talkingphotos.ai/`, sends `{ "recipient_uuid": "<tts-result-uuid>", "message": "connected" }`, and treats a frame of the shape `{ media_id: <positive integer>, type: "audio", out_path: "<provider audio path>", code: 200, duration: <positive number> }` as the authoritative UUID -> media-ID resolution. One socket is opened per UUID (never shared/multiplexed) so concurrent TTS requests cannot cross-associate a result. The implementation never infers a result by scanning the Text-To-Speech library for the newest item.
 
 ## Implementation boundary
 
-Uploaded-library-audio Human creation is enabled. TTS creation, voice cloning, subtitle submission, and unobserved project variants remain outside this write contract. Empty TTS fields in the confirmed uploaded-audio request are preserved deliberately and must not be used to infer a TTS workflow.
+Uploaded-library-audio Human creation and TTS-based Human creation (custom script and transcript-reconstructed script) are both enabled, gated by the WebSocket resolution above. Voice cloning and unobserved project variants remain outside this write contract. Provider subtitle creation (`POST /project/subtitles/create`) uses a sanitized clone built from `GET /project/{id}`, never the raw account/user object.
