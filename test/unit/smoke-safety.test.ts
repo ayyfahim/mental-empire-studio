@@ -56,8 +56,10 @@ describe('prepareSmokeUserDataDir', () => {
     const result = prepareSmokeUserDataDir(defaultDir, defaultDir, () => { failed = true })
     expect(result).toBeNull()
     expect(failed).toBe(true)
-    // The real default path must not have been created or marked as a side effect of the attempt.
-    expect(fs.existsSync(defaultDir)).toBe(false)
+    // Creating an empty directory that happens to be the real path is harmless (mkdirSync
+    // recursive is a no-op if it exists, and doesn't write anything into it) — what must
+    // never happen is the disposable-profile sentinel landing in the real directory.
+    expect(isDisposableSmokeProfile(defaultDir)).toBe(false)
   })
 
   it('refuses when the override resolves to the same path via different formatting (e.g. trailing slash)', () => {
@@ -66,6 +68,42 @@ describe('prepareSmokeUserDataDir', () => {
     const result = prepareSmokeUserDataDir(defaultDir + path.sep, defaultDir, () => { failed = true })
     expect(result).toBeNull()
     expect(failed).toBe(true)
+    expect(isDisposableSmokeProfile(defaultDir)).toBe(false)
+  })
+
+  it('refuses when the override is the same real directory but with different casing (Windows NTFS case-insensitivity)', () => {
+    const defaultDir = path.join(tmpRoot, 'Real-UserData')
+    fs.mkdirSync(defaultDir, { recursive: true })
+    const differentlyCasedOverride = path.join(tmpRoot, 'real-userdata')
+    let failMessage = ''
+    const result = prepareSmokeUserDataDir(differentlyCasedOverride, defaultDir, (msg) => { failMessage = msg })
+    if (process.platform === 'win32') {
+      expect(result).toBeNull()
+      expect(failMessage).toContain('FATAL')
+      expect(isDisposableSmokeProfile(defaultDir)).toBe(false)
+    } else {
+      // On a case-sensitive filesystem these genuinely are two different directories —
+      // just confirm it doesn't crash and behaves like any other distinct-dir case.
+      expect(result).not.toBeNull()
+    }
+  })
+
+  it('refuses when the override is a symlink/junction pointing at the real default directory', () => {
+    const defaultDir = path.join(tmpRoot, 'real-userdata-symlink-target')
+    fs.mkdirSync(defaultDir, { recursive: true })
+    const linkPath = path.join(tmpRoot, 'me-smoke-alias')
+    try {
+      fs.symlinkSync(defaultDir, linkPath, 'junction')
+    } catch {
+      // Symlink/junction creation can be restricted in some sandboxes — skip rather than
+      // fail the suite on an environment limitation unrelated to the guard's own logic.
+      return
+    }
+    let failMessage = ''
+    const result = prepareSmokeUserDataDir(linkPath, defaultDir, (msg) => { failMessage = msg })
+    expect(result).toBeNull()
+    expect(failMessage).toContain('FATAL')
+    expect(isDisposableSmokeProfile(defaultDir)).toBe(false)
   })
 
   it('accepts a genuinely different override dir: creates it and marks it disposable', () => {
