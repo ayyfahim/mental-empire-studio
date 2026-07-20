@@ -34,7 +34,7 @@ import {
   uploadLibraryMedia
 } from './client'
 import { resolveTtsJob, submitTts } from './tts'
-import { fetchSubmissionBudget, logBudgetExhausted } from './quota'
+import { fetchSubmissionBudget, logBudgetExhausted, type SubmissionBudget } from './quota'
 import { downloadProviderJobOutput, outputDir } from './downloader'
 import { mergeVideoFilesLocally } from './localMerge'
 import { L } from '../../services/logger'
@@ -197,7 +197,23 @@ function isAutomationPaused(automationJobId?: string): boolean {
   return !job || job.pauseRequested || job.cancelRequested
 }
 
-async function submitSegments(root: ProviderJob, state: TalkingPhotosCreationState): Promise<TalkingPhotosCreationState> {
+function segmentJobId(rootId: string, segmentIndex: number, segmentCount: number): string {
+  return segmentCount === 1 ? rootId : `${rootId}-segment-${String(segmentIndex + 1).padStart(3, '0')}`
+}
+
+/** true when at least one of a root's segments has not yet been submitted (no
+ *  remote project id) — the same condition both submitSegments/submitScriptSegments
+ *  use to decide whether a fetch is needed at all, reused by
+ *  advanceProviderOrchestrations to decide whether the shared per-pass budget is
+ *  needed before any root is processed. */
+function needsSubmissionBudget(repos: ReturnType<typeof getRepos>, rootId: string, segmentCount: number): boolean {
+  for (let i = 0; i < segmentCount; i++) {
+    if (!repos.providerJob(segmentJobId(rootId, i, segmentCount))?.remoteProjectId) return true
+  }
+  return false
+}
+
+async function submitSegments(root: ProviderJob, state: TalkingPhotosCreationState, sharedBudget?: SubmissionBudget): Promise<TalkingPhotosCreationState> {
   const repos = getRepos()
   if (!state.characterDrivingMediaId || !state.characterResultUuid) throw new Error('Character asset checkpoint is missing.')
   const characterDrivingMediaId = state.characterDrivingMediaId
@@ -205,12 +221,16 @@ async function submitSegments(root: ProviderJob, state: TalkingPhotosCreationSta
   const segments = [...state.segments]
 
   // One quota/concurrency fetch per pass — never per segment (plan §6). Skipped
-  // entirely when every segment already has a remote project id.
-  const needsBudget = segments.some((s, i) => !(repos.providerJob(segments.length === 1 ? root.id : `${root.id}-segment-${String(i + 1).padStart(3, '0')}`)?.remoteProjectId))
-  const budget = needsBudget ? await fetchSubmissionBudget() : null
+  // entirely when every segment already has a remote project id. A caller that
+  // already fetched a budget for this pass (advanceProviderOrchestrations, sharing
+  // one SubmissionBudget across every root processed in the same tick) passes it in
+  // via sharedBudget instead of triggering a second, independently-fresh fetch here —
+  // needsSubmissionBudget is only evaluated when there's no sharedBudget to short-
+  // circuit to, so a shared pass never repeats the per-segment scan for nothing.
+  const budget = sharedBudget ?? (needsSubmissionBudget(repos, root.id, segments.length) ? await fetchSubmissionBudget() : null)
 
   for (let i = 0; i < segments.length; i++) {
-    const id = segments.length === 1 ? root.id : `${root.id}-segment-${String(i + 1).padStart(3, '0')}`
+    const id = segmentJobId(root.id, i, segments.length)
     let job = repos.providerJob(id)
     if (!job) {
       const at = now()
@@ -422,18 +442,19 @@ async function submitTtsChunks(root: ProviderJob, state: TalkingPhotosScriptCrea
   return state
 }
 
-async function submitScriptSegments(root: ProviderJob, state: TalkingPhotosScriptCreationState): Promise<TalkingPhotosScriptCreationState> {
+async function submitScriptSegments(root: ProviderJob, state: TalkingPhotosScriptCreationState, sharedBudget?: SubmissionBudget): Promise<TalkingPhotosScriptCreationState> {
   const repos = getRepos()
   if (!state.characterDrivingMediaId || !state.characterResultUuid) throw new Error('Character asset checkpoint is missing.')
   const characterDrivingMediaId = state.characterDrivingMediaId
   const characterResultUuid = state.characterResultUuid
   const segments = [...state.segments]
 
-  const needsBudget = segments.some((s, i) => !(repos.providerJob(segments.length === 1 ? root.id : `${root.id}-segment-${String(i + 1).padStart(3, '0')}`)?.remoteProjectId))
-  const budget = needsBudget ? await fetchSubmissionBudget() : null
+  // See submitSegments above for why needsSubmissionBudget is only evaluated when
+  // there's no sharedBudget already supplied for this pass.
+  const budget = sharedBudget ?? (needsSubmissionBudget(repos, root.id, segments.length) ? await fetchSubmissionBudget() : null)
 
   for (let i = 0; i < segments.length; i++) {
-    const id = segments.length === 1 ? root.id : `${root.id}-segment-${String(i + 1).padStart(3, '0')}`
+    const id = segmentJobId(root.id, i, segments.length)
     let job = repos.providerJob(id)
     if (!job) {
       const at = now()
@@ -496,7 +517,7 @@ async function submitScriptSegments(root: ProviderJob, state: TalkingPhotosScrip
   return state
 }
 
-async function processScriptRoot(rootId: string): Promise<ProviderJob> {
+async function processScriptRoot(rootId: string, sharedBudget?: SubmissionBudget): Promise<ProviderJob> {
   if (inFlight.has(rootId)) return getRepos().providerJob(rootId) as ProviderJob
   inFlight.add(rootId)
   try {
@@ -507,7 +528,7 @@ async function processScriptRoot(rootId: string): Promise<ProviderJob> {
     state = await prepareScriptCharacter(root, state)
     state = await submitTtsChunks(root, state)
     root = repos.providerJob(rootId) as ProviderJob
-    state = await submitScriptSegments(root, state)
+    state = await submitScriptSegments(root, state, sharedBudget)
     return repos.providerJob(rootId) as ProviderJob
   } catch (error) {
     saveCreationFailure(rootId, error, 'creation_failed')
@@ -549,7 +570,7 @@ export async function createScriptVideo(input: TalkingPhotosScriptCreateInput): 
   try { return await creation } finally { creationByFingerprint.delete(dedupeKey) }
 }
 
-async function processRoot(rootId: string): Promise<ProviderJob> {
+async function processRoot(rootId: string, sharedBudget?: SubmissionBudget): Promise<ProviderJob> {
   if (inFlight.has(rootId)) return getRepos().providerJob(rootId) as ProviderJob
   inFlight.add(rootId)
   try {
@@ -560,7 +581,7 @@ async function processRoot(rootId: string): Promise<ProviderJob> {
     state = await prepareAssets(root, state)
     state = await prepareSegmentAudio(root, state)
     root = repos.providerJob(rootId) as ProviderJob
-    state = await submitSegments(root, state)
+    state = await submitSegments(root, state, sharedBudget)
     return repos.providerJob(rootId) as ProviderJob
   } catch (error) {
     saveCreationFailure(rootId, error, 'creation_failed')
@@ -687,6 +708,37 @@ async function advanceMergeRoot<S extends MergeableState>(snapshot: ProviderJob,
   }
 }
 
+/** True once a root's segments have all already been submitted — the shared
+ *  stage-boundary check used both by rootNeedsBudgetThisPass below (to skip roots
+ *  that are past needing a submission slot) and by the dispatch loop in
+ *  advanceProviderOrchestrations (to route into advanceMergeRoot instead of
+ *  processRoot/processScriptRoot) so the two can never silently drift apart as
+ *  stages evolve. */
+function isPastSegmentSubmission(stage: string): boolean {
+  return stage === 'segments_submitted' || stage === 'merge_submitting' || stage === 'merge_submitted'
+}
+
+/** Whether a given root will still need to spend a submission slot if
+ *  processRoot/processScriptRoot runs for it this pass — mirrors the dispatch below
+ *  (a root already past segment submission, or whose checkpoint can't be parsed,
+ *  contributes nothing) without actually invoking the (state-mutating) process
+ *  functions just to find out. */
+function rootNeedsBudgetThisPass(repos: ReturnType<typeof getRepos>, snapshot: ProviderJob): boolean {
+  if (snapshot.operation === 'video') return !snapshot.remoteProjectId
+  try {
+    if (isScriptRoot(snapshot)) {
+      const state = parseScriptState(snapshot)
+      if (isPastSegmentSubmission(state.stage)) return false
+      return needsSubmissionBudget(repos, snapshot.id, state.segments.length)
+    }
+    const state = parseState(snapshot)
+    if (isPastSegmentSubmission(state.stage)) return false
+    return needsSubmissionBudget(repos, snapshot.id, state.segments.length)
+  } catch {
+    return false
+  }
+}
+
 /** Advance durable roots after polling and at startup. Internal segment outputs are
  * never downloaded; once every segment completes, their remote ids are merged in
  * segmentOrdinal order and the root becomes the downloadable final job. */
@@ -694,25 +746,45 @@ export async function advanceProviderOrchestrations(): Promise<void> {
   const repos = getRepos()
   if (repos.providerConnection(TALKINGPHOTOS_CONNECTION_ID)?.status !== 'connected') return
   const roots = repos.providerJobs(TALKINGPHOTOS_CONNECTION_ID).filter((job) => job.requestJson && !job.parentProviderJobId && !['completed', 'failed', 'cancelled'].includes(job.status))
+
+  // One SubmissionBudget fetched (if anything in this pass needs one) and shared
+  // across every root below — closes the same-tick multi-root race where the
+  // provider's own concurrentCount/dailyUsage counters may not yet reflect a
+  // submission made earlier in this very pass. Still re-fetched fresh on every new
+  // call to advanceProviderOrchestrations (no persistent ledger across passes).
+  // A fetch failure here must not abort the whole pass the way it would if left
+  // uncaught (previously, each root's own fetch failure was isolated to that root
+  // via processRoot/processScriptRoot's try/catch) — on failure, fall back to
+  // undefined so every root fetches its own budget independently, same as before.
+  const needsBudget = roots.some((snapshot) => rootNeedsBudgetThisPass(repos, snapshot))
+  let budget: SubmissionBudget | undefined
+  if (needsBudget) {
+    try {
+      budget = await fetchSubmissionBudget()
+    } catch (error) {
+      L.warn(`talkingphotos: shared per-pass budget fetch failed (${(error as Error).message}); each root will fetch its own budget for this pass`)
+    }
+  }
+
   for (const snapshot of roots) {
     const script = isScriptRoot(snapshot)
     if (snapshot.operation === 'video') {
-      if (!snapshot.remoteProjectId) await (script ? processScriptRoot(snapshot.id) : processRoot(snapshot.id)).catch(() => undefined)
+      if (!snapshot.remoteProjectId) await (script ? processScriptRoot(snapshot.id, budget) : processRoot(snapshot.id, budget)).catch(() => undefined)
       continue
     }
     if (script) {
       let state: TalkingPhotosScriptCreationState
       try { state = parseScriptState(snapshot) } catch { continue }
-      if (state.stage !== 'segments_submitted' && state.stage !== 'merge_submitting' && state.stage !== 'merge_submitted') {
-        await processScriptRoot(snapshot.id).catch(() => undefined)
+      if (!isPastSegmentSubmission(state.stage)) {
+        await processScriptRoot(snapshot.id, budget).catch(() => undefined)
         continue
       }
       await advanceMergeRoot(snapshot, state, saveScriptState)
     } else {
       let state: TalkingPhotosCreationState
       try { state = parseState(snapshot) } catch { continue }
-      if (state.stage !== 'segments_submitted' && state.stage !== 'merge_submitting' && state.stage !== 'merge_submitted') {
-        await processRoot(snapshot.id).catch(() => undefined)
+      if (!isPastSegmentSubmission(state.stage)) {
+        await processRoot(snapshot.id, budget).catch(() => undefined)
         continue
       }
       await advanceMergeRoot(snapshot, state, saveState)

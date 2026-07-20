@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import type { ProviderAsset, ProviderJob } from '../../shared/talkingphotos'
+import type { ProviderAsset, ProviderJob, TalkingPhotosCreationState } from '../../shared/talkingphotos'
 
 const state = vi.hoisted(() => ({
   duration: 125,
@@ -164,6 +164,61 @@ describe('TalkingPhotos uploaded-audio orchestration', () => {
   it('rejects an invalid motion for normal mode and a nonzero motion for high_quality mode', async () => {
     await expect(createUploadedAudioVideo({ title: 'x', audioPath, characterImagePath: imagePath, characterPrompt: 'p', style: 'normal', aspectRatio: '16:9', motionId: 0 })).rejects.toThrow(/motion/i)
     await expect(createUploadedAudioVideo({ title: 'x', audioPath, characterImagePath: imagePath, characterPrompt: 'p', style: 'high_quality', aspectRatio: '16:9', motionId: 5 })).rejects.toThrow(/motion/i)
+  })
+
+  it('shares one fetched SubmissionBudget across every root processed in the same advanceProviderOrchestrations pass, so a second root cannot over-submit against a provider count that has not caught up yet', async () => {
+    // Only room for exactly 1 submission this pass. The default getCapabilities mock
+    // (called by fetchSubmissionBudget) is static — it does NOT reflect a submission
+    // made moments ago within the same pass, which is exactly the real-provider lag
+    // this fix protects against: with a per-root fetch, a second root would see this
+    // same "1 slot free" snapshot again and over-submit.
+    client.getCapabilities.mockResolvedValueOnce({
+      limits: { maxDurationSeconds: 300, maxCharactersTts: 6000, maxDurationPremiumSeconds: 300, maxCharactersTtsPremium: 6000 },
+      usage: { concurrentCount: 0, concurrentLimit: 1, dailyUsage: 0, dailyLimit: 100 },
+      fetchedAt: new Date().toISOString()
+    })
+
+    const readyRoot = (id: string): ProviderJob => {
+      const checkpoint: TalkingPhotosCreationState = {
+        version: 1,
+        input: { title: `Root ${id}`, audioPath, characterImagePath: imagePath, characterPrompt: 'A presenter', style: 'high_quality', aspectRatio: '16:9', motionId: 0 },
+        sourceDurationSec: 10, maxSegmentSec: 60,
+        sourceAudioMediaId: 'source-audio', characterDrivingMediaId: 'source-image', characterResultUuid: 'character-result',
+        segments: [{ ordinal: 0, startSec: 0, endSec: 10, durationSec: 10, remoteAudioMediaId: 'source-audio' }],
+        stage: 'assets_ready', startedAt: new Date().toISOString()
+      }
+      return {
+        id, provider: 'talkingphotos', connectionId: 'default', operation: 'video',
+        requestFingerprint: `fp-${id}`, status: 'queued', progress: 0, internalSegment: false,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        requestJson: JSON.stringify(checkpoint)
+      }
+    }
+    const rootA = readyRoot('tpj-race-a')
+    const rootB = readyRoot('tpj-race-b')
+    state.jobs.set(rootA.id, rootA)
+    state.jobs.set(rootB.id, rootB)
+
+    await advanceProviderOrchestrations()
+
+    // Exactly one fetch for the whole pass — proves the budget was hoisted and shared,
+    // not re-fetched per root.
+    expect(client.getCapabilities).toHaveBeenCalledTimes(1)
+    expect(client.createHumanProject).toHaveBeenCalledTimes(1)
+
+    const updatedA = state.jobs.get(rootA.id) as ProviderJob
+    const updatedB = state.jobs.get(rootB.id) as ProviderJob
+    const submitted = [updatedA, updatedB].filter((job) => job.remoteProjectId)
+    const waiting = [updatedA, updatedB].filter((job) => !job.remoteProjectId)
+    expect(submitted).toHaveLength(1)
+    expect(waiting).toHaveLength(1)
+    // A single-segment root IS its own segment row, so the loop's unconditional
+    // trailing saveState (status: 'running') on the root overwrites the segment-level
+    // 'queued' set moments earlier in the budget-exhausted branch above — 'running'
+    // with awaiting_provider_slot is the existing, unchanged shape of "queued behind
+    // the provider slot" for this root type.
+    expect(waiting[0].status).toBe('running')
+    expect(waiting[0].errorCode).toBe('awaiting_provider_slot')
   })
 })
 
