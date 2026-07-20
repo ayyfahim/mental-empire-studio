@@ -13,7 +13,10 @@ import type {
   ProviderMotionQuery,
   ProviderProjectSummary,
   ProviderVoice,
-  TalkingPhotosCreateInput
+  TalkingPhotosAspectRatio,
+  TalkingPhotosCreateInput,
+  TalkingPhotosRemoteMedia,
+  TalkingPhotosScriptCreateInput
 } from './talkingphotos'
 
 export type AccentName = 'Amber' | 'Violet' | 'Emerald' | 'Crimson'
@@ -455,6 +458,18 @@ export interface AutomationJobConfig {
     style: 'normal' | 'high_quality'
     aspectRatio: '16:9' | '1:1' | '9:16'
     motionId: number
+    /** 'uploaded-audio' (default) preserves the original behavior exactly — real
+     *  downloaded/local audio submitted as-is. 'custom-script' feeds `script` through
+     *  TTS. 'transcript-tts' reconstructs a script from the item's own transcript and
+     *  feeds that through TTS instead of the original audio. */
+    mode: 'uploaded-audio' | 'custom-script' | 'transcript-tts'
+    script: string
+    language: string
+    voice: string
+    voiceStyle: string
+    speed: number
+    pitch: number
+    subtitleMode: 'none' | 'provider' | 'local'
   }
   notify: { desktop: boolean; webhook: boolean; sound: boolean; email: boolean }
   execution: 'local'
@@ -1386,8 +1401,22 @@ export interface NativeApi {
     jobs(): Promise<ProviderJob[]>
     /** Create a Human video from local uploaded audio; long audio is segmented and merged. */
     createUploadedAudio(input: TalkingPhotosCreateInput): Promise<ProviderJob>
+    /** Create a Human video from a custom script (or automation transcript
+     *  reconstruction) via TTS, gated behind the confirmed WebSocket resolution. */
+    createScript(input: TalkingPhotosScriptCreateInput): Promise<ProviderJob>
     /** (re)download a completed job's output; safe to call repeatedly */
     downloadOutput(providerJobId: string): Promise<ProviderJob>
+    subtitleLanguages(): Promise<ProviderLanguage[]>
+    /** Submit provider subtitles for an already-completed source video. */
+    createProviderSubtitles(sourceJobId: string, language?: string): Promise<ProviderJob>
+    /** Burn local captions onto an already-downloaded, verified output — mutually
+     *  exclusive with provider subtitles on the same video. */
+    applyLocalCaptions(providerJobId: string, aspect?: TalkingPhotosAspectRatio): Promise<ProviderJob>
+    /** Display-only TTS library listing for explicit, user-confirmed recovery —
+     *  never used to automatically infer a result. */
+    ttsRecoveryLibrary(): Promise<TalkingPhotosRemoteMedia[]>
+    /** Persist a user-confirmed manual recovery choice for an unresolved TTS job. */
+    confirmRecoveredTts(jobId: string, mediaId: string, durationSec: number): Promise<ProviderJob>
   }
   /** pick an output folder via the OS dialog; returns the chosen path or '' */
   chooseFolder(): Promise<string>

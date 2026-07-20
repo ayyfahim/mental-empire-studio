@@ -49,6 +49,11 @@ export interface ProviderJob {
   automationItemId?: string
   projectId?: string
   requestFingerprint?: string
+  /** Distinguishes a deliberate duplicate submission from a retry of the same intent.
+   *  Defaults to '' — every existing/automation caller that never sets this keeps the
+   *  old fingerprint-only dedup behavior; only an explicit fresh value allows a second
+   *  job with otherwise-identical content (plan §11). */
+  creationIntentId?: string
   /** Durable, non-secret orchestration checkpoint. Creation inputs, resolved remote
    * asset ids, segment ordering, and submission state live here so restart recovery
    * never depends on renderer memory. */
@@ -60,6 +65,9 @@ export interface ProviderJob {
   remoteMediaId?: string
   remoteMediaUrl?: string
   localOutputPath?: string
+  /** A local-caption derivative render, kept separate from the verified provider
+   *  output above so the original is never overwritten (plan §8). */
+  localCaptionedOutputPath?: string
   errorCode?: string
   errorMessage?: string
   segmentOrdinal?: number
@@ -173,6 +181,10 @@ export interface TalkingPhotosCreateInput {
   automationJobId?: string
   automationItemId?: string
   projectId?: string
+  /** Optional: a fresh, caller-supplied value creates a deliberate duplicate even with
+   *  otherwise-identical content. Omitted (the default for every existing caller)
+   *  preserves today's fingerprint-only dedup behavior. */
+  creationIntentId?: string
 }
 
 export interface TalkingPhotosAudioSegment {
@@ -187,6 +199,7 @@ export interface TalkingPhotosAudioSegment {
 
 export interface TalkingPhotosCreationState {
   version: 1
+  kind?: 'uploaded-audio'
   input: TalkingPhotosCreateInput
   sourceDurationSec: number
   maxSegmentSec: number
@@ -275,6 +288,63 @@ export function buildTalkingPhotosHumanPayload(
       songStylesSelectedList: [],
       songResultUuid: '',
       audioResultUuid: '',
+      replicateMotionUseSource: true,
+      replicateUseVoiceChanger: false,
+      replicateMotionMode: 'animate',
+      reverseVideoMode: true
+    }
+  }
+}
+
+/** The fresh Human project request for a TTS-sourced segment — audioSource="tts"
+ *  with the resolved TTS UUID/media ID and the real voice/script parameters that
+ *  produced them (never a cloned account object, never empty TTS fields — that
+ *  emptiness is specific to the uploaded-audio payload above). */
+export function buildTalkingPhotosHumanTtsPayload(
+  input: TalkingPhotosScriptCreateInput,
+  resolved: { audioMediaId: string; audioResultUuid: string; ttsText: string; characterDrivingMediaId: string; characterResultUuid: string; title: string }
+): TalkingPhotosHumanProjectPayload {
+  return {
+    title: resolved.title,
+    type: 'human',
+    style: input.style,
+    options: {
+      aspectRatio: input.aspectRatio,
+      characterPrompt: input.characterPrompt,
+      characterNegativePrompt: input.characterNegativePrompt || '',
+      motionId: input.motionId,
+      parentMotionId: 0,
+      motionPrompt: '',
+      characterResultUuid: resolved.characterResultUuid,
+      characterDrivingMediaId: Number(resolved.characterDrivingMediaId),
+      characterGender: input.characterGender || 'male',
+      characterEthnicity: '',
+      characterAge: input.characterAge || 'adult',
+      characterStyle: input.characterStyle || 'realistic',
+      characterBeard: input.characterBeard || 'shaven',
+      backgroundResultUuid: '',
+      backgroundPrompt: '',
+      backgroundMediaId: 0,
+      audioSource: 'tts',
+      audioMediaId: Number(resolved.audioMediaId),
+      audioResultUuid: resolved.audioResultUuid,
+      audioVocalUrl: '',
+      characterImageMediaId: 0,
+      ttsText: resolved.ttsText,
+      ttsLanguage: input.language,
+      ttsVoice: input.voice,
+      ttsVoiceGender: '',
+      ttsEmotion: input.voiceStyle,
+      ttsSpeed: input.speed,
+      ttsPitch: input.pitch,
+      voiceCloneCategory: 'cloned',
+      voiceCloneLanguage: 1,
+      voiceCloneVoice: null,
+      songPrompt: '',
+      songLyrics: '',
+      songLength: 'short',
+      songStylesSelectedList: [],
+      songResultUuid: '',
       replicateMotionUseSource: true,
       replicateUseVoiceChanger: false,
       replicateMotionMode: 'animate',
@@ -521,4 +591,356 @@ export function isAllowedProviderMediaUrl(url: string, allowedHost = TALKINGPHOT
   } catch {
     return false
   }
+}
+
+// ============================================================================
+// Phase 4-12 additions: TTS + WebSocket resolution, quota/concurrency, long-form
+// segmentation, subtitles, and the preferred download route. Kept in this file
+// (rather than a new one) so every provider-domain pure function lives in one
+// place, matching the existing convention.
+// ============================================================================
+
+// ---- TTS (Phase 4/5/7) ----
+export const TALKINGPHOTOS_WS_URL = 'wss://ws.talkingphotos.ai/'
+
+export interface TalkingPhotosTtsSettings {
+  language: string
+  voice: string
+  voiceStyle: string
+  speed: number
+  pitch: number
+  autoTranslate: boolean
+}
+
+export const DEFAULT_TTS_SETTINGS: TalkingPhotosTtsSettings = {
+  language: 'en-US', voice: 'en-US-AndrewMultilingualNeural', voiceStyle: 'general', speed: 1, pitch: 0, autoTranslate: false
+}
+
+export interface TalkingPhotosTtsCreateResult {
+  uuid: string
+  textValue: string
+}
+
+/** POST /text_to_speech/create_audio_vc response — runtime-validated, never trusted
+ *  on HTTP 200 alone (confirmed shape: { success, uuid, textValue }). */
+export function parseTtsCreateResponse(raw: unknown): TalkingPhotosTtsCreateResult | null {
+  const r = record(raw)
+  if (r.success !== true || typeof r.uuid !== 'string' || !r.uuid.trim()) return null
+  return { uuid: r.uuid, textValue: typeof r.textValue === 'string' ? r.textValue : '' }
+}
+
+export interface TalkingPhotosTtsResolution {
+  mediaId: string
+  outPath: string
+  durationSec: number
+}
+
+/** wss://ws.talkingphotos.ai completion frame — the ONLY accepted UUID -> media-ID
+ *  resolver. Never infer by picking the newest Text-To-Speech library item, which
+ *  breaks under concurrent TTS requests (contract: matchingWarning). Success requires
+ *  ALL of: code===200, type==="audio", a positive-integer media_id, and a positive,
+ *  finite duration. Anything else — including a frame for a different operation — is
+ *  rejected by the caller via the recipient_uuid it opened the socket for. */
+export function parseTtsSocketFrame(raw: unknown): TalkingPhotosTtsResolution | null {
+  const r = record(raw)
+  if (r.code !== 200) return null
+  if (r.type !== 'audio') return null
+  const mediaId = r.media_id
+  if (typeof mediaId !== 'number' || !Number.isInteger(mediaId) || mediaId <= 0) return null
+  const duration = r.duration
+  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0) return null
+  return { mediaId: String(mediaId), outPath: typeof r.out_path === 'string' ? r.out_path : '', durationSec: duration }
+}
+
+export type TalkingPhotosTtsJobStatus =
+  | 'submitted'
+  | 'awaiting_resolution'
+  | 'resolved'
+  | 'timeout'
+  | 'malformed'
+  | 'closed_unresolved'
+  | 'ambiguous'
+
+/** Durable TTS orchestration checkpoint (mirrors TalkingPhotosCreationState — stored
+ *  as JSON on a provider_jobs.requestJson row with operation='tts'). Never regenerate
+ *  automatically once `status` leaves 'submitted'/'awaiting_resolution': ambiguity must
+ *  be resolved by an explicit user action, not a silent retry that could double-bill. */
+export interface TalkingPhotosTtsState {
+  version: 1
+  uuid: string
+  text: string
+  settings: TalkingPhotosTtsSettings
+  projectStyle: TalkingPhotosProjectStyle
+  status: TalkingPhotosTtsJobStatus
+  mediaId?: string
+  outPath?: string
+  durationSec?: number
+  submittedAt: string
+  resolvedAt?: string
+}
+
+// ---- Manual custom-script -> TTS creation (Phase 5) ----
+export interface TalkingPhotosScriptSegment {
+  ordinal: number
+  text: string
+  ttsJobId?: string
+  ttsMediaId?: string
+  ttsDurationSec?: number
+  providerJobId?: string
+  remoteProjectId?: string
+}
+
+export interface TalkingPhotosScriptCreationState {
+  version: 1
+  kind: 'script'
+  input: TalkingPhotosScriptCreateInput
+  maxDurationSec: number
+  maxChars: number
+  characterDrivingMediaId?: string
+  characterResultUuid?: string
+  segments: TalkingPhotosScriptSegment[]
+  stage: 'queued' | 'assets_ready' | 'tts_submitted' | 'tts_resolved' | 'segments_submitted' | 'merge_submitting' | 'merge_submitted' | 'subtitles_submitting' | 'subtitles_submitted'
+  startedAt: string
+}
+
+export interface TalkingPhotosScriptCreateInput {
+  title: string
+  script: string
+  characterImagePath: string
+  characterPrompt: string
+  characterNegativePrompt?: string
+  style: TalkingPhotosProjectStyle
+  aspectRatio: TalkingPhotosAspectRatio
+  motionId: number
+  characterGender?: 'male' | 'female'
+  characterAge?: string
+  characterStyle?: string
+  characterBeard?: string
+  language: string
+  voice: string
+  voiceStyle: string
+  speed: number
+  pitch: number
+  subtitleMode: TalkingPhotosSubtitleMode
+  automationJobId?: string
+  automationItemId?: string
+  projectId?: string
+  creationIntentId?: string
+}
+
+// ---- Subtitles / local captions (Phase 8) ----
+export type TalkingPhotosSubtitleMode = 'none' | 'provider' | 'local'
+
+/** The subtitle mode is a single enum, not two independent booleans — "both enabled"
+ *  is structurally unrepresentable. This function is the one normalization boundary:
+ *  anything that isn't exactly 'provider' or 'local' becomes 'none'. */
+export function normalizeSubtitleMode(raw: unknown): TalkingPhotosSubtitleMode {
+  return raw === 'provider' || raw === 'local' ? raw : 'none'
+}
+
+export const DEFAULT_SUBTITLES_OPTIONS: Record<string, unknown> = {
+  language: 'en-US',
+  subtitlesType: 'highlighted-word',
+  subtitlesStyle: 'stroke',
+  position: 'bottom',
+  alignment: 'center',
+  textFontFamily: 'Montserrat',
+  textFontSize: 52,
+  colorPrimary: '#ffffff',
+  colorSecondary: '#f7ff19',
+  colorAccent: '#ffffff',
+  colorStroke: '#000000',
+  backgroundOpacity: 100,
+  backgroundBoxFullWidth: false
+}
+
+/** Build a sanitized subtitle-creation payload from a raw GET /project/{id} response.
+ *  Only a small, explicit allowlist of fields is carried over — user/account objects,
+ *  media, status, and task fields are never copied (plan §8 / review privacy note). */
+export function buildSubtitleCreatePayload(
+  sourceProjectRaw: unknown,
+  opts: { title: string; parentId: string; subtitlesOptions?: Record<string, unknown> }
+): Record<string, unknown> | null {
+  const r = record(sourceProjectRaw)
+  const options = record(r.options)
+  if (typeof r.type !== 'string' || typeof r.style !== 'string') return null
+  return {
+    title: opts.title,
+    type: 'subtitles',
+    style: r.style,
+    parentId: opts.parentId,
+    options: { aspectRatio: typeof options.aspectRatio === 'string' ? options.aspectRatio : '16:9' },
+    subtitlesOptions: { ...DEFAULT_SUBTITLES_OPTIONS, ...(opts.subtitlesOptions ?? {}) }
+  }
+}
+
+export interface TalkingPhotosSubtitleResult {
+  id: string
+  status: string
+  mediaUrl?: string
+  srtUrl?: string
+  jsonUrl?: string
+}
+
+/** GET/POST subtitles response — completed/processing/pending only; no task UUID is
+ *  required for this operation (plan §8). */
+export function normalizeSubtitleProject(raw: unknown): TalkingPhotosSubtitleResult | null {
+  const r = record(raw)
+  if ((typeof r.id !== 'string' && typeof r.id !== 'number') || typeof r.status !== 'string' || !r.status.trim()) return null
+  const media = record(r.media)
+  return {
+    id: str(r.id),
+    status: r.status,
+    mediaUrl: typeof media.mediaPath === 'string' && media.mediaPath ? media.mediaPath : undefined,
+    srtUrl: typeof r.srtPath === 'string' ? r.srtPath : undefined,
+    jsonUrl: typeof r.jsonPath === 'string' ? r.jsonPath : undefined
+  }
+}
+
+// ---- Long-form script segmentation (Phase 7) ----
+export interface TalkingPhotosScriptChunk {
+  ordinal: number
+  text: string
+}
+
+const CHUNK_SAFETY_MARGIN = 0.95
+
+function splitOnSentences(text: string): string[] {
+  return (text.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g) ?? [text]).map((s) => s.trim()).filter(Boolean)
+}
+
+/** Paragraph-first, then sentence-boundary, then (only as a last resort) a word-boundary
+ *  hard wrap — every chunk stays under `maxChars * 0.95` (plan §7 safety margin) and
+ *  ordinals are assigned deterministically left-to-right, never reordered later. */
+export function planTalkingPhotosScriptChunks(script: string, maxChars: number): TalkingPhotosScriptChunk[] {
+  const limit = Math.max(1, Math.floor(maxChars * CHUNK_SAFETY_MARGIN))
+  const normalized = script.replace(/\r\n/g, '\n').replace(/[ \t]+/g, ' ').trim()
+  if (!normalized) throw new Error('Script is empty.')
+  const paragraphs = normalized.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean)
+  const chunks: string[] = []
+  let current = ''
+  const flush = (): void => { if (current.trim()) chunks.push(current.trim()); current = '' }
+  const appendPiece = (piece: string, joiner: string): void => {
+    const candidate = current ? `${current}${joiner}${piece}` : piece
+    if (candidate.length > limit) { flush(); current = piece } else current = candidate
+  }
+  for (const paragraph of paragraphs) {
+    if (paragraph.length <= limit) { appendPiece(paragraph, '\n\n'); continue }
+    for (const sentence of splitOnSentences(paragraph)) {
+      if (sentence.length <= limit) { appendPiece(sentence, ' '); continue }
+      flush()
+      let rest = sentence
+      while (rest.length > limit) {
+        let cut = rest.lastIndexOf(' ', limit)
+        if (cut <= 0) cut = limit
+        chunks.push(rest.slice(0, cut).trim())
+        rest = rest.slice(cut).trim()
+      }
+      current = rest
+    }
+  }
+  flush()
+  return chunks.map((text, ordinal) => ({ ordinal, text }))
+}
+
+/** Duration-driven re-segmentation: split an oversized chunk's text roughly in half at
+ *  a sentence boundary (falling back to a word boundary) so replacement TTS chunks can
+ *  be generated. The oversized TTS job itself is never reused for a Human project. */
+export function splitOversizedScriptChunk(text: string): [string, string] {
+  const sentences = splitOnSentences(text)
+  if (sentences.length >= 2) {
+    const half = Math.ceil(sentences.length / 2)
+    return [sentences.slice(0, half).join(' ').trim(), sentences.slice(half).join(' ').trim()]
+  }
+  const mid = Math.floor(text.length / 2)
+  let cut = text.lastIndexOf(' ', mid)
+  if (cut <= 0) cut = mid
+  return [text.slice(0, cut).trim(), text.slice(cut).trim()]
+}
+
+// ---- Transcript -> script reconstruction (Phase 7) ----
+export interface TimedWord {
+  word: string
+  start: number
+  end: number
+}
+
+/** Best-effort punctuation reconstruction from word timings for the 'transcript-tts'
+ *  automation mode: inserts a period at each pause of `pauseSec` or longer and
+ *  capitalizes the following word. This is a pause-based heuristic, not true
+ *  punctuation restoration (no NLP model is involved) — good enough to seed a TTS
+ *  script without literally concatenating bare words, never claimed as more. */
+export function reconstructScriptFromWords(words: TimedWord[], pauseSec = 0.6): string {
+  if (!words.length) return ''
+  const sentences: string[] = []
+  let current: string[] = []
+  const capitalize = (w: string): string => w.length ? w.charAt(0).toUpperCase() + w.slice(1) : w
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i].word.trim()
+    if (!word) continue
+    current.push(current.length === 0 ? capitalize(word) : word)
+    const gap = i + 1 < words.length ? words[i + 1].start - words[i].end : Number.POSITIVE_INFINITY
+    if (gap >= pauseSec || i === words.length - 1) {
+      const joined = current.join(' ')
+      sentences.push(/[.!?]$/.test(joined) ? joined : `${joined}.`)
+      current = []
+    }
+  }
+  return sentences.join(' ')
+}
+
+// ---- Quota / concurrency (Phase 6) ----
+export interface ProviderSlotBudget {
+  availableConcurrent: number
+  availableDaily: number
+}
+
+/** Only ever called with a FRESHLY fetched ProviderCapabilities (plan §6: "refresh
+ *  limits before paid submissions"). The budget this returns is spent down in-process,
+ *  synchronously, for the remainder of one orchestration pass — there is no persistent
+ *  reservation ledger to rebuild after a restart because every pass re-derives
+ *  availability from the server's own concurrentCount/dailyUsage, which already
+ *  reflects every submission (ours and anyone else's) as of the fetch. A limit of 0
+ *  is treated as "unknown/unbounded" rather than "blocked" (never captured as a real
+ *  zero in the HAR). */
+export function computeSlotBudget(capabilities: ProviderCapabilities): ProviderSlotBudget {
+  const { concurrentLimit, concurrentCount, dailyLimit, dailyUsage } = capabilities.usage
+  return {
+    availableConcurrent: concurrentLimit > 0 ? Math.max(0, concurrentLimit - concurrentCount) : Number.POSITIVE_INFINITY,
+    availableDaily: dailyLimit > 0 ? Math.max(0, dailyLimit - dailyUsage) : Number.POSITIVE_INFINITY
+  }
+}
+
+// ---- Preferred download route (Phase 9) ----
+const PROJECT_DOWNLOAD_PATH_RE = /^\/project\/download\/([1-9][0-9]*)$/
+
+/** Construct the preferred download URL — only from a validated positive integer
+ *  project id. Returns null (never a guessed/partial URL) for anything else. */
+export function buildProjectDownloadUrl(remoteProjectId: string): string | null {
+  if (!/^[1-9][0-9]*$/.test(remoteProjectId)) return null
+  return `${TALKINGPHOTOS_BASE_URL}/project/download/${remoteProjectId}`
+}
+
+/** Strict allowlist: origin exactly https://app.talkingphotos.ai AND path exactly
+ *  /project/download/<positive-integer> — never a broad "any app.talkingphotos.ai URL"
+ *  allowance (plan §9). */
+export function isAllowedProjectDownloadUrl(url: string): boolean {
+  try {
+    const u = new URL(url)
+    return u.protocol === 'https:' && u.hostname === TALKINGPHOTOS_APP_HOST && PROJECT_DOWNLOAD_PATH_RE.test(u.pathname)
+  } catch {
+    return false
+  }
+}
+
+/** Sanitize a Content-Disposition filename: strips path separators and traversal so it
+ *  can never escape the destination directory when used as a local file name. */
+export function sanitizeDownloadFilename(contentDisposition: string | undefined | null, fallback: string): string {
+  const match = contentDisposition ? /filename\*?=(?:UTF-8''|")?([^";\n]+)"?/i.exec(contentDisposition) : null
+  let candidate = fallback
+  if (match?.[1]) {
+    try { candidate = decodeURIComponent(match[1].replace(/^"|"$/g, '')) } catch { candidate = match[1].replace(/^"|"$/g, '') }
+  }
+  const base = candidate.replace(/[\\/]/g, '_').replace(/\.\.+/g, '_').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 150)
+  return base || fallback
 }
