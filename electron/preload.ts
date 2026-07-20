@@ -21,6 +21,7 @@ import type {
   AutomationJobDraft,
   AutomationJob
 } from '../shared/types'
+import type { ProviderJob, ProviderMotionQuery } from '../shared/talkingphotos'
 
 /** Subscribe to a main→renderer event; returns an unsubscribe fn. */
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -202,6 +203,22 @@ const api: NativeApi = {
     retryJob: (id: string) => ipcRenderer.invoke('automation:retryJob', id)
   },
 
+  talkingPhotos: {
+    connectionStatus: () => ipcRenderer.invoke('talkingphotos:connectionStatus'),
+    connect: () => ipcRenderer.invoke('talkingphotos:connect'),
+    reconnect: () => ipcRenderer.invoke('talkingphotos:reconnect'),
+    disconnect: () => ipcRenderer.invoke('talkingphotos:disconnect'),
+    capabilities: () => ipcRenderer.invoke('talkingphotos:capabilities'),
+    languages: () => ipcRenderer.invoke('talkingphotos:languages'),
+    voices: (languageCode: string) => ipcRenderer.invoke('talkingphotos:voices', languageCode),
+    motions: (query: ProviderMotionQuery) => ipcRenderer.invoke('talkingphotos:motions', query),
+    projects: () => ipcRenderer.invoke('talkingphotos:projects'),
+    project: (remoteProjectId: string) => ipcRenderer.invoke('talkingphotos:project', remoteProjectId),
+    sync: () => ipcRenderer.invoke('talkingphotos:sync'),
+    jobs: () => ipcRenderer.invoke('talkingphotos:jobs'),
+    downloadOutput: (providerJobId: string) => ipcRenderer.invoke('talkingphotos:downloadOutput', providerJobId)
+  },
+
   chooseFolder: () => ipcRenderer.invoke('fs:chooseFolder'),
 
   // Master library: dry-run the reorganize-existing migration, then execute it.
@@ -238,7 +255,8 @@ const api: NativeApi = {
   onTranscribeProgress: (cb: (p: TranscribeProgress) => void) => subscribe('transcribe:progress', cb),
   onRenderProgress: (cb: (p: RenderProgress) => void) => subscribe('render:progress', cb),
   onAutomation: (cb: (e: AutomationEvent) => void) => subscribe('automation:event', cb),
-  onAutomationJob: (cb: (job: AutomationJob) => void) => subscribe('automation:job', cb)
+  onAutomationJob: (cb: (job: AutomationJob) => void) => subscribe('automation:job', cb),
+  onProviderJob: (cb: (job: ProviderJob) => void) => subscribe('talkingphotos:job', cb)
 }
 
 contextBridge.exposeInMainWorld('api', api)

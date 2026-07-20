@@ -36,6 +36,7 @@ import { destroyGpuWorker } from './services/engine/gpu/host'
 import { runProfile, newVideos } from './ipc/automation'
 import { cancelAutomationJob, createAutomationJob, getAutomationJob, pauseAutomationJob, preflightAutomation, resumeAutomationJob, startAutomationSupervisor, stopAutomationSupervisor } from './services/automation-supervisor'
 import { postWebhook } from './services/webhook'
+import { reconcileNonTerminalProviderJobs, startTalkingPhotosPoller, stopTalkingPhotosPoller } from './providers/talkingphotos/poller'
 import { createServer } from 'node:http'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -212,6 +213,9 @@ function initPersistence(): void {
   try {
     initDatabase(dbPath)
     recoverInterruptedRenderJobs()
+    // TalkingPhotos: reconcile any non-terminal provider job against its remote project
+    // now, so a completed-while-closed cloud render surfaces immediately (plan §12).
+    void reconcileNonTerminalProviderJobs().catch((e) => L.warn(`talkingphotos startup reconciliation failed: ${(e as Error).message}`))
   } catch (e) {
     L.error(`DB init FAILED at ${dbPath}: ${(e as Error).message}`)
     throw e
@@ -1852,6 +1856,7 @@ app.whenReady().then(() => {
     applyLoginItem(getSettings())
     scheduler.start()
     startAutomationSupervisor()
+    startTalkingPhotosPoller()
   }
   // M8 auto-update (packaged production builds only).
   void initAutoUpdate()
@@ -1866,6 +1871,7 @@ app.on('before-quit', () => {
   isQuitting = true
   scheduler.stop()
   stopAutomationSupervisor()
+  stopTalkingPhotosPoller()
   // Tear down the hidden GPU render-worker window if it was created.
   destroyGpuWorker()
   // Close the DB here too: with the tray enabled, the real quit comes through here
