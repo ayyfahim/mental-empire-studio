@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage } from 'electron'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { copyFileSync, existsSync, mkdirSync, statSync, writeFileSync, readFileSync, rmSync, unlinkSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { applyLoginItem, trayIconPath } from './services/background'
@@ -44,6 +44,32 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 // Set a stable app name so userData (DB + settings) lands in a dedicated folder
 // rather than the generic "Electron" dir shared with other dev apps.
 app.setName('Mental Empire Studio')
+
+// Hard safety guard: a headless smoke/screenshot run must NEVER touch the real
+// production/dev userData directory (mental-empire.db, settings, logs). Several
+// smoke harnesses call repos.resetAll() + seedDemoForSmoke(), which wipes and
+// reseeds whatever DB they're pointed at — fine on a disposable CI runner, but
+// catastrophic against a real local install. ME_SMOKE_USERDATA_DIR is required
+// whenever ME_SMOKE/ME_SHOOT is set, must resolve to somewhere other than the
+// real default userData path, and is applied via app.setPath BEFORE anything else
+// (initSettings/getRepos/initDatabase) touches userData. This must run first,
+// synchronously, with a hard process.exit — not app.exit, which only schedules an
+// async quit and would let later userData-touching code run first.
+if (process.env['ME_SMOKE'] || process.env['ME_SHOOT']) {
+  const defaultUserData = resolve(app.getPath('userData'))
+  const overrideDir = process.env['ME_SMOKE_USERDATA_DIR']
+  const resolvedOverride = overrideDir ? resolve(overrideDir) : ''
+  if (!overrideDir || resolvedOverride === defaultUserData) {
+    console.error(
+      'FATAL: ME_SMOKE/ME_SHOOT requires ME_SMOKE_USERDATA_DIR to point at an isolated ' +
+      'temp directory distinct from the real userData path. Refusing to start against: ' +
+      defaultUserData
+    )
+    process.exit(1)
+  }
+  mkdirSync(resolvedOverride, { recursive: true })
+  app.setPath('userData', resolvedOverride)
+}
 
 // Wrap ipcMain.handle app-wide BEFORE any handler registers, so every renderer→main
 // call (across every electron/ipc/* module) gets Sentry tracing for free once telemetry
