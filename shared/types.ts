@@ -4,6 +4,16 @@
 
 import type { GpuRenderSpec } from './renderSpec'
 import type { GpuEngineStatus } from './gpuStatus'
+import type {
+  ProviderCapabilities,
+  ProviderConnection,
+  ProviderJob,
+  ProviderLanguage,
+  ProviderMotion,
+  ProviderMotionQuery,
+  ProviderProjectSummary,
+  ProviderVoice
+} from './talkingphotos'
 
 export type AccentName = 'Amber' | 'Violet' | 'Emerald' | 'Crimson'
 
@@ -21,6 +31,7 @@ export type ScreenKey =
   | 'niches'
   | 'profiles'
   | 'settings'
+  | 'talking-video'
 
 export type UploadStatus = 'Uploaded' | 'Scheduled' | 'Draft'
 
@@ -1029,6 +1040,8 @@ export interface AppSettings {
   detection: { auto: boolean; confirmBand: [number, number] }
   /** duplicate-download behavior for source videos already uploaded to owned channels */
   dedup: { allowReupload: boolean }
+  /** third-party cloud provider connections, gated off by default until each is ready */
+  integrations: { talkingPhotos: { enabled: boolean } }
   /** global Sentry kill switch — crash reports, perf traces, and resource sampling.
    *  Flipping this off fully disables telemetry app-wide, live, no restart needed. */
   telemetryEnabled: boolean
@@ -1071,6 +1084,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   features: { workflowP1: true, videoEditorV2: true, thumbEditorV2: true },
   detection: { auto: true, confirmBand: [0.6, 0.82] },
   dedup: { allowReupload: false },
+  integrations: { talkingPhotos: { enabled: false } },
   telemetryEnabled: true
 }
 
@@ -1342,6 +1356,27 @@ export interface NativeApi {
     cancelJob(id: string): Promise<void>
     retryJob(id: string): Promise<void>
   }
+  /** TalkingPhotos.ai cloud provider — session/connection + read-only sync (Phase 1-3).
+   *  Creation (TTS/video/merge/subtitles submission) is intentionally not exposed yet:
+   *  the HAR capture did not resolve several required request/response contracts. */
+  talkingPhotos: {
+    connectionStatus(): Promise<ProviderConnection>
+    connect(): Promise<ProviderConnection>
+    reconnect(): Promise<ProviderConnection>
+    disconnect(): Promise<ProviderConnection>
+    capabilities(): Promise<ProviderCapabilities>
+    languages(): Promise<ProviderLanguage[]>
+    voices(languageCode: string): Promise<ProviderVoice[]>
+    motions(query: ProviderMotionQuery): Promise<ProviderMotion[]>
+    /** locally-known provider jobs joined with a fresh remote project listing */
+    projects(): Promise<ProviderProjectSummary[]>
+    project(remoteProjectId: string): Promise<ProviderProjectSummary | null>
+    /** reconcile every non-terminal provider job against its remote project now */
+    sync(): Promise<ProviderJob[]>
+    jobs(): Promise<ProviderJob[]>
+    /** (re)download a completed job's output; safe to call repeatedly */
+    downloadOutput(providerJobId: string): Promise<ProviderJob>
+  }
   /** pick an output folder via the OS dialog; returns the chosen path or '' */
   chooseFolder(): Promise<string>
   /** master library: reorganize existing files into the per-video layout */
@@ -1377,6 +1412,8 @@ export interface NativeApi {
   onAutomation(cb: (e: AutomationEvent) => void): () => void
   /** subscribe to durable automation job changes; SQLite remains source of truth */
   onAutomationJob(cb: (job: AutomationJob) => void): () => void
+  /** subscribe to TalkingPhotos provider-job changes; provider_jobs remains source of truth */
+  onProviderJob(cb: (job: ProviderJob) => void): () => void
 }
 
 declare global {

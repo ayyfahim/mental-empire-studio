@@ -32,6 +32,7 @@ import type {
 } from '../../shared/types'
 import { asBetaOpts, DEFAULT_BETA_OPTS } from '../../shared/types'
 import { normalizeAutomationConfig } from '../../shared/automationConfig'
+import type { ProviderAsset, ProviderConnection, ProviderJob, TranscriptDocument } from '../../shared/talkingphotos'
 import { seedIfEmpty, seedDemoData, seedDefaultThumbnailTemplates } from './seed'
 import { planProfileSourceMigration, type SourceMigrationCandidate } from './profile-source-migration'
 
@@ -191,6 +192,75 @@ CREATE INDEX IF NOT EXISTS idx_automation_jobs_status ON automation_jobs(status,
 CREATE INDEX IF NOT EXISTS idx_automation_steps_job ON automation_job_steps(jobId, ord);
 CREATE INDEX IF NOT EXISTS idx_automation_items_job ON automation_job_items(jobId, updatedAt);
 CREATE INDEX IF NOT EXISTS idx_automation_logs_job ON automation_job_logs(jobId, id);
+CREATE TABLE IF NOT EXISTS provider_connections (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  partition TEXT NOT NULL,
+  status TEXT NOT NULL,
+  accountLabel TEXT,
+  connectedAt TEXT,
+  lastVerifiedAt TEXT,
+  lastError TEXT,
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS provider_jobs (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  connectionId TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  remoteProjectId TEXT,
+  remoteTaskUuid TEXT,
+  remotePreviousTaskUuid TEXT,
+  parentProviderJobId TEXT,
+  automationJobId TEXT,
+  automationItemId TEXT,
+  projectId TEXT,
+  requestFingerprint TEXT,
+  status TEXT NOT NULL,
+  remoteStep INTEGER,
+  remoteStepsTotal INTEGER,
+  progress INTEGER NOT NULL DEFAULT 0,
+  remoteMediaId TEXT,
+  remoteMediaUrl TEXT,
+  localOutputPath TEXT,
+  errorCode TEXT,
+  errorMessage TEXT,
+  segmentOrdinal INTEGER,
+  internalSegment INTEGER NOT NULL DEFAULT 0,
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL,
+  lastPolledAt TEXT,
+  downloadedAt TEXT
+);
+CREATE TABLE IF NOT EXISTS provider_assets (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  connectionId TEXT NOT NULL,
+  localSha256 TEXT NOT NULL,
+  localPath TEXT NOT NULL,
+  mimeType TEXT,
+  sizeBytes INTEGER,
+  durationSec REAL,
+  remoteCategoryId TEXT,
+  remoteMediaId TEXT,
+  remoteResultUuid TEXT,
+  uploadedAt TEXT,
+  lastVerifiedAt TEXT
+);
+CREATE TABLE IF NOT EXISTS transcript_documents (
+  projectId TEXT PRIMARY KEY,
+  text TEXT NOT NULL,
+  segmentsJson TEXT,
+  source TEXT NOT NULL,
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_provider_jobs_connection ON provider_jobs(connectionId, status);
+CREATE INDEX IF NOT EXISTS idx_provider_jobs_remote ON provider_jobs(remoteProjectId);
+CREATE INDEX IF NOT EXISTS idx_provider_jobs_fingerprint ON provider_jobs(requestFingerprint);
+CREATE INDEX IF NOT EXISTS idx_provider_jobs_parent ON provider_jobs(parentProviderJobId);
+CREATE INDEX IF NOT EXISTS idx_provider_assets_hash ON provider_assets(provider, connectionId, localSha256);
 `
 
 // Every table that holds user/domain data — wiped by resetAll(). app_meta is
@@ -199,7 +269,8 @@ const DATA_TABLES = [
   'my_channels', 'source_channels', 'source_videos', 'downloaded_videos', 'uploads',
   'profiles', 'thumbnail_templates', 'render_jobs', 'activity_log',
   'projects', 'project_images', 'transcript_words', 'work_item_state', 'niches',
-  'automation_jobs', 'automation_job_steps', 'automation_job_items', 'automation_job_logs'
+  'automation_jobs', 'automation_job_steps', 'automation_job_items', 'automation_job_logs',
+  'provider_connections', 'provider_jobs', 'provider_assets', 'transcript_documents'
 ]
 
 /** Add a column only if it isn't already present — idempotent forward migration. */
@@ -539,6 +610,21 @@ export interface Repositories {
   updateAutomationStep(id: string, patch: Partial<AutomationWorkflowStep>): void
   upsertAutomationItem(item: AutomationJobItem): void
   addAutomationLog(jobId: string, level: AutomationJobLog['level'], message: string, itemId?: string): void
+  // ---- TalkingPhotos provider (cloud provider, separate from local render_jobs) ----
+  providerConnection(id: string): ProviderConnection | undefined
+  providerConnections(): ProviderConnection[]
+  upsertProviderConnection(row: ProviderConnection): void
+  providerJob(id: string): ProviderJob | undefined
+  providerJobByRemoteId(connectionId: string, remoteProjectId: string): ProviderJob | undefined
+  providerJobs(connectionId?: string): ProviderJob[]
+  /** Every provider job not yet in a terminal state — the startup-reconciliation set. */
+  nonTerminalProviderJobs(): ProviderJob[]
+  upsertProviderJob(job: ProviderJob): void
+  updateProviderJob(id: string, patch: Partial<ProviderJob>): void
+  providerAssetByHash(provider: string, connectionId: string, localSha256: string): ProviderAsset | undefined
+  upsertProviderAsset(asset: ProviderAsset): void
+  getTranscriptDocument(projectId: string): TranscriptDocument | undefined
+  upsertTranscriptDocument(doc: TranscriptDocument): void
   /** Remove a single download row from history. */
   deleteDownload(id: string): void
   /** Remove a single render job from the queue. */
@@ -745,6 +831,59 @@ function rowToAutomationItem(r: Record<string, unknown>): AutomationJobItem {
     progress: coerceNum(r.progress, 0),
     attempts: coerceNum(r.attempts, 0)
   }
+}
+
+// ---- TalkingPhotos provider rows ----
+function rowToProviderConnection(r: Record<string, unknown>): ProviderConnection {
+  return { ...(r as unknown as ProviderConnection) }
+}
+
+function rowToProviderJob(r: Record<string, unknown>): ProviderJob {
+  return {
+    ...(r as unknown as ProviderJob),
+    progress: coerceNum(r.progress, 0),
+    remoteStep: r.remoteStep == null ? undefined : coerceNum(r.remoteStep, 0),
+    remoteStepsTotal: r.remoteStepsTotal == null ? undefined : coerceNum(r.remoteStepsTotal, 0),
+    segmentOrdinal: r.segmentOrdinal == null ? undefined : coerceNum(r.segmentOrdinal, 0),
+    internalSegment: !!r.internalSegment
+  }
+}
+
+function providerJobToRow(job: ProviderJob): Record<string, unknown> {
+  return {
+    ...job,
+    remoteStep: job.remoteStep ?? null,
+    remoteStepsTotal: job.remoteStepsTotal ?? null,
+    segmentOrdinal: job.segmentOrdinal ?? null,
+    internalSegment: job.internalSegment ? 1 : 0,
+    remoteProjectId: job.remoteProjectId ?? null,
+    remoteTaskUuid: job.remoteTaskUuid ?? null,
+    remotePreviousTaskUuid: job.remotePreviousTaskUuid ?? null,
+    parentProviderJobId: job.parentProviderJobId ?? null,
+    automationJobId: job.automationJobId ?? null,
+    automationItemId: job.automationItemId ?? null,
+    projectId: job.projectId ?? null,
+    requestFingerprint: job.requestFingerprint ?? null,
+    remoteMediaId: job.remoteMediaId ?? null,
+    remoteMediaUrl: job.remoteMediaUrl ?? null,
+    localOutputPath: job.localOutputPath ?? null,
+    errorCode: job.errorCode ?? null,
+    errorMessage: job.errorMessage ?? null,
+    lastPolledAt: job.lastPolledAt ?? null,
+    downloadedAt: job.downloadedAt ?? null
+  }
+}
+
+function rowToProviderAsset(r: Record<string, unknown>): ProviderAsset {
+  return {
+    ...(r as unknown as ProviderAsset),
+    sizeBytes: r.sizeBytes == null ? undefined : coerceNum(r.sizeBytes, 0),
+    durationSec: r.durationSec == null ? undefined : coerceNum(r.durationSec, 0)
+  }
+}
+
+function rowToTranscriptDocument(r: Record<string, unknown>): TranscriptDocument {
+  return { ...(r as unknown as TranscriptDocument) }
 }
 
 function buildRepositories(d: Database.Database): Repositories {
@@ -1254,6 +1393,90 @@ function buildRepositories(d: Database.Database): Repositories {
         .run(jobId, itemId ?? null, level, message, new Date().toISOString())
     },
 
+    // ---- TalkingPhotos provider ----
+    providerConnection: (id) => {
+      const r = d.prepare('SELECT * FROM provider_connections WHERE id=?').get(id) as Record<string, unknown> | undefined
+      return r ? rowToProviderConnection(r) : undefined
+    },
+    providerConnections: () =>
+      (d.prepare('SELECT * FROM provider_connections').all() as Array<Record<string, unknown>>).map(rowToProviderConnection),
+    upsertProviderConnection: (row) => {
+      d.prepare(
+        `INSERT INTO provider_connections (id,provider,partition,status,accountLabel,connectedAt,lastVerifiedAt,lastError,createdAt,updatedAt)
+         VALUES (@id,@provider,@partition,@status,@accountLabel,@connectedAt,@lastVerifiedAt,@lastError,@createdAt,@updatedAt)
+         ON CONFLICT(id) DO UPDATE SET provider=@provider, partition=@partition, status=@status, accountLabel=@accountLabel,
+           connectedAt=@connectedAt, lastVerifiedAt=@lastVerifiedAt, lastError=@lastError, updatedAt=@updatedAt`
+      ).run({ accountLabel: null, connectedAt: null, lastVerifiedAt: null, lastError: null, ...row })
+    },
+    providerJob: (id) => {
+      const r = d.prepare('SELECT * FROM provider_jobs WHERE id=?').get(id) as Record<string, unknown> | undefined
+      return r ? rowToProviderJob(r) : undefined
+    },
+    providerJobByRemoteId: (connectionId, remoteProjectId) => {
+      const r = d.prepare('SELECT * FROM provider_jobs WHERE connectionId=? AND remoteProjectId=?').get(connectionId, remoteProjectId) as Record<string, unknown> | undefined
+      return r ? rowToProviderJob(r) : undefined
+    },
+    providerJobs: (connectionId) => {
+      const rows = connectionId
+        ? (d.prepare('SELECT * FROM provider_jobs WHERE connectionId=? ORDER BY createdAt DESC').all(connectionId) as Array<Record<string, unknown>>)
+        : (d.prepare('SELECT * FROM provider_jobs ORDER BY createdAt DESC').all() as Array<Record<string, unknown>>)
+      return rows.map(rowToProviderJob)
+    },
+    nonTerminalProviderJobs: () =>
+      (d.prepare("SELECT * FROM provider_jobs WHERE status NOT IN ('completed','failed','cancelled') ORDER BY createdAt").all() as Array<Record<string, unknown>>).map(rowToProviderJob),
+    upsertProviderJob: (job) => {
+      const row = providerJobToRow(job)
+      const cols = Object.keys(row)
+      d.prepare(
+        `INSERT INTO provider_jobs (${cols.join(',')}) VALUES (${cols.map((c) => `@${c}`).join(',')})
+         ON CONFLICT(id) DO UPDATE SET ${cols.filter((c) => c !== 'id').map((c) => `${c}=@${c}`).join(', ')}`
+      ).run(row)
+    },
+    updateProviderJob: (id, patch) => {
+      const allow = new Set([
+        'operation', 'remoteProjectId', 'remoteTaskUuid', 'remotePreviousTaskUuid', 'parentProviderJobId',
+        'automationJobId', 'automationItemId', 'projectId', 'requestFingerprint', 'status', 'remoteStep',
+        'remoteStepsTotal', 'progress', 'remoteMediaId', 'remoteMediaUrl', 'localOutputPath', 'errorCode',
+        'errorMessage', 'segmentOrdinal', 'internalSegment', 'lastPolledAt', 'downloadedAt'
+      ])
+      const sets: string[] = []
+      const params: Record<string, unknown> = { id }
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === undefined || !allow.has(key)) continue
+        sets.push(`${key}=@${key}`)
+        params[key] = key === 'internalSegment' ? (value ? 1 : 0) : value
+      }
+      if (!sets.length) return
+      if (!sets.some((s) => s.startsWith('updatedAt='))) { sets.push('updatedAt=@updatedAt'); params.updatedAt = new Date().toISOString() }
+      d.prepare(`UPDATE provider_jobs SET ${sets.join(', ')} WHERE id=@id`).run(params)
+    },
+    providerAssetByHash: (provider, connectionId, localSha256) => {
+      const r = d.prepare('SELECT * FROM provider_assets WHERE provider=? AND connectionId=? AND localSha256=?').get(provider, connectionId, localSha256) as Record<string, unknown> | undefined
+      return r ? rowToProviderAsset(r) : undefined
+    },
+    upsertProviderAsset: (asset) => {
+      d.prepare(
+        `INSERT INTO provider_assets (id,provider,connectionId,localSha256,localPath,mimeType,sizeBytes,durationSec,remoteCategoryId,remoteMediaId,remoteResultUuid,uploadedAt,lastVerifiedAt)
+         VALUES (@id,@provider,@connectionId,@localSha256,@localPath,@mimeType,@sizeBytes,@durationSec,@remoteCategoryId,@remoteMediaId,@remoteResultUuid,@uploadedAt,@lastVerifiedAt)
+         ON CONFLICT(id) DO UPDATE SET localPath=@localPath, mimeType=@mimeType, sizeBytes=@sizeBytes, durationSec=@durationSec,
+           remoteCategoryId=@remoteCategoryId, remoteMediaId=@remoteMediaId, remoteResultUuid=@remoteResultUuid, uploadedAt=@uploadedAt, lastVerifiedAt=@lastVerifiedAt`
+      ).run({
+        mimeType: null, sizeBytes: null, durationSec: null, remoteCategoryId: null, remoteMediaId: null, remoteResultUuid: null, uploadedAt: null, lastVerifiedAt: null,
+        ...asset
+      })
+    },
+    getTranscriptDocument: (projectId) => {
+      const r = d.prepare('SELECT * FROM transcript_documents WHERE projectId=?').get(projectId) as Record<string, unknown> | undefined
+      return r ? rowToTranscriptDocument(r) : undefined
+    },
+    upsertTranscriptDocument: (doc) => {
+      d.prepare(
+        `INSERT INTO transcript_documents (projectId,text,segmentsJson,source,createdAt,updatedAt)
+         VALUES (@projectId,@text,@segmentsJson,@source,@createdAt,@updatedAt)
+         ON CONFLICT(projectId) DO UPDATE SET text=@text, segmentsJson=@segmentsJson, source=@source, updatedAt=@updatedAt`
+      ).run({ segmentsJson: null, ...doc })
+    },
+
     resetAll: () => {
       const tx = d.transaction(() => {
         for (const t of DATA_TABLES) d.prepare(`DELETE FROM ${t}`).run()
@@ -1435,12 +1658,15 @@ function buildRepositories(d: Database.Database): Repositories {
     },
 
     softReset: () => {
-      // Wipe domain data but leave thumbnail_templates (user art) intact.
+      // Wipe domain data but leave thumbnail_templates (user art) intact. provider_connections
+      // is also kept — like API keys, a TalkingPhotos login is a credential, not disposable
+      // project data, and the actual session cookies live in the Chromium partition regardless.
       const softTables = [
         'my_channels', 'source_channels', 'source_videos', 'downloaded_videos', 'uploads',
         'profiles', 'render_jobs', 'activity_log',
         'projects', 'project_images', 'transcript_words',
-        'automation_jobs', 'automation_job_steps', 'automation_job_items', 'automation_job_logs'
+        'automation_jobs', 'automation_job_steps', 'automation_job_items', 'automation_job_logs',
+        'provider_jobs', 'provider_assets', 'transcript_documents'
       ]
       const tx = d.transaction(() => {
         for (const t of softTables) d.prepare(`DELETE FROM ${t}`).run()
