@@ -3,12 +3,16 @@ import { getRepos } from '../db'
 import { connectTalkingPhotos, disconnectTalkingPhotos, getConnectionStatus, reconnectTalkingPhotos } from '../providers/talkingphotos/session'
 import { getCapabilities, getProject, listLanguages, listMotions, listProjects, listVoices } from '../providers/talkingphotos/client'
 import { downloadProviderJobOutput } from '../providers/talkingphotos/downloader'
-import { createUploadedAudioVideo } from '../providers/talkingphotos/creation'
+import { createScriptVideo, createUploadedAudioVideo } from '../providers/talkingphotos/creation'
 import { reconcileNonTerminalProviderJobs, syncAllProviderJobsNow } from '../providers/talkingphotos/poller'
-import type { ProviderMotionQuery, TalkingPhotosCreateInput } from '../../shared/talkingphotos'
+import { confirmRecoveredTts, listTtsLibraryForRecovery } from '../providers/talkingphotos/tts'
+import { createProviderSubtitles, listSubtitleLanguages } from '../providers/talkingphotos/subtitles'
+import { applyLocalCaptions } from '../providers/talkingphotos/localCaptions'
+import type { ProviderMotionQuery, TalkingPhotosCreateInput, TalkingPhotosScriptCreateInput } from '../../shared/talkingphotos'
 
-// TalkingPhotos IPC surface: session/catalog sync plus the confirmed Human project
-// workflow that uses uploaded library audio. TTS remains intentionally unexposed.
+// TalkingPhotos IPC surface: session/catalog sync, the confirmed uploaded-audio Human
+// project workflow, the TTS-based (custom-script / transcript) workflow gated behind
+// the confirmed WebSocket resolution, and provider subtitles / local captions.
 
 /** Defense-in-depth: assert a renderer-supplied id is a non-empty string. Mirrors the
  *  reqId() guard in electron/ipc/register.ts. */
@@ -65,6 +69,53 @@ export function reqCreateInput(v: unknown): TalkingPhotosCreateInput {
   }
 }
 
+/** Validate the complete renderer boundary for the custom-script/TTS creation
+ *  request, before any file, network, or TTS-billing work starts. */
+export function reqScriptCreateInput(v: unknown): TalkingPhotosScriptCreateInput {
+  if (!v || typeof v !== 'object') throw new Error('Invalid TalkingPhotos script request.')
+  const q = v as Record<string, unknown>
+  const requiredString = (name: string): string => {
+    const value = q[name]
+    if (typeof value !== 'string' || !value.trim()) throw new Error(`Invalid ${name}`)
+    return value
+  }
+  const optionalString = (name: string): string | undefined => {
+    const value = q[name]
+    if (value == null || value === '') return undefined
+    if (typeof value !== 'string') throw new Error(`Invalid ${name}`)
+    return value
+  }
+  if (q.style !== 'normal' && q.style !== 'high_quality') throw new Error('Invalid TalkingPhotos project style.')
+  if (q.aspectRatio !== '16:9' && q.aspectRatio !== '1:1' && q.aspectRatio !== '9:16') throw new Error('Invalid TalkingPhotos aspect ratio.')
+  if (!Number.isInteger(q.motionId) || (q.motionId as number) < 0) throw new Error('Invalid TalkingPhotos motion ID.')
+  if (q.characterGender != null && q.characterGender !== 'male' && q.characterGender !== 'female') throw new Error('Invalid characterGender')
+  const subtitleMode = q.subtitleMode === 'provider' || q.subtitleMode === 'local' ? q.subtitleMode : 'none'
+  return {
+    title: requiredString('title'),
+    script: requiredString('script'),
+    characterImagePath: requiredString('characterImagePath'),
+    characterPrompt: requiredString('characterPrompt'),
+    characterNegativePrompt: optionalString('characterNegativePrompt'),
+    style: q.style,
+    aspectRatio: q.aspectRatio,
+    motionId: q.motionId as number,
+    characterGender: q.characterGender as 'male' | 'female' | undefined,
+    characterAge: optionalString('characterAge'),
+    characterStyle: optionalString('characterStyle'),
+    characterBeard: optionalString('characterBeard'),
+    language: requiredString('language'),
+    voice: requiredString('voice'),
+    voiceStyle: typeof q.voiceStyle === 'string' && q.voiceStyle.trim() ? q.voiceStyle : 'general',
+    speed: typeof q.speed === 'number' && Number.isFinite(q.speed) ? q.speed : 1,
+    pitch: typeof q.pitch === 'number' && Number.isFinite(q.pitch) ? q.pitch : 0,
+    subtitleMode,
+    automationJobId: optionalString('automationJobId'),
+    automationItemId: optionalString('automationItemId'),
+    projectId: optionalString('projectId'),
+    creationIntentId: optionalString('creationIntentId')
+  }
+}
+
 export function registerTalkingPhotosIpc(): void {
   ipcMain.handle('talkingphotos:connectionStatus', () => getConnectionStatus(true))
   ipcMain.handle('talkingphotos:connect', () => connectTalkingPhotos())
@@ -85,5 +136,22 @@ export function registerTalkingPhotosIpc(): void {
   ipcMain.handle('talkingphotos:sync', () => syncAllProviderJobsNow())
   ipcMain.handle('talkingphotos:jobs', () => getRepos().providerJobs())
   ipcMain.handle('talkingphotos:createUploadedAudio', (_e, input: unknown) => createUploadedAudioVideo(reqCreateInput(input)))
+  ipcMain.handle('talkingphotos:createScript', (_e, input: unknown) => createScriptVideo(reqScriptCreateInput(input)))
   ipcMain.handle('talkingphotos:downloadOutput', (_e, providerJobId: unknown) => downloadProviderJobOutput(reqId(providerJobId, 'providerJobId')))
+
+  ipcMain.handle('talkingphotos:subtitleLanguages', () => listSubtitleLanguages())
+  ipcMain.handle('talkingphotos:createProviderSubtitles', (_e, sourceJobId: unknown, language: unknown) =>
+    createProviderSubtitles(reqId(sourceJobId, 'sourceJobId'), { language: typeof language === 'string' && language.trim() ? language : undefined }))
+  ipcMain.handle('talkingphotos:applyLocalCaptions', (_e, providerJobId: unknown, aspect: unknown) =>
+    applyLocalCaptions(reqId(providerJobId, 'providerJobId'), { aspect: aspect === '16:9' || aspect === '1:1' || aspect === '9:16' ? aspect : undefined }))
+
+  // Explicit, user-confirmed TTS recovery only — never automatic (plan §4).
+  ipcMain.handle('talkingphotos:ttsRecoveryLibrary', () => listTtsLibraryForRecovery())
+  ipcMain.handle('talkingphotos:confirmRecoveredTts', (_e, jobId: unknown, mediaId: unknown, durationSec: unknown) => {
+    const id = reqId(jobId, 'jobId')
+    const media = reqId(mediaId, 'mediaId')
+    const duration = typeof durationSec === 'number' && Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 0
+    if (duration <= 0) throw new Error('Invalid durationSec')
+    return confirmRecoveredTts(id, media, duration)
+  })
 }

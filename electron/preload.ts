@@ -21,7 +21,7 @@ import type {
   AutomationJobDraft,
   AutomationJob
 } from '../shared/types'
-import type { ProviderJob, ProviderMotionQuery, TalkingPhotosCreateInput } from '../shared/talkingphotos'
+import type { ProviderJob, ProviderMotionQuery, TalkingPhotosAspectRatio, TalkingPhotosCreateInput, TalkingPhotosScriptCreateInput } from '../shared/talkingphotos'
 
 /** Subscribe to a main→renderer event; returns an unsubscribe fn. */
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -217,7 +217,13 @@ const api: NativeApi = {
     sync: () => ipcRenderer.invoke('talkingphotos:sync'),
     jobs: () => ipcRenderer.invoke('talkingphotos:jobs'),
     createUploadedAudio: (input: TalkingPhotosCreateInput) => ipcRenderer.invoke('talkingphotos:createUploadedAudio', input),
-    downloadOutput: (providerJobId: string) => ipcRenderer.invoke('talkingphotos:downloadOutput', providerJobId)
+    createScript: (input: TalkingPhotosScriptCreateInput) => ipcRenderer.invoke('talkingphotos:createScript', input),
+    downloadOutput: (providerJobId: string) => ipcRenderer.invoke('talkingphotos:downloadOutput', providerJobId),
+    subtitleLanguages: () => ipcRenderer.invoke('talkingphotos:subtitleLanguages'),
+    createProviderSubtitles: (sourceJobId: string, language?: string) => ipcRenderer.invoke('talkingphotos:createProviderSubtitles', sourceJobId, language),
+    applyLocalCaptions: (providerJobId: string, aspect?: TalkingPhotosAspectRatio) => ipcRenderer.invoke('talkingphotos:applyLocalCaptions', providerJobId, aspect),
+    ttsRecoveryLibrary: () => ipcRenderer.invoke('talkingphotos:ttsRecoveryLibrary'),
+    confirmRecoveredTts: (jobId: string, mediaId: string, durationSec: number) => ipcRenderer.invoke('talkingphotos:confirmRecoveredTts', jobId, mediaId, durationSec)
   },
 
   chooseFolder: () => ipcRenderer.invoke('fs:chooseFolder'),

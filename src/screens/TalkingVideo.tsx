@@ -3,7 +3,7 @@ import { ScreenPad, PrimaryButton } from '../components/primitives'
 import { useStore } from '../store/useStore'
 import { useTalkingPhotos } from '../store/useTalkingPhotos'
 import { useData } from '../store/useData'
-import type { ProviderConnectionStatus, ProviderJob, TalkingPhotosAspectRatio, TalkingPhotosProjectStyle } from '@shared/talkingphotos'
+import type { ProviderConnectionStatus, ProviderJob, TalkingPhotosAspectRatio, TalkingPhotosProjectStyle, TalkingPhotosSubtitleMode } from '@shared/talkingphotos'
 
 const STATUS_LABEL: Record<ProviderConnectionStatus, string> = {
   disconnected: 'Not connected',
@@ -41,8 +41,11 @@ function Card({ label, children }: { label?: string; children: React.ReactNode }
 
 function JobRow({ job }: { job: ProviderJob }): JSX.Element {
   const downloadOutput = useTalkingPhotos((s) => s.downloadOutput)
+  const createProviderSubtitles = useTalkingPhotos((s) => s.createProviderSubtitles)
+  const applyLocalCaptions = useTalkingPhotos((s) => s.applyLocalCaptions)
   const title = job.remoteProjectId ? `Project ${job.remoteProjectId}` : job.id
   const stepLabel = job.remoteStepsTotal ? `step ${job.remoteStep ?? 0} of ${job.remoteStepsTotal}` : undefined
+  const canOfferSubtitles = job.status === 'completed' && !!job.localOutputPath && job.operation !== 'subtitles'
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, border: '1px solid #1d2129', borderRadius: 9, padding: '11px 13px', background: '#0e1116', marginBottom: 8 }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -52,6 +55,15 @@ function JobRow({ job }: { job: ProviderJob }): JSX.Element {
       <span style={{ fontSize: 10.5, fontFamily: 'var(--font-mono)', border: '1px solid #262b34', borderRadius: 6, padding: '3px 8px', color: job.status === 'completed' ? '#4fd6a0' : job.status === 'failed' || job.status === 'attention' ? '#ff8a96' : '#8a909c' }}>
         {JOB_STATUS_LABEL[job.status]}
       </span>
+      {canOfferSubtitles && !job.localCaptionedOutputPath && (
+        <>
+          <div className="me-btn" title="Submit provider subtitles for this video" onClick={() => void createProviderSubtitles(job.id)} style={{ border: '1px solid #262b34', borderRadius: 7, padding: '6px 10px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}>Subtitles</div>
+          <div className="me-btn" title="Burn local captions onto a copy of this video" onClick={() => void applyLocalCaptions(job.id)} style={{ border: '1px solid #262b34', borderRadius: 7, padding: '6px 10px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}>Local captions</div>
+        </>
+      )}
+      {job.localCaptionedOutputPath && (
+        <div className="me-btn" onClick={() => void window.api?.publish?.reveal?.(job.localCaptionedOutputPath!)} style={{ border: '1px solid #1e3a2a', color: '#4fd6a0', borderRadius: 7, padding: '6px 10px', fontSize: 11, cursor: 'pointer' }}>Captioned copy</div>
+      )}
       {job.status === 'completed' && job.localOutputPath && (
         <div className="me-btn" onClick={() => void window.api?.publish?.reveal?.(job.localOutputPath!)} style={{ border: '1px solid #262b34', borderRadius: 7, padding: '6px 10px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}>Open folder</div>
       )}
@@ -66,7 +78,7 @@ function JobRow({ job }: { job: ProviderJob }): JSX.Element {
 
 export function TalkingVideo(): JSX.Element {
   const enabled = useStore((s) => s.settings.integrations.talkingPhotos.enabled)
-  const { connection, connecting, capabilities, jobs, syncing, creating, error, init, connect, reconnect, sync, createUploadedAudio } = useTalkingPhotos()
+  const { connection, connecting, capabilities, jobs, syncing, creating, error, init, connect, reconnect, sync, createUploadedAudio, createScript } = useTalkingPhotos()
   const downloads = useData((s) => s.downloads)
   const loadDownloads = useData((s) => s.loadDownloads)
   const [title, setTitle] = useState('')
@@ -78,15 +90,23 @@ export function TalkingVideo(): JSX.Element {
   const [motionId, setMotionId] = useState(0)
   const downloadedAudio = useMemo(() => downloads.filter((item) => !!item.filePath && /\.(mp3|wav|m4a|aac|flac|ogg)$/i.test(item.filePath)), [downloads])
 
+  // Custom-script (TTS) creation — a separate card, shares the character image and
+  // project-style/motion controls above where practical, but is otherwise standalone.
+  const [scriptTitle, setScriptTitle] = useState('')
+  const [script, setScript] = useState('')
+  const [scriptImagePath, setScriptImagePath] = useState('')
+  const [scriptCharacterPrompt, setScriptCharacterPrompt] = useState('')
+  const [language, setLanguage] = useState('en-US')
+  const [voice, setVoice] = useState('en-US-AndrewMultilingualNeural')
+  const [subtitleMode, setSubtitleMode] = useState<TalkingPhotosSubtitleMode>('none')
+
   useEffect(() => { void init(); void loadDownloads() }, [init, loadDownloads])
 
   const status = connection?.status ?? 'disconnected'
-  const selectLocalFile = (files: FileList | null, kind: 'audio' | 'image'): void => {
+  const selectLocalFile = (files: FileList | null, setPath: (p: string) => void): void => {
     const file = files?.[0]
     if (!file) return
-    const path = window.api?.pathForFile?.(file) ?? ''
-    if (kind === 'audio') setAudioPath(path)
-    else setCharacterImagePath(path)
+    setPath(window.api?.pathForFile?.(file) ?? '')
   }
   const submit = async (): Promise<void> => {
     const job = await createUploadedAudio({
@@ -100,6 +120,28 @@ export function TalkingVideo(): JSX.Element {
     })
     if (job) {
       setTitle('')
+      await sync()
+    }
+  }
+  const submitScript = async (): Promise<void> => {
+    const job = await createScript({
+      title: scriptTitle,
+      script,
+      characterImagePath: scriptImagePath,
+      characterPrompt: scriptCharacterPrompt,
+      style,
+      aspectRatio,
+      motionId: style === 'high_quality' ? 0 : motionId,
+      language,
+      voice,
+      voiceStyle: 'general',
+      speed: 1,
+      pitch: 0,
+      subtitleMode
+    })
+    if (job) {
+      setScriptTitle('')
+      setScript('')
       await sync()
     }
   }
@@ -165,10 +207,33 @@ export function TalkingVideo(): JSX.Element {
               <label style={{ fontSize: 10.5, color: '#8a909c' }}>Motion ID<input type="number" min={style === 'normal' ? 1 : 0} disabled={style === 'high_quality'} value={style === 'high_quality' ? 0 : motionId} onChange={(event) => setMotionId(Number(event.target.value))} style={{ ...inputStyle, display: 'block', marginTop: 5, opacity: style === 'high_quality' ? .55 : 1 }} /></label>
             </div>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 13 }}>
-              <label className="me-btn" style={{ border: '1px solid #262b34', borderRadius: 7, padding: '7px 11px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}><input type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.flac,.ogg" hidden onChange={(event) => selectLocalFile(event.target.files, 'audio')} />Choose audio file</label>
-              <label className="me-btn" style={{ border: '1px solid #262b34', borderRadius: 7, padding: '7px 11px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}><input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => selectLocalFile(event.target.files, 'image')} />Choose character image</label>
+              <label className="me-btn" style={{ border: '1px solid #262b34', borderRadius: 7, padding: '7px 11px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}><input type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.flac,.ogg" hidden onChange={(event) => selectLocalFile(event.target.files, setAudioPath)} />Choose audio file</label>
+              <label className="me-btn" style={{ border: '1px solid #262b34', borderRadius: 7, padding: '7px 11px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}><input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => selectLocalFile(event.target.files, setCharacterImagePath)} />Choose character image</label>
               <div style={{ flex: 1, minWidth: 0, color: '#5b616f', fontSize: 10 }} className="me-ellipsis" title={`${audioPath}\n${characterImagePath}`}>{audioPath ? `Audio: ${audioPath.split(/[\\/]/).pop()}` : 'No audio selected'} · {characterImagePath ? `Image: ${characterImagePath.split(/[\\/]/).pop()}` : 'No image selected'}</div>
               <PrimaryButton onClick={() => void submit()}>{creating ? 'Submitting…' : 'Create video'}</PrimaryButton>
+            </div>
+          </Card>
+
+          <Card label="CREATE WITH A SCRIPT (TTS)">
+            <div style={{ fontSize: 11, color: '#6a7180', lineHeight: 1.5, marginBottom: 14 }}>Type a script; TalkingPhotos generates speech and resolves the result over its WebSocket before the video is created. Long scripts are split at sentence boundaries and merged automatically.</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Title<input value={scriptTitle} onChange={(event) => setScriptTitle(event.target.value)} style={{ ...inputStyle, display: 'block', marginTop: 5 }} /></label>
+              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Character prompt<input value={scriptCharacterPrompt} onChange={(event) => setScriptCharacterPrompt(event.target.value)} placeholder="Describe the person to animate" style={{ ...inputStyle, display: 'block', marginTop: 5 }} /></label>
+              <label style={{ fontSize: 10.5, color: '#8a909c', gridColumn: '1 / -1' }}>Script<textarea value={script} onChange={(event) => setScript(event.target.value)} rows={4} placeholder="What should the character say?" style={{ ...inputStyle, display: 'block', marginTop: 5, resize: 'vertical', fontFamily: 'inherit' }} /></label>
+              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Language<input value={language} onChange={(event) => setLanguage(event.target.value)} style={{ ...inputStyle, display: 'block', marginTop: 5 }} /></label>
+              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Voice<input value={voice} onChange={(event) => setVoice(event.target.value)} style={{ ...inputStyle, display: 'block', marginTop: 5 }} /></label>
+              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Subtitles
+                <select value={subtitleMode} onChange={(event) => setSubtitleMode(event.target.value as TalkingPhotosSubtitleMode)} style={{ ...inputStyle, display: 'block', marginTop: 5 }}>
+                  <option value="none">None</option>
+                  <option value="provider">TalkingPhotos subtitles</option>
+                  <option value="local">Mental Empire local captions</option>
+                </select>
+              </label>
+            </div>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 13 }}>
+              <label className="me-btn" style={{ border: '1px solid #262b34', borderRadius: 7, padding: '7px 11px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}><input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => selectLocalFile(event.target.files, setScriptImagePath)} />Choose character image</label>
+              <div style={{ flex: 1, minWidth: 0, color: '#5b616f', fontSize: 10 }} className="me-ellipsis">{scriptImagePath ? `Image: ${scriptImagePath.split(/[\\/]/).pop()}` : 'No image selected'}</div>
+              <PrimaryButton onClick={() => void submitScript()}>{creating ? 'Submitting…' : 'Create video'}</PrimaryButton>
             </div>
           </Card>
 

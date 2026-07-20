@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ProviderCapabilities, ProviderConnection, ProviderJob, ProviderProjectSummary, TalkingPhotosCreateInput } from '@shared/talkingphotos'
+import type { ProviderCapabilities, ProviderConnection, ProviderJob, ProviderProjectSummary, TalkingPhotosAspectRatio, TalkingPhotosCreateInput, TalkingPhotosScriptCreateInput } from '@shared/talkingphotos'
 
 // TalkingPhotos live data — kept separate from useData.ts (the local-pipeline data
 // layer) since this is a distinct cloud-provider domain with its own connection
@@ -27,7 +27,10 @@ interface TalkingPhotosState {
   loadJobs: () => Promise<void>
   sync: () => Promise<void>
   createUploadedAudio: (input: TalkingPhotosCreateInput) => Promise<ProviderJob | undefined>
+  createScript: (input: TalkingPhotosScriptCreateInput) => Promise<ProviderJob | undefined>
   downloadOutput: (providerJobId: string) => Promise<void>
+  createProviderSubtitles: (sourceJobId: string, language?: string) => Promise<void>
+  applyLocalCaptions: (providerJobId: string, aspect?: TalkingPhotosAspectRatio) => Promise<void>
 }
 
 export const useTalkingPhotos = create<TalkingPhotosState>((set, get) => ({
@@ -140,9 +143,41 @@ export const useTalkingPhotos = create<TalkingPhotosState>((set, get) => ({
     }
   },
 
+  createScript: async (input) => {
+    set({ creating: true, error: '' })
+    try {
+      const job = await api()?.talkingPhotos?.createScript?.(input)
+      if (job) set((s) => ({ jobs: [job, ...s.jobs.filter((item) => item.id !== job.id)] }))
+      return job
+    } catch (e) {
+      set({ error: (e as Error).message })
+      return undefined
+    } finally {
+      set({ creating: false })
+    }
+  },
+
   downloadOutput: async (providerJobId: string) => {
     try {
       const job = await api()?.talkingPhotos?.downloadOutput?.(providerJobId)
+      if (job) set((s) => ({ jobs: s.jobs.map((j) => (j.id === job.id ? job : j)) }))
+    } catch (e) {
+      set({ error: (e as Error).message })
+    }
+  },
+
+  createProviderSubtitles: async (sourceJobId, language) => {
+    try {
+      const job = await api()?.talkingPhotos?.createProviderSubtitles?.(sourceJobId, language)
+      if (job) set((s) => ({ jobs: [job, ...s.jobs.filter((item) => item.id !== job.id)] }))
+    } catch (e) {
+      set({ error: (e as Error).message })
+    }
+  },
+
+  applyLocalCaptions: async (providerJobId, aspect) => {
+    try {
+      const job = await api()?.talkingPhotos?.applyLocalCaptions?.(providerJobId, aspect)
       if (job) set((s) => ({ jobs: s.jobs.map((j) => (j.id === job.id ? job : j)) }))
     } catch (e) {
       set({ error: (e as Error).message })
