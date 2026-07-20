@@ -1,8 +1,9 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ScreenPad, PrimaryButton } from '../components/primitives'
 import { useStore } from '../store/useStore'
 import { useTalkingPhotos } from '../store/useTalkingPhotos'
-import type { ProviderConnectionStatus, ProviderJob } from '@shared/talkingphotos'
+import { useData } from '../store/useData'
+import type { ProviderConnectionStatus, ProviderJob, TalkingPhotosAspectRatio, TalkingPhotosProjectStyle } from '@shared/talkingphotos'
 
 const STATUS_LABEL: Record<ProviderConnectionStatus, string> = {
   disconnected: 'Not connected',
@@ -65,11 +66,44 @@ function JobRow({ job }: { job: ProviderJob }): JSX.Element {
 
 export function TalkingVideo(): JSX.Element {
   const enabled = useStore((s) => s.settings.integrations.talkingPhotos.enabled)
-  const { connection, connecting, capabilities, jobs, syncing, error, init, connect, reconnect, sync } = useTalkingPhotos()
+  const { connection, connecting, capabilities, jobs, syncing, creating, error, init, connect, reconnect, sync, createUploadedAudio } = useTalkingPhotos()
+  const downloads = useData((s) => s.downloads)
+  const loadDownloads = useData((s) => s.loadDownloads)
+  const [title, setTitle] = useState('')
+  const [audioPath, setAudioPath] = useState('')
+  const [characterImagePath, setCharacterImagePath] = useState('')
+  const [characterPrompt, setCharacterPrompt] = useState('')
+  const [style, setStyle] = useState<TalkingPhotosProjectStyle>('high_quality')
+  const [aspectRatio, setAspectRatio] = useState<TalkingPhotosAspectRatio>('16:9')
+  const [motionId, setMotionId] = useState(0)
+  const downloadedAudio = useMemo(() => downloads.filter((item) => !!item.filePath && /\.(mp3|wav|m4a|aac|flac|ogg)$/i.test(item.filePath)), [downloads])
 
-  useEffect(() => { void init() }, [init])
+  useEffect(() => { void init(); void loadDownloads() }, [init, loadDownloads])
 
   const status = connection?.status ?? 'disconnected'
+  const selectLocalFile = (files: FileList | null, kind: 'audio' | 'image'): void => {
+    const file = files?.[0]
+    if (!file) return
+    const path = window.api?.pathForFile?.(file) ?? ''
+    if (kind === 'audio') setAudioPath(path)
+    else setCharacterImagePath(path)
+  }
+  const submit = async (): Promise<void> => {
+    const job = await createUploadedAudio({
+      title,
+      audioPath,
+      characterImagePath,
+      characterPrompt,
+      style,
+      aspectRatio,
+      motionId: style === 'high_quality' ? 0 : motionId
+    })
+    if (job) {
+      setTitle('')
+      await sync()
+    }
+  }
+  const inputStyle = { width: '100%', boxSizing: 'border-box' as const, background: '#0e1116', border: '1px solid #262b34', borderRadius: 7, color: '#d7dbe2', padding: '8px 10px', fontSize: 11.5 }
 
   return (
     <ScreenPad style={{ paddingTop: 0 }}>
@@ -111,6 +145,33 @@ export function TalkingVideo(): JSX.Element {
 
       {enabled && status === 'connected' && (
         <>
+          <Card label="CREATE WITH UPLOADED AUDIO">
+            <div style={{ fontSize: 11, color: '#6a7180', lineHeight: 1.5, marginBottom: 14 }}>Use a manual audio file or audio already downloaded by Mental Empire. Audio beyond the provider limit is split, rendered in order, and merged automatically.</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Title<input value={title} onChange={(event) => setTitle(event.target.value)} style={{ ...inputStyle, display: 'block', marginTop: 5 }} /></label>
+              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Downloaded Mental Empire audio
+                <select value={downloadedAudio.some((item) => item.filePath === audioPath) ? audioPath : ''} onChange={(event) => setAudioPath(event.target.value)} style={{ ...inputStyle, display: 'block', marginTop: 5 }}>
+                  <option value="">Choose downloaded audio…</option>
+                  {downloadedAudio.map((item) => <option key={item.id} value={item.filePath}>{item.title}</option>)}
+                </select>
+              </label>
+              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Character prompt<input value={characterPrompt} onChange={(event) => setCharacterPrompt(event.target.value)} placeholder="Describe the person to animate" style={{ ...inputStyle, display: 'block', marginTop: 5 }} /></label>
+              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Style
+                <select value={style} onChange={(event) => { const next = event.target.value as TalkingPhotosProjectStyle; setStyle(next); if (next === 'high_quality') setMotionId(0) }} style={{ ...inputStyle, display: 'block', marginTop: 5 }}><option value="high_quality">High Quality (60s segments)</option><option value="normal">Normal (300s segments)</option></select>
+              </label>
+              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Aspect ratio
+                <select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as TalkingPhotosAspectRatio)} style={{ ...inputStyle, display: 'block', marginTop: 5 }}><option value="16:9">16:9</option><option value="1:1">1:1</option><option value="9:16">9:16</option></select>
+              </label>
+              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Motion ID<input type="number" min={style === 'normal' ? 1 : 0} disabled={style === 'high_quality'} value={style === 'high_quality' ? 0 : motionId} onChange={(event) => setMotionId(Number(event.target.value))} style={{ ...inputStyle, display: 'block', marginTop: 5, opacity: style === 'high_quality' ? .55 : 1 }} /></label>
+            </div>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 13 }}>
+              <label className="me-btn" style={{ border: '1px solid #262b34', borderRadius: 7, padding: '7px 11px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}><input type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.flac,.ogg" hidden onChange={(event) => selectLocalFile(event.target.files, 'audio')} />Choose audio file</label>
+              <label className="me-btn" style={{ border: '1px solid #262b34', borderRadius: 7, padding: '7px 11px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}><input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => selectLocalFile(event.target.files, 'image')} />Choose character image</label>
+              <div style={{ flex: 1, minWidth: 0, color: '#5b616f', fontSize: 10 }} className="me-ellipsis" title={`${audioPath}\n${characterImagePath}`}>{audioPath ? `Audio: ${audioPath.split(/[\\/]/).pop()}` : 'No audio selected'} · {characterImagePath ? `Image: ${characterImagePath.split(/[\\/]/).pop()}` : 'No image selected'}</div>
+              <PrimaryButton onClick={() => void submit()}>{creating ? 'Submitting…' : 'Create video'}</PrimaryButton>
+            </div>
+          </Card>
+
           {capabilities && (
             <Card label="ACCOUNT LIMITS">
               <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', fontSize: 11.5, color: '#8a909c' }}>
@@ -128,13 +189,7 @@ export function TalkingVideo(): JSX.Element {
               <div className="me-btn" onClick={() => void sync()} style={{ border: '1px solid #262b34', borderRadius: 7, padding: '6px 12px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}>{syncing ? 'Syncing…' : 'Sync'}</div>
             </div>
             {jobs.length === 0 && <div style={{ fontSize: 11.5, color: '#5b616f' }}>No projects yet. Sync to check for existing TalkingPhotos projects, or create one from talkingphotos.ai.</div>}
-            {jobs.map((job) => <JobRow key={job.id} job={job} />)}
-          </Card>
-
-          <Card label="CREATING NEW VIDEOS">
-            <div style={{ fontSize: 11.5, color: '#5b616f', lineHeight: 1.5 }}>
-              Creating new Talking Videos from inside Mental Empire Studio isn't available yet — requires additional protocol capture (TTS audio resolution, imported-audio submission, and error responses aren't confirmed yet). This view stays read-only: sync, watch progress, and download completed output.
-            </div>
+            {jobs.filter((job) => !job.internalSegment).map((job) => <JobRow key={job.id} job={job} />)}
           </Card>
         </>
       )}

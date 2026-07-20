@@ -49,6 +49,10 @@ export interface ProviderJob {
   automationItemId?: string
   projectId?: string
   requestFingerprint?: string
+  /** Durable, non-secret orchestration checkpoint. Creation inputs, resolved remote
+   * asset ids, segment ordering, and submission state live here so restart recovery
+   * never depends on renderer memory. */
+  requestJson?: string
   status: ProviderJobStatus
   remoteStep?: number
   remoteStepsTotal?: number
@@ -146,6 +150,137 @@ export interface ProviderMotionQuery {
   gender?: 'male' | 'female'
   aspectRatio?: '16:9' | '1:1' | '9:16'
   style?: string
+}
+
+// ---- Confirmed uploaded-audio Human creation contract ----
+export type TalkingPhotosProjectStyle = 'normal' | 'high_quality'
+export type TalkingPhotosAspectRatio = '16:9' | '1:1' | '9:16'
+
+export interface TalkingPhotosCreateInput {
+  title: string
+  audioPath: string
+  characterImagePath: string
+  characterPrompt: string
+  characterNegativePrompt?: string
+  style: TalkingPhotosProjectStyle
+  aspectRatio: TalkingPhotosAspectRatio
+  /** Confirmed values: high_quality uses 0; normal uses a selected motion id. */
+  motionId: number
+  characterGender?: 'male' | 'female'
+  characterAge?: string
+  characterStyle?: string
+  characterBeard?: string
+  automationJobId?: string
+  automationItemId?: string
+  projectId?: string
+}
+
+export interface TalkingPhotosAudioSegment {
+  ordinal: number
+  startSec: number
+  endSec: number
+  durationSec: number
+  remoteAudioMediaId?: string
+  providerJobId?: string
+  remoteProjectId?: string
+}
+
+export interface TalkingPhotosCreationState {
+  version: 1
+  input: TalkingPhotosCreateInput
+  sourceDurationSec: number
+  maxSegmentSec: number
+  sourceAudioMediaId?: string
+  characterDrivingMediaId?: string
+  characterResultUuid?: string
+  segments: TalkingPhotosAudioSegment[]
+  stage: 'queued' | 'assets_ready' | 'segments_submitted' | 'merge_submitting' | 'merge_submitted'
+  startedAt: string
+}
+
+export interface TalkingPhotosRemoteMedia {
+  id: string
+  title: string
+  type: string
+  extension: string
+  categoryId?: string
+  durationSec?: number
+}
+
+export interface TalkingPhotosHumanProjectPayload {
+  title: string
+  type: 'human'
+  style: TalkingPhotosProjectStyle
+  options: Record<string, unknown>
+}
+
+/** Split audio without overlap or gaps. The provider limit is authoritative and
+ * every end time is clamped to the probed source duration. */
+export function planTalkingPhotosSegments(durationSec: number, maxSegmentSec: number): TalkingPhotosAudioSegment[] {
+  if (!Number.isFinite(durationSec) || durationSec <= 0) throw new Error('Audio duration must be greater than zero.')
+  if (!Number.isFinite(maxSegmentSec) || maxSegmentSec <= 0) throw new Error('TalkingPhotos returned an invalid duration limit.')
+  const count = Math.ceil(durationSec / maxSegmentSec)
+  return Array.from({ length: count }, (_, ordinal) => {
+    const startSec = ordinal * maxSegmentSec
+    const endSec = Math.min(durationSec, startSec + maxSegmentSec)
+    return { ordinal, startSec, endSec, durationSec: endSec - startSec }
+  })
+}
+
+/** Exact field family observed in the confirmed Human + library-audio capture.
+ * Empty TTS/result fields are intentional: uploaded audio is selected by
+ * audioSource=library and audioMediaId. */
+export function buildTalkingPhotosHumanPayload(
+  input: TalkingPhotosCreateInput,
+  resolved: { audioMediaId: string; characterDrivingMediaId: string; characterResultUuid: string; title?: string }
+): TalkingPhotosHumanProjectPayload {
+  return {
+    title: resolved.title || input.title,
+    type: 'human',
+    style: input.style,
+    options: {
+      aspectRatio: input.aspectRatio,
+      characterPrompt: input.characterPrompt,
+      characterNegativePrompt: input.characterNegativePrompt || '',
+      motionId: input.motionId,
+      parentMotionId: 0,
+      motionPrompt: '',
+      characterResultUuid: resolved.characterResultUuid,
+      characterDrivingMediaId: Number(resolved.characterDrivingMediaId),
+      characterGender: input.characterGender || 'male',
+      characterEthnicity: '',
+      characterAge: input.characterAge || 'adult',
+      characterStyle: input.characterStyle || 'realistic',
+      characterBeard: input.characterBeard || 'shaven',
+      backgroundResultUuid: '',
+      backgroundPrompt: '',
+      backgroundMediaId: 0,
+      audioSource: 'library',
+      audioMediaId: Number(resolved.audioMediaId),
+      audioVocalUrl: '',
+      characterImageMediaId: 0,
+      ttsText: '',
+      ttsLanguage: 'en-US',
+      ttsVoice: 'en-US-AndrewMultilingualNeural',
+      ttsVoiceGender: '',
+      ttsEmotion: 'general',
+      ttsSpeed: 50,
+      ttsPitch: 50,
+      voiceCloneCategory: 'cloned',
+      voiceCloneLanguage: 1,
+      voiceCloneVoice: null,
+      songPrompt: '',
+      songLyrics: '',
+      songLength: 'short',
+      songStylesSelectedList: [],
+      songResultUuid: '',
+      audioResultUuid: '',
+      replicateMotionUseSource: true,
+      replicateUseVoiceChanger: false,
+      replicateMotionMode: 'animate',
+      reverseVideoMode: true
+    }
+  }
 }
 
 // ---- Remote project summaries ----

@@ -138,7 +138,7 @@ export function registerIpc(): void {
   registerAutomationIpc()
   ipcMain.handle('automation:tick', () => tick())
 
-  // ---- TalkingPhotos cloud provider: session + read-only sync (Phase 1-3) ----
+  // ---- TalkingPhotos cloud provider: session, sync, and uploaded-audio Human creation ----
   registerTalkingPhotosIpc()
 
   // ---- beta: effect-plan generation via Groq (reuses the transcription key) ----
@@ -151,4 +151,3 @@ export function registerIpc(): void {
     return json
   })
 }
-

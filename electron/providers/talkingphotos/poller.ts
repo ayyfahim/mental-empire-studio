@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { getRepos } from '../../db'
 import { getProject, listProjects, ProviderRequestError } from './client'
 import { downloadProviderJobOutput } from './downloader'
+import { advanceProviderOrchestrations } from './creation'
 import { emit } from '../../ipc/events'
 import {
   TALKINGPHOTOS_CONNECTION_ID,
@@ -49,7 +50,9 @@ async function pollJobOnce(job: ProviderJob, state: PollState): Promise<void> {
     const remote = await getProject(job.remoteProjectId)
     if (!remote) throw new Error('TalkingPhotos returned a malformed project response.')
 
-    const mappedStatus = mapRemoteProjectStatus(remote.status, hasVerifiedLocalFile(job))
+    // Segment projects are provider-side merge inputs, not user-facing outputs.
+    // Treat a completed remote segment as locally complete without downloading it.
+    const mappedStatus = mapRemoteProjectStatus(remote.status, job.internalSegment || hasVerifiedLocalFile(job))
     const progress = remote.taskStepsTotal ? Math.round(((remote.taskStepNumber ?? 0) / remote.taskStepsTotal) * 100) : job.progress
     repos.updateProviderJob(job.id, {
       status: mappedStatus,
@@ -64,7 +67,7 @@ async function pollJobOnce(job: ProviderJob, state: PollState): Promise<void> {
     const updated = repos.providerJob(job.id)
     if (updated) emit('talkingphotos:job', updated)
 
-    if (mappedStatus === 'downloading' && !downloadsInFlight.has(job.id)) {
+    if (!job.internalSegment && mappedStatus === 'downloading' && !downloadsInFlight.has(job.id)) {
       downloadsInFlight.add(job.id)
       void downloadProviderJobOutput(job.id)
         .catch((e: Error) => L.warn(`talkingphotos auto-download failed job=${job.id}: ${e.message}`))
@@ -98,6 +101,7 @@ async function pollJobOnce(job: ProviderJob, state: PollState): Promise<void> {
 
 async function tick(): Promise<void> {
   if (pausedUntilReconnect) return
+  await advanceProviderOrchestrations()
   const jobs = getRepos().nonTerminalProviderJobs()
   const now = Date.now()
   for (const job of jobs) {
@@ -105,6 +109,7 @@ async function tick(): Promise<void> {
     if (now < state.nextPollAt) continue
     await pollJobOnce(job, state)
   }
+  await advanceProviderOrchestrations()
 }
 
 export function startTalkingPhotosPoller(): void {
@@ -122,10 +127,12 @@ export function stopTalkingPhotosPoller(): void {
  *  tick) — used at app startup and right after a successful reconnect. */
 export async function reconcileNonTerminalProviderJobs(): Promise<void> {
   pausedUntilReconnect = false
+  await advanceProviderOrchestrations()
   const jobs = getRepos().nonTerminalProviderJobs()
   for (const job of jobs) {
     await pollJobOnce(job, pollState.get(job.id) ?? { streak: 0, nextPollAt: 0 })
   }
+  await advanceProviderOrchestrations()
 }
 
 function inferOperation(remoteType: string): ProviderJobOperation {

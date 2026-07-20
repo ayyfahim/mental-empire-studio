@@ -52,6 +52,14 @@ export const DEFAULT_AUTOMATION_RULES: AutomationRules = {
   retryMaxDelaySec: 90
 }
 
+export const DEFAULT_TALKINGPHOTOS_AUTOMATION: NonNullable<AutomationJobConfig['talkingPhotos']> = {
+  characterPrompt: '',
+  characterNegativePrompt: '',
+  style: 'high_quality',
+  aspectRatio: '16:9',
+  motionId: 0
+}
+
 export function finiteNumber(value: unknown, fallback: number, min: number, max: number): number {
   const parsed = typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : Number.NaN
   const safe = Number.isFinite(parsed) ? parsed : fallback
@@ -141,6 +149,7 @@ export function normalizeAutomationRules(value: unknown): AutomationRules {
 
 export function normalizeAutomationConfig(config: Partial<AutomationJobConfig>): AutomationJobConfig {
   const styleConfig = normalizeAutomationStyle(config.styleConfig, config)
+  const talkingPhotos = record(config.talkingPhotos)
   const ratios = Array.isArray(config.aspectRatios) ? config.aspectRatios.filter((v): v is '16:9' | '1:1' | '9:16' => v === '16:9' || v === '1:1' || v === '9:16') : []
   return {
     sourceKind: config.sourceKind === 'youtube-url' || config.sourceKind === 'local-files' ? config.sourceKind : 'saved-source',
@@ -157,6 +166,13 @@ export function normalizeAutomationConfig(config: Partial<AutomationJobConfig>):
     aspectRatios: ratios.length ? ratios : [styleConfig.aspectRatio],
     styleConfig,
     rules: normalizeAutomationRules(config.rules),
+    talkingPhotos: {
+      characterPrompt: typeof talkingPhotos.characterPrompt === 'string' ? talkingPhotos.characterPrompt.trim().slice(0, 2_000) : '',
+      characterNegativePrompt: typeof talkingPhotos.characterNegativePrompt === 'string' ? talkingPhotos.characterNegativePrompt.trim().slice(0, 2_000) : '',
+      style: oneOf(talkingPhotos.style, ['normal', 'high_quality'], DEFAULT_TALKINGPHOTOS_AUTOMATION.style),
+      aspectRatio: oneOf(talkingPhotos.aspectRatio, ['16:9', '1:1', '9:16'], styleConfig.aspectRatio),
+      motionId: Math.round(finiteNumber(talkingPhotos.motionId, DEFAULT_TALKINGPHOTOS_AUTOMATION.motionId, 0, 1_000_000))
+    },
     notify: {
       desktop: bool(config.notify?.desktop, false),
       webhook: bool(config.notify?.webhook, false),

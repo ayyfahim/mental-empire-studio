@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ProviderCapabilities, ProviderConnection, ProviderJob, ProviderProjectSummary } from '@shared/talkingphotos'
+import type { ProviderCapabilities, ProviderConnection, ProviderJob, ProviderProjectSummary, TalkingPhotosCreateInput } from '@shared/talkingphotos'
 
 // TalkingPhotos live data — kept separate from useData.ts (the local-pipeline data
 // layer) since this is a distinct cloud-provider domain with its own connection
@@ -14,6 +14,7 @@ interface TalkingPhotosState {
   jobs: ProviderJob[]
   remoteProjects: ProviderProjectSummary[]
   syncing: boolean
+  creating: boolean
   error: string
   subscribed: boolean
 
@@ -25,6 +26,7 @@ interface TalkingPhotosState {
   loadCapabilities: () => Promise<void>
   loadJobs: () => Promise<void>
   sync: () => Promise<void>
+  createUploadedAudio: (input: TalkingPhotosCreateInput) => Promise<ProviderJob | undefined>
   downloadOutput: (providerJobId: string) => Promise<void>
 }
 
@@ -35,6 +37,7 @@ export const useTalkingPhotos = create<TalkingPhotosState>((set, get) => ({
   jobs: [],
   remoteProjects: [],
   syncing: false,
+  creating: false,
   error: '',
   subscribed: false,
 
@@ -120,6 +123,20 @@ export const useTalkingPhotos = create<TalkingPhotosState>((set, get) => ({
       set({ error: (e as Error).message })
     } finally {
       set({ syncing: false })
+    }
+  },
+
+  createUploadedAudio: async (input) => {
+    set({ creating: true, error: '' })
+    try {
+      const job = await api()?.talkingPhotos?.createUploadedAudio?.(input)
+      if (job) set((s) => ({ jobs: [job, ...s.jobs.filter((item) => item.id !== job.id)] }))
+      return job
+    } catch (e) {
+      set({ error: (e as Error).message })
+      return undefined
+    } finally {
+      set({ creating: false })
     }
   },
 

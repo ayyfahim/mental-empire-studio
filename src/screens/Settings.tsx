@@ -41,7 +41,7 @@ function TalkingPhotosCard({ enabled, onToggle }: { enabled: boolean; onToggle: 
 
   return (
     <Card label="TALKINGPHOTOS.AI">
-      <Row on={enabled} label="Enable TalkingPhotos integration" hint="Cloud avatar-video provider — read-only sync for now (no video creation yet)." onClick={onToggle} />
+      <Row on={enabled} label="Enable TalkingPhotos integration" hint="Cloud Human-video provider with uploaded-audio creation, durable progress sync, and output download." onClick={onToggle} />
       {enabled && (
         <div style={{ marginTop: 4 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, border: '1px solid #1d2129', borderRadius: 9, padding: '9px 13px', background: '#0e1116', marginBottom: 8 }}>
@@ -66,7 +66,7 @@ function TalkingPhotosCard({ enabled, onToggle }: { enabled: boolean; onToggle: 
               <span>Daily <b style={{ color: '#aab0bb' }}>{capabilities.usage.dailyUsage}/{capabilities.usage.dailyLimit}</b></span>
             </div>
           )}
-          <div style={{ fontSize: 10.5, color: '#5b616f', marginTop: 8 }}>Video/TTS creation isn't available yet — requires additional protocol capture. See the Talking Video screen to sync and download existing projects.</div>
+          <div style={{ fontSize: 10.5, color: '#5b616f', marginTop: 8 }}>Uploaded-audio Human video creation is available in Talking Video and Automation Studio. TTS creation remains unavailable.</div>
         </div>
       )}
     </Card>

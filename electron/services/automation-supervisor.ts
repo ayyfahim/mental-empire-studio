@@ -35,6 +35,9 @@ import { postWebhook } from './webhook'
 import { logger } from './logger'
 import { cachedBrollClipCount, hasConfiguredBrollSource, readBrollManifestClipIds } from './broll'
 import { probeDuration } from './audio'
+import { createUploadedAudioVideo } from '../providers/talkingphotos/creation'
+import { reconcileNonTerminalProviderJobs } from '../providers/talkingphotos/poller'
+import { TALKINGPHOTOS_CONNECTION_ID } from '../../shared/talkingphotos'
 
 const LOG = logger.scope('automation-supervisor')
 let pumping = false
@@ -47,6 +50,7 @@ function itemId(jobId: string, videoId: string): string { return `${jobId}-item-
 function localMediaId(path: string): string { return `local-${createHash('sha256').update(resolve(path)).digest('hex').slice(0, 20)}` }
 
 const LOCAL_MEDIA_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.mp4', '.mov', '.mkv', '.webm'])
+const TALKINGPHOTOS_AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg'])
 
 function validYoutubeSource(value: string): boolean {
   const trimmed = value.trim()
@@ -169,6 +173,7 @@ export function preflightAutomation(draft: AutomationJobDraft): AutomationPrefli
   const blockers: string[] = []
   const warnings: string[] = []
   const repos = getRepos()
+  const isTalkingPhotos = draft.goal === 'talkingphotos-video'
   const source = repos.sourceChannel(draft.config.sourceId)
   if (!isAutomationGoalAvailable(draft.goal)) blockers.push('This goal needs media capabilities that are not available in the current version.')
   if (draft.config.sourceKind === 'saved-source' && (!source || !draft.config.sourceUrl)) blockers.push('Choose a saved YouTube source before starting.')
@@ -176,16 +181,25 @@ export function preflightAutomation(draft: AutomationJobDraft): AutomationPrefli
   if (draft.config.sourceKind === 'local-files' && !draft.config.localMediaPaths.length) blockers.push('Choose at least one local audio or video file.')
   const invalidLocalMedia = draft.config.localMediaPaths.filter((path) => !existsSync(path) || !LOCAL_MEDIA_EXTENSIONS.has(extname(path).toLowerCase()))
   if (invalidLocalMedia.length) blockers.push(`${invalidLocalMedia.length} local media file${invalidLocalMedia.length === 1 ? ' is' : 's are'} missing or unsupported.`)
+  if (isTalkingPhotos && draft.config.sourceKind === 'local-files' && draft.config.localMediaPaths.some((path) => !TALKINGPHOTOS_AUDIO_EXTENSIONS.has(extname(path).toLowerCase()))) blockers.push('TalkingPhotos local-file automation accepts audio files only.')
   if (draft.config.sourceCount < 1) blockers.push('Choose at least one source video.')
-  if (draft.config.rules.captions && !getSettings().transcription.apiKey.trim()) blockers.push('Add a Groq transcription key in Settings, or turn captions off.')
-  if (!draft.config.assetPaths.length && !draft.config.rules.autoBroll) blockers.push('Add at least one image or enable Auto B-roll so the exports have visual media.')
+  if (!isTalkingPhotos && draft.config.rules.captions && !getSettings().transcription.apiKey.trim()) blockers.push('Add a Groq transcription key in Settings, or turn captions off.')
+  if (!draft.config.assetPaths.length && (isTalkingPhotos || !draft.config.rules.autoBroll)) blockers.push(isTalkingPhotos ? 'Add one character reference image for TalkingPhotos.' : 'Add at least one image or enable Auto B-roll so the exports have visual media.')
   const missingAssets = draft.config.assetPaths.filter((path) => !existsSync(path))
   if (missingAssets.length) blockers.push(`${missingAssets.length} selected visual asset${missingAssets.length === 1 ? ' is' : 's are'} no longer available.`)
-  if (draft.config.rules.autoBroll) {
+  if (!isTalkingPhotos && draft.config.rules.autoBroll) {
     const broll = draft.config.styleConfig
     const cached = cachedBrollClipCount(broll.brollFallbackPolicy === 'all-sources' ? undefined : broll.brollPoolKey)
     if (broll.brollFallbackPolicy === 'selected-only' && (!broll.brollPoolKey || cached === 0)) blockers.push('The selected B-roll pool is empty or unavailable and fallback is set to “Selected pool only”.')
     else if (cached === 0 && !hasConfiguredBrollSource(getSettings())) warnings.push('No usable cached B-roll or live stock provider is available; rendering will require user action or visual assets.')
+  }
+  if (isTalkingPhotos) {
+    const provider = repos.providerConnection(TALKINGPHOTOS_CONNECTION_ID)
+    const options = draft.config.talkingPhotos
+    if (provider?.status !== 'connected') blockers.push('Connect TalkingPhotos in Talking Video before starting this automation.')
+    if (!options?.characterPrompt.trim()) blockers.push('Enter a TalkingPhotos character prompt.')
+    if (options?.style === 'normal' && (!Number.isInteger(options.motionId) || options.motionId <= 0)) blockers.push('Normal TalkingPhotos mode requires a motion ID greater than zero.')
+    if (options?.style === 'high_quality' && options.motionId !== 0) blockers.push('High Quality TalkingPhotos mode requires motion ID 0.')
   }
   if (draft.config.notify.email) warnings.push('Email notifications are not connected yet; desktop and webhook notifications will still work.')
   if (draft.config.notify.sound) warnings.push('Sound alerts use the operating system notification sound in this version.')
@@ -248,7 +262,7 @@ export function createAutomationJob(draft: AutomationJobDraft): AutomationJobDet
     completedCount: 0,
     totalItems: 0
   }
-  repos.createAutomationJob(job, buildAutomationWorkflow(id, draft.config))
+  repos.createAutomationJob(job, buildAutomationWorkflow(id, draft.config, draft.goal))
   log(id, `Job saved. ${checked.appMessage}`)
   checked.warnings.forEach((w) => log(id, w, 'warning'))
   pushActivity({ t: hhmm(), icon: '▶', color: '#f5b323', text: `Automation queued: ${job.name}` })
@@ -507,6 +521,46 @@ async function runStep(job: AutomationJob, step: AutomationWorkflowStep): Promis
       return saveItem(item, { status: 'completed', currentStep: step.label, progress: 100 })
     })
     return { downloadedAt: now() }
+  }
+  if (step.key === 'talkingphotos') {
+    const options = config.talkingPhotos
+    const characterImagePath = config.assetPaths[0]
+    if (!options || !characterImagePath) throw new Error('TalkingPhotos character settings are missing.')
+    await eachItem(job, step, async (item) => {
+      const download = repos.download(`dl-${item.sourceVideoId}`)
+      if (!download?.filePath || !existsSync(download.filePath)) throw new Error('Downloaded audio checkpoint is missing.')
+      let providerJob = repos.providerJobs(TALKINGPHOTOS_CONNECTION_ID).find((candidate) => candidate.automationJobId === job.id && candidate.automationItemId === item.id && !candidate.parentProviderJobId)
+      if (!providerJob) {
+        providerJob = await createUploadedAudioVideo({
+          title: item.title,
+          audioPath: download.filePath,
+          characterImagePath,
+          characterPrompt: options.characterPrompt,
+          characterNegativePrompt: options.characterNegativePrompt,
+          style: options.style,
+          aspectRatio: options.aspectRatio,
+          motionId: options.style === 'high_quality' ? 0 : options.motionId,
+          automationJobId: job.id,
+          automationItemId: item.id
+        })
+        log(job.id, `${item.title}: TalkingPhotos job ${providerJob.id} submitted.`, 'info', item)
+      }
+      while (controlState(job.id) === 'run') {
+        await reconcileNonTerminalProviderJobs()
+        providerJob = repos.providerJob(providerJob.id) ?? providerJob
+        const progress = Math.max(1, providerJob.progress)
+        item = saveItem(item, { status: 'processing', currentStep: step.label, progress })
+        if (providerJob.status === 'completed' && providerJob.localOutputPath && existsSync(providerJob.localOutputPath)) {
+          return saveItem(item, { outputPath: providerJob.localOutputPath, status: 'completed', currentStep: step.label, progress: 100 })
+        }
+        if (providerJob.status === 'failed' || providerJob.status === 'attention' || providerJob.status === 'cancelled') {
+          throw new Error(providerJob.errorMessage || `TalkingPhotos job ${providerJob.status}.`)
+        }
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 5_000))
+      }
+      throw new Error('TalkingPhotos wait interrupted by automation control state.')
+    })
+    return { providerCompletedAt: now() }
   }
   if (step.key === 'prepare') {
     await eachItem(job, step, async (item) => {

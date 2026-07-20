@@ -116,4 +116,12 @@ describe('TalkingPhotos polling coordinator', () => {
     expect(getProject).not.toHaveBeenCalled()
     expect(jobs.get('j1')?.status).toBe('queued')
   })
+
+  it('marks completed internal segments complete without downloading them', async () => {
+    jobs.set('segment-1', makeJob({ id: 'segment-1', remoteProjectId: 'p-segment', status: 'running', internalSegment: true }))
+    nextProjectResponses['p-segment'] = { status: 'completed', mediaUrl: 'https://cdn.talkingphotos.ai/segment.mp4' }
+    await reconcileNonTerminalProviderJobs()
+    expect(jobs.get('segment-1')?.status).toBe('completed')
+    expect(downloadMock).not.toHaveBeenCalled()
+  })
 })

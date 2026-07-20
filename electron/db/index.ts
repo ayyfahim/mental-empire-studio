@@ -217,6 +217,7 @@ CREATE TABLE IF NOT EXISTS provider_jobs (
   automationItemId TEXT,
   projectId TEXT,
   requestFingerprint TEXT,
+  requestJson TEXT,
   status TEXT NOT NULL,
   remoteStep INTEGER,
   remoteStepsTotal INTEGER,
@@ -397,6 +398,7 @@ function migrate(d: Database.Database): void {
   ensureColumn(d, 'assets', 'usageCount', 'INTEGER')
   ensureColumn(d, 'assets', 'missing', 'INTEGER')
   ensureColumn(d, 'assets', 'projectId', 'TEXT')
+  ensureColumn(d, 'provider_jobs', 'requestJson', 'TEXT')
   d.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_content_id ON assets(id) WHERE id IS NOT NULL')
 
   purgeLegacyDemoSeed(d)
@@ -616,6 +618,7 @@ export interface Repositories {
   upsertProviderConnection(row: ProviderConnection): void
   providerJob(id: string): ProviderJob | undefined
   providerJobByRemoteId(connectionId: string, remoteProjectId: string): ProviderJob | undefined
+  providerJobByFingerprint(connectionId: string, requestFingerprint: string): ProviderJob | undefined
   providerJobs(connectionId?: string): ProviderJob[]
   /** Every provider job not yet in a terminal state — the startup-reconciliation set. */
   nonTerminalProviderJobs(): ProviderJob[]
@@ -864,6 +867,7 @@ function providerJobToRow(job: ProviderJob): Record<string, unknown> {
     automationItemId: job.automationItemId ?? null,
     projectId: job.projectId ?? null,
     requestFingerprint: job.requestFingerprint ?? null,
+    requestJson: job.requestJson ?? null,
     remoteMediaId: job.remoteMediaId ?? null,
     remoteMediaUrl: job.remoteMediaUrl ?? null,
     localOutputPath: job.localOutputPath ?? null,
@@ -1416,6 +1420,10 @@ function buildRepositories(d: Database.Database): Repositories {
       const r = d.prepare('SELECT * FROM provider_jobs WHERE connectionId=? AND remoteProjectId=?').get(connectionId, remoteProjectId) as Record<string, unknown> | undefined
       return r ? rowToProviderJob(r) : undefined
     },
+    providerJobByFingerprint: (connectionId, requestFingerprint) => {
+      const r = d.prepare('SELECT * FROM provider_jobs WHERE connectionId=? AND requestFingerprint=? ORDER BY createdAt DESC LIMIT 1').get(connectionId, requestFingerprint) as Record<string, unknown> | undefined
+      return r ? rowToProviderJob(r) : undefined
+    },
     providerJobs: (connectionId) => {
       const rows = connectionId
         ? (d.prepare('SELECT * FROM provider_jobs WHERE connectionId=? ORDER BY createdAt DESC').all(connectionId) as Array<Record<string, unknown>>)
@@ -1435,7 +1443,7 @@ function buildRepositories(d: Database.Database): Repositories {
     updateProviderJob: (id, patch) => {
       const allow = new Set([
         'operation', 'remoteProjectId', 'remoteTaskUuid', 'remotePreviousTaskUuid', 'parentProviderJobId',
-        'automationJobId', 'automationItemId', 'projectId', 'requestFingerprint', 'status', 'remoteStep',
+        'automationJobId', 'automationItemId', 'projectId', 'requestFingerprint', 'requestJson', 'status', 'remoteStep',
         'remoteStepsTotal', 'progress', 'remoteMediaId', 'remoteMediaUrl', 'localOutputPath', 'errorCode',
         'errorMessage', 'segmentOrdinal', 'internalSegment', 'lastPolledAt', 'downloadedAt'
       ])

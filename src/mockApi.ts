@@ -881,7 +881,7 @@ function installMock(): void {
           id, name: draft.name, goal: draft.goal, status: 'queued', progress: 0, currentStep: 'Waiting to start',
           config: draft.config, createdAt: at, updatedAt: at, pauseRequested: false, cancelRequested: false,
           warningCount: 0, failedCount: 0, completedCount: 0, totalItems: draft.config.sourceKind === 'local-files' ? draft.config.localMediaPaths.length : draft.config.sourceCount,
-          steps: buildAutomationWorkflow(id, draft.config),
+          steps: buildAutomationWorkflow(id, draft.config, draft.goal),
           items: [], logs: [{ id: 1, jobId: id, level: 'info', message: 'Browser preview job saved.', createdAt: at }]
         }
         automationJobDetails.unshift(job)

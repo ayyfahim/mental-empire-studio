@@ -3,14 +3,12 @@ import { getRepos } from '../db'
 import { connectTalkingPhotos, disconnectTalkingPhotos, getConnectionStatus, reconnectTalkingPhotos } from '../providers/talkingphotos/session'
 import { getCapabilities, getProject, listLanguages, listMotions, listProjects, listVoices } from '../providers/talkingphotos/client'
 import { downloadProviderJobOutput } from '../providers/talkingphotos/downloader'
+import { createUploadedAudioVideo } from '../providers/talkingphotos/creation'
 import { reconcileNonTerminalProviderJobs, syncAllProviderJobsNow } from '../providers/talkingphotos/poller'
-import type { ProviderMotionQuery } from '../../shared/talkingphotos'
+import type { ProviderMotionQuery, TalkingPhotosCreateInput } from '../../shared/talkingphotos'
 
-// TalkingPhotos IPC surface — Phase 1-3 (session/connection + read-only capabilities,
-// catalogs, project sync, and output download). No project/video/TTS/merge/subtitle
-// CREATION is exposed here: several required request/response contracts were not
-// resolved by the HAR capture (see the integration review's "unresolved" list), and
-// this module is intentionally limited to what the confirmed contract supports.
+// TalkingPhotos IPC surface: session/catalog sync plus the confirmed Human project
+// workflow that uses uploaded library audio. TTS remains intentionally unexposed.
 
 /** Defense-in-depth: assert a renderer-supplied id is a non-empty string. Mirrors the
  *  reqId() guard in electron/ipc/register.ts. */
@@ -27,6 +25,44 @@ export function reqMotionQuery(v: unknown): ProviderMotionQuery {
   const aspectRatio = q.aspectRatio === '16:9' || q.aspectRatio === '1:1' || q.aspectRatio === '9:16' ? q.aspectRatio : undefined
   const style = typeof q.style === 'string' ? q.style : undefined
   return { projectType: 'human', gender, aspectRatio, style }
+}
+
+/** Validate the complete renderer boundary before any file or network work starts. */
+export function reqCreateInput(v: unknown): TalkingPhotosCreateInput {
+  if (!v || typeof v !== 'object') throw new Error('Invalid TalkingPhotos creation request.')
+  const q = v as Record<string, unknown>
+  const requiredString = (name: string): string => {
+    const value = q[name]
+    if (typeof value !== 'string' || !value.trim()) throw new Error(`Invalid ${name}`)
+    return value
+  }
+  const optionalString = (name: string): string | undefined => {
+    const value = q[name]
+    if (value == null || value === '') return undefined
+    if (typeof value !== 'string') throw new Error(`Invalid ${name}`)
+    return value
+  }
+  if (q.style !== 'normal' && q.style !== 'high_quality') throw new Error('Invalid TalkingPhotos project style.')
+  if (q.aspectRatio !== '16:9' && q.aspectRatio !== '1:1' && q.aspectRatio !== '9:16') throw new Error('Invalid TalkingPhotos aspect ratio.')
+  if (!Number.isInteger(q.motionId) || (q.motionId as number) < 0) throw new Error('Invalid TalkingPhotos motion ID.')
+  if (q.characterGender != null && q.characterGender !== 'male' && q.characterGender !== 'female') throw new Error('Invalid characterGender')
+  return {
+    title: requiredString('title'),
+    audioPath: requiredString('audioPath'),
+    characterImagePath: requiredString('characterImagePath'),
+    characterPrompt: requiredString('characterPrompt'),
+    characterNegativePrompt: optionalString('characterNegativePrompt'),
+    style: q.style,
+    aspectRatio: q.aspectRatio,
+    motionId: q.motionId as number,
+    characterGender: q.characterGender as 'male' | 'female' | undefined,
+    characterAge: optionalString('characterAge'),
+    characterStyle: optionalString('characterStyle'),
+    characterBeard: optionalString('characterBeard'),
+    automationJobId: optionalString('automationJobId'),
+    automationItemId: optionalString('automationItemId'),
+    projectId: optionalString('projectId')
+  }
 }
 
 export function registerTalkingPhotosIpc(): void {
@@ -48,5 +84,6 @@ export function registerTalkingPhotosIpc(): void {
   ipcMain.handle('talkingphotos:project', (_e, remoteProjectId: unknown) => getProject(reqId(remoteProjectId, 'remoteProjectId')))
   ipcMain.handle('talkingphotos:sync', () => syncAllProviderJobsNow())
   ipcMain.handle('talkingphotos:jobs', () => getRepos().providerJobs())
+  ipcMain.handle('talkingphotos:createUploadedAudio', (_e, input: unknown) => createUploadedAudioVideo(reqCreateInput(input)))
   ipcMain.handle('talkingphotos:downloadOutput', (_e, providerJobId: unknown) => downloadProviderJobOutput(reqId(providerJobId, 'providerJobId')))
 }

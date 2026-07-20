@@ -37,6 +37,13 @@ describe('goal workflow generation', () => {
     steps[1].progress = 50
     expect(workflowProgress(steps)).toBe(Math.round(150 / steps.length))
   })
+
+  it('builds the uploaded-audio TalkingPhotos automation without local edit/render stages', () => {
+    const steps = buildAutomationWorkflow('job-tp', config(false), 'talkingphotos-video')
+    expect(steps.map((step) => step.key)).toEqual(['preflight', 'discover', 'download', 'talkingphotos', 'complete'])
+    expect(steps.find((step) => step.key === 'talkingphotos')?.runsOn).toBe('cloud')
+    expect(isAutomationGoalAvailable('talkingphotos-video')).toBe(true)
+  })
 })
 
 function sqliteBindingReady(): boolean {

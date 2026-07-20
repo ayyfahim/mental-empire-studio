@@ -102,6 +102,15 @@ describeSqlite('TalkingPhotos provider tables', () => {
     expect(repos.providerJobByRemoteId(TALKINGPHOTOS_CONNECTION_ID, 'proj-unknown')).toBeUndefined()
   })
 
+  it('persists creation checkpoints and resolves an idempotency fingerprint across restart', () => {
+    const file = tempDbPath()
+    let repos = initDatabase(file)
+    repos.upsertProviderJob(jobRow({ requestFingerprint: 'fingerprint-1', requestJson: '{"stage":"segments_submitted"}' }))
+    closeDatabase()
+    repos = initDatabase(file)
+    expect(repos.providerJobByFingerprint(TALKINGPHOTOS_CONNECTION_ID, 'fingerprint-1')).toMatchObject({ id: 'tpj-1', requestJson: '{"stage":"segments_submitted"}' })
+  })
+
   it('nonTerminalProviderJobs excludes completed/failed/cancelled', () => {
     const repos = initDatabase(tempDbPath())
     repos.upsertProviderJob(jobRow({ id: 'a', status: 'queued' }))

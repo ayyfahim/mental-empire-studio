@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   classifyProviderError,
+  buildTalkingPhotosHumanPayload,
   detectReauthRequired,
   isAllowedProviderMediaUrl,
   isAllowedProviderNavigation,
@@ -13,8 +14,37 @@ import {
   normalizeMotion,
   normalizeProjectSummary,
   normalizeVoice,
+  planTalkingPhotosSegments,
   redactProviderText
 } from '../../shared/talkingphotos'
+
+describe('Uploaded-audio Human request contract', () => {
+  it('builds the confirmed library-audio request and leaves TTS result fields empty', () => {
+    const payload = buildTalkingPhotosHumanPayload({
+      title: 'Uploaded recording', audioPath: '/audio.wav', characterImagePath: '/person.png',
+      characterPrompt: 'A presenter', style: 'high_quality', aspectRatio: '16:9', motionId: 0
+    }, { audioMediaId: '4140999', characterDrivingMediaId: '4139604', characterResultUuid: 'character-uuid' })
+    expect(payload).toMatchObject({ title: 'Uploaded recording', type: 'human', style: 'high_quality' })
+    expect(payload.options).toMatchObject({
+      audioSource: 'library', audioMediaId: 4140999, audioResultUuid: '', audioVocalUrl: '',
+      ttsText: '', motionId: 0, characterDrivingMediaId: 4139604, characterResultUuid: 'character-uuid'
+    })
+  })
+
+  it('segments at the provider limit without gaps, overlaps, or an oversized tail', () => {
+    expect(planTalkingPhotosSegments(829.2, 60)).toHaveLength(14)
+    const segments = planTalkingPhotosSegments(829.2, 60)
+    expect(segments[0]).toMatchObject({ ordinal: 0, startSec: 0, endSec: 60, durationSec: 60 })
+    expect(segments.at(-1)).toMatchObject({ ordinal: 13, startSec: 780, endSec: 829.2 })
+    expect(segments.at(-1)?.durationSec).toBeCloseTo(49.2)
+    for (let i = 1; i < segments.length; i++) expect(segments[i].startSec).toBe(segments[i - 1].endSec)
+  })
+
+  it('rejects unusable source duration and provider limits', () => {
+    expect(() => planTalkingPhotosSegments(0, 60)).toThrow()
+    expect(() => planTalkingPhotosSegments(20, 0)).toThrow()
+  })
+})
 
 describe('TalkingPhotos capability normalization', () => {
   it('combines duration/character limits, concurrency and daily usage into one capability object', () => {

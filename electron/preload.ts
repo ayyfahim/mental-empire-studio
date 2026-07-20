@@ -21,7 +21,7 @@ import type {
   AutomationJobDraft,
   AutomationJob
 } from '../shared/types'
-import type { ProviderJob, ProviderMotionQuery } from '../shared/talkingphotos'
+import type { ProviderJob, ProviderMotionQuery, TalkingPhotosCreateInput } from '../shared/talkingphotos'
 
 /** Subscribe to a main→renderer event; returns an unsubscribe fn. */
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -216,6 +216,7 @@ const api: NativeApi = {
     project: (remoteProjectId: string) => ipcRenderer.invoke('talkingphotos:project', remoteProjectId),
     sync: () => ipcRenderer.invoke('talkingphotos:sync'),
     jobs: () => ipcRenderer.invoke('talkingphotos:jobs'),
+    createUploadedAudio: (input: TalkingPhotosCreateInput) => ipcRenderer.invoke('talkingphotos:createUploadedAudio', input),
     downloadOutput: (providerJobId: string) => ipcRenderer.invoke('talkingphotos:downloadOutput', providerJobId)
   },
 

@@ -12,7 +12,8 @@ import type {
   ProviderMotion,
   ProviderMotionQuery,
   ProviderProjectSummary,
-  ProviderVoice
+  ProviderVoice,
+  TalkingPhotosCreateInput
 } from './talkingphotos'
 
 export type AccentName = 'Amber' | 'Violet' | 'Emerald' | 'Crimson'
@@ -317,6 +318,7 @@ export interface AutomationEvent {
 // ---- Durable goal-based automation (persistent local worker) ----
 export type AutomationGoal =
   | 'source-to-export'
+  | 'talkingphotos-video'
   | 'download-edit'
   | 'long-to-shorts'
   | 'images-to-video'
@@ -445,6 +447,15 @@ export interface AutomationJobConfig {
   /** Canonical style contract. Legacy mirrors above remain readable. */
   styleConfig: AutomationStyleConfig
   rules: AutomationRules
+  /** TalkingPhotos-specific settings. The first assetPath is the character
+   * reference image; source downloads/local files provide the uploaded audio. */
+  talkingPhotos?: {
+    characterPrompt: string
+    characterNegativePrompt: string
+    style: 'normal' | 'high_quality'
+    aspectRatio: '16:9' | '1:1' | '9:16'
+    motionId: number
+  }
   notify: { desktop: boolean; webhook: boolean; sound: boolean; email: boolean }
   execution: 'local'
   scheduledFor?: string
@@ -1356,9 +1367,8 @@ export interface NativeApi {
     cancelJob(id: string): Promise<void>
     retryJob(id: string): Promise<void>
   }
-  /** TalkingPhotos.ai cloud provider — session/connection + read-only sync (Phase 1-3).
-   *  Creation (TTS/video/merge/subtitles submission) is intentionally not exposed yet:
-   *  the HAR capture did not resolve several required request/response contracts. */
+  /** TalkingPhotos.ai cloud provider — session, catalogs, sync, and confirmed
+   *  uploaded-library-audio Human video creation. */
   talkingPhotos: {
     connectionStatus(): Promise<ProviderConnection>
     connect(): Promise<ProviderConnection>
@@ -1374,6 +1384,8 @@ export interface NativeApi {
     /** reconcile every non-terminal provider job against its remote project now */
     sync(): Promise<ProviderJob[]>
     jobs(): Promise<ProviderJob[]>
+    /** Create a Human video from local uploaded audio; long audio is segmented and merged. */
+    createUploadedAudio(input: TalkingPhotosCreateInput): Promise<ProviderJob>
     /** (re)download a completed job's output; safe to call repeatedly */
     downloadOutput(providerJobId: string): Promise<ProviderJob>
   }
