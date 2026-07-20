@@ -2,6 +2,8 @@ node_modules/
 out/
 dist/
 *.log
+# Raw browser HAR captures can contain auth headers/cookies/signed URLs — never commit one.
+*.har
 .DS_Store
 .vite/
 .preview/

@@ -206,6 +206,37 @@ describe('Log redaction', () => {
   it('truncates overly long messages', () => {
     expect(redactProviderText('x'.repeat(2000)).length).toBeLessThanOrEqual(600)
   })
+
+  it('redacts a cookie-attribute-shaped token even without a cookie:/set-cookie: prefix', () => {
+    // Simulates a raw Set-Cookie value or HTML error body echoing a cookie string
+    // without the literal header-style prefix (the gap this fix closes).
+    const text = redactProviderText(
+      'Unexpected response body: sessionid=a1b2c3d4e5f6g7h8i9j0; Path=/; Domain=app.talkingphotos.ai; HttpOnly; Secure; SameSite=Lax — please retry'
+    )
+    expect(text).not.toContain('a1b2c3d4e5f6g7h8i9j0')
+    expect(text).not.toContain('sessionid=')
+    expect(text).not.toContain('HttpOnly')
+    expect(text).not.toContain('Secure')
+    expect(text).not.toContain('SameSite=Lax')
+    expect(text).toContain('[redacted-cookie]')
+    expect(text).toContain('please retry')
+  })
+
+  it('redacts a bare cookie-attribute string with no leading label at all', () => {
+    const text = redactProviderText('csrftoken=zz9yy8xx7ww6vv5uu4tt3; Domain=talkingphotos.ai; Secure')
+    expect(text).not.toContain('zz9yy8xx7ww6vv5uu4tt3')
+    expect(text).toContain('[redacted-cookie]')
+  })
+
+  it('does not touch ordinary key=value text that has no cookie attributes', () => {
+    const input = 'TalkingPhotos request failed: retry_count=3, status=pending, attempt=1 of 5'
+    expect(redactProviderText(input)).toBe(input)
+  })
+
+  it('leaves a normal error message with no cookie-like content completely unchanged', () => {
+    const input = 'TalkingPhotos returned an unexpected response: invalid JSON at position 42, expected a value but got end of input.'
+    expect(redactProviderText(input)).toBe(input)
+  })
 })
 
 describe('Login-window / media navigation guard', () => {

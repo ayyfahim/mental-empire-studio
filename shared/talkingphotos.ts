@@ -575,10 +575,21 @@ export function classifyProviderError(input: ProviderErrorInput): ProviderErrorN
 }
 
 // ---- Redaction (never let cookies / signed URLs / tokens reach logs) ----
+/** Matches a `name=value` pair (value 8+ chars, cookie-alphabet) followed by one or
+ *  more `Path=|Domain=|HttpOnly|Secure|SameSite=` cookie attributes — i.e. a
+ *  cookie-attribute-shaped token even when it appears without a literal
+ *  `cookie:`/`set-cookie:` line prefix (e.g. echoed into an HTML error body, or a
+ *  `Set-Cookie` value logged without its header name). Requires at least one
+ *  recognized attribute immediately after the value, so ordinary `key=value` text
+ *  with no cookie attributes is left untouched. */
+const COOKIE_ATTR_RE =
+  /\b[A-Za-z0-9_-]{1,64}=[A-Za-z0-9%._~+/=-]{8,};?\s*(?:Path=[^;\s]*|Domain=[^;\s]*|HttpOnly|Secure|SameSite=[^;\s]*)(?:;\s*(?:Path=[^;\s]*|Domain=[^;\s]*|HttpOnly|Secure|SameSite=[^;\s]*))*/gi
+
 export function redactProviderText(text: string): string {
   return text
     .replace(/([?&](?:key|token|signature|sig|auth|session|api_key)=)[^&\s]+/gi, '$1[redacted]')
     .replace(/\b(?:set-cookie|cookie)\s*:\s*[^\n]+/gi, 'cookie: [redacted]')
+    .replace(COOKIE_ATTR_RE, '[redacted-cookie]')
     .replace(/\b(?:sk|gsk)_[A-Za-z0-9_-]{12,}\b/g, '[redacted-key]')
     .replace(/\bBearer\s+[A-Za-z0-9._-]+\b/gi, 'Bearer [redacted]')
     .slice(0, 600)
