@@ -14,22 +14,29 @@ const userDataDir = mkdtempSync(join(tmpdir(), 'me-tp-dl-userdata-'))
 let nextStreamBehavior: 'ok' | 'network-error' | 'http-error' = 'ok'
 let streamBody = Buffer.from('fake-mp4-bytes')
 let lastRequestedUrl = ''
+let requestedUrls: string[] = []
+/** Fails only the request whose URL matches this predicate — lets a test make the
+ *  preferred route fail while the CDN fallback still succeeds. */
+let failWhenUrlMatches: ((url: string) => boolean) | null = null
 
 vi.mock('electron', () => ({
   app: { getPath: () => userDataDir },
   net: {
     request: (opts: { url: string }) => {
       lastRequestedUrl = opts.url
+      requestedUrls.push(opts.url)
+      const behavior = failWhenUrlMatches?.(opts.url) ? 'http-error' : nextStreamBehavior
       const req = new EventEmitter() as EventEmitter & { setHeader: () => void; write: () => void; end: () => void }
       req.setHeader = () => {}
       req.write = () => {}
       req.end = () => {
         queueMicrotask(() => {
-          if (nextStreamBehavior === 'network-error') { req.emit('error', new Error('ECONNRESET')); return }
-          const res = new EventEmitter() as EventEmitter & { statusCode: number }
-          res.statusCode = nextStreamBehavior === 'http-error' ? 403 : 200
+          if (behavior === 'network-error') { req.emit('error', new Error('ECONNRESET')); return }
+          const res = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string> }
+          res.statusCode = behavior === 'http-error' ? 403 : 200
+          res.headers = { 'content-disposition': 'attachment; filename="server-suggested ../evil.mp4"' }
           req.emit('response', res)
-          if (nextStreamBehavior === 'ok') {
+          if (behavior === 'ok') {
             queueMicrotask(() => {
               res.emit('data', streamBody)
               res.emit('end')
@@ -87,6 +94,8 @@ beforeEach(() => {
   nextStreamBehavior = 'ok'
   nextProbedDuration = 275.5
   lastRequestedUrl = ''
+  requestedUrls = []
+  failWhenUrlMatches = null
   vi.mocked(getProject).mockClear()
 })
 
@@ -142,5 +151,38 @@ describe('TalkingPhotos output downloader', () => {
   it('throws (rather than silently no-oping) when the project has no output yet', async () => {
     remoteProject = { id: 'proj-1' }
     await expect(downloadProviderJobOutput('job-1')).rejects.toThrow()
+  })
+
+  describe('Phase 9: preferred /project/download/{id} route', () => {
+    beforeEach(() => {
+      jobStore.set('job-numeric', { id: 'job-numeric', remoteProjectId: '98765', status: 'downloading' })
+      remoteProject = { id: '98765', mediaUrl: 'https://cdn.talkingphotos.ai/v1/out.mp4', mediaDurationSec: 275.5 }
+    })
+
+    it('tries the app-origin preferred route before the CDN for a numeric project id', async () => {
+      await downloadProviderJobOutput('job-numeric')
+      expect(requestedUrls[0]).toBe('https://app.talkingphotos.ai/project/download/98765')
+    })
+
+    it('falls back to the refreshed CDN url when the preferred route fails', async () => {
+      failWhenUrlMatches = (url) => url.includes('/project/download/')
+      const job = await downloadProviderJobOutput('job-numeric')
+      expect(requestedUrls).toEqual(['https://app.talkingphotos.ai/project/download/98765', 'https://cdn.talkingphotos.ai/v1/out.mp4'])
+      expect(job.status).toBe('completed')
+    })
+
+    it('never requests the preferred route for a non-numeric project id, going straight to the CDN', async () => {
+      await downloadProviderJobOutput('job-1') // remoteProjectId 'proj-1' is not numeric
+      expect(requestedUrls).toEqual(['https://cdn.talkingphotos.ai/v1/out.mp4'])
+    })
+
+    it('rejects a manipulated preferred-route URL outside the strict allowlist even if constructed', async () => {
+      // Sanity check on the underlying validator the downloader relies on — a URL
+      // that isn't exactly https://app.talkingphotos.ai/project/download/<id> must
+      // never be attempted as the "preferred" route.
+      const { isAllowedProjectDownloadUrl } = await import('../../shared/talkingphotos')
+      expect(isAllowedProjectDownloadUrl('https://app.talkingphotos.ai/admin/download/98765')).toBe(false)
+      expect(isAllowedProjectDownloadUrl('https://app.talkingphotos.ai/project/download/98765/../../etc/passwd')).toBe(false)
+    })
   })
 })

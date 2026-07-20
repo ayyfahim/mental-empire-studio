@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
-  classifyProviderError,
+  buildProjectDownloadUrl,
+  buildSubtitleCreatePayload,
   buildTalkingPhotosHumanPayload,
+  buildTalkingPhotosHumanTtsPayload,
+  classifyProviderError,
+  computeSlotBudget,
   detectReauthRequired,
+  isAllowedProjectDownloadUrl,
   isAllowedProviderMediaUrl,
   isAllowedProviderNavigation,
   isTerminalProviderJobStatus,
@@ -13,9 +18,18 @@ import {
   normalizeLanguage,
   normalizeMotion,
   normalizeProjectSummary,
+  normalizeSubtitleMode,
+  normalizeSubtitleProject,
   normalizeVoice,
+  parseTtsCreateResponse,
+  parseTtsSocketFrame,
+  planTalkingPhotosScriptChunks,
   planTalkingPhotosSegments,
-  redactProviderText
+  reconstructScriptFromWords,
+  redactProviderText,
+  sanitizeDownloadFilename,
+  splitOversizedScriptChunk,
+  type ProviderCapabilities
 } from '../../shared/talkingphotos'
 
 describe('Uploaded-audio Human request contract', () => {
@@ -205,5 +219,199 @@ describe('Login-window / media navigation guard', () => {
   it('allows only https + the exact CDN host for media downloads', () => {
     expect(isAllowedProviderMediaUrl('https://cdn.talkingphotos.ai/out.mp4')).toBe(true)
     expect(isAllowedProviderMediaUrl('https://attacker.example.com/out.mp4')).toBe(false)
+  })
+})
+
+describe('TTS create + WebSocket completion frame validation', () => {
+  it('accepts the confirmed create_audio_vc shape and rejects a missing uuid', () => {
+    expect(parseTtsCreateResponse({ success: true, uuid: 'tts-uuid-1', textValue: 'hello' })).toEqual({ uuid: 'tts-uuid-1', textValue: 'hello' })
+    expect(parseTtsCreateResponse({ success: true, uuid: '' })).toBeNull()
+    expect(parseTtsCreateResponse({ success: false, uuid: 'x' })).toBeNull()
+    expect(parseTtsCreateResponse(null)).toBeNull()
+  })
+
+  it('accepts a completion frame only when every field is valid: code 200, type audio, positive integer media_id, positive finite duration', () => {
+    expect(parseTtsSocketFrame({ media_id: 501, type: 'audio', out_path: '/tts/501.wav', code: 200, duration: 12.4 }))
+      .toEqual({ mediaId: '501', outPath: '/tts/501.wav', durationSec: 12.4 })
+  })
+
+  it('rejects a frame with the wrong code, type, a non-positive/non-integer media_id, or a non-positive duration', () => {
+    expect(parseTtsSocketFrame({ media_id: 501, type: 'audio', code: 202, duration: 12 })).toBeNull()
+    expect(parseTtsSocketFrame({ media_id: 501, type: 'image', code: 200, duration: 12 })).toBeNull()
+    expect(parseTtsSocketFrame({ media_id: -1, type: 'audio', code: 200, duration: 12 })).toBeNull()
+    expect(parseTtsSocketFrame({ media_id: 1.5, type: 'audio', code: 200, duration: 12 })).toBeNull()
+    expect(parseTtsSocketFrame({ media_id: 501, type: 'audio', code: 200, duration: 0 })).toBeNull()
+    expect(parseTtsSocketFrame({ media_id: 501, type: 'audio', code: 200, duration: -5 })).toBeNull()
+    expect(parseTtsSocketFrame({})).toBeNull()
+    expect(parseTtsSocketFrame(null)).toBeNull()
+  })
+
+  it('a progress/ping frame that is well-formed JSON but does not satisfy every field is never mistaken for completion', () => {
+    expect(parseTtsSocketFrame({ status: 'processing', progress: 40 })).toBeNull()
+  })
+})
+
+describe('Fresh TTS Human project payload (never a cloned/empty-TTS shape)', () => {
+  it('populates real audioResultUuid/audioMediaId/ttsText/voice fields, unlike the uploaded-audio payload', () => {
+    const payload = buildTalkingPhotosHumanTtsPayload(
+      { title: 'x', script: 'Hello there.', characterImagePath: '/p.png', characterPrompt: 'A presenter', style: 'high_quality', aspectRatio: '16:9', motionId: 0, language: 'en-US', voice: 'en-US-AndrewMultilingualNeural', voiceStyle: 'general', speed: 1, pitch: 0, subtitleMode: 'none' },
+      { audioMediaId: '999', audioResultUuid: 'tts-uuid-1', ttsText: 'Hello there.', characterDrivingMediaId: '123', characterResultUuid: 'char-uuid', title: 'Segment 1' }
+    )
+    expect(payload.options).toMatchObject({ audioSource: 'tts', audioMediaId: 999, audioResultUuid: 'tts-uuid-1', ttsText: 'Hello there.', ttsVoice: 'en-US-AndrewMultilingualNeural', ttsLanguage: 'en-US' })
+    expect(payload.options.audioResultUuid).not.toBe('')
+    expect(payload.options.ttsText).not.toBe('')
+  })
+})
+
+describe('Long-form script segmentation', () => {
+  it('splits on paragraph boundaries first, staying under the safety margin', () => {
+    const script = `${'A'.repeat(40)}.\n\n${'B'.repeat(40)}.`
+    const chunks = planTalkingPhotosScriptChunks(script, 50)
+    expect(chunks.length).toBeGreaterThanOrEqual(2)
+    for (const c of chunks) expect(c.text.length).toBeLessThanOrEqual(Math.floor(50 * 0.95))
+  })
+
+  it('falls back to sentence boundaries when a paragraph alone exceeds the limit', () => {
+    const script = 'First sentence here. Second sentence here. Third sentence here. Fourth sentence here.'
+    const chunks = planTalkingPhotosScriptChunks(script, 40)
+    expect(chunks.length).toBeGreaterThan(1)
+    for (const c of chunks) expect(c.text.length).toBeLessThanOrEqual(Math.floor(40 * 0.95))
+    // No word content lost across the split.
+    expect(chunks.map((c) => c.text).join(' ').replace(/\s+/g, ' ')).toContain('Fourth sentence here.')
+  })
+
+  it('hard-wraps on a word boundary only as a last resort, for a single sentence longer than the limit', () => {
+    const longSentence = `${'word '.repeat(30)}end.`
+    const chunks = planTalkingPhotosScriptChunks(longSentence, 30)
+    expect(chunks.length).toBeGreaterThan(1)
+    for (const c of chunks) expect(c.text.length).toBeLessThanOrEqual(Math.floor(30 * 0.95))
+  })
+
+  it('assigns deterministic, strictly increasing ordinals', () => {
+    const chunks = planTalkingPhotosScriptChunks('One. Two. Three. Four. Five.', 10)
+    expect(chunks.map((c) => c.ordinal)).toEqual(chunks.map((_, i) => i))
+  })
+
+  it('rejects an empty script rather than silently producing zero chunks', () => {
+    expect(() => planTalkingPhotosScriptChunks('   ', 100)).toThrow()
+  })
+})
+
+describe('Duration-driven re-segmentation', () => {
+  it('splits an oversized chunk at a sentence boundary, preserving all text', () => {
+    const [left, right] = splitOversizedScriptChunk('First sentence. Second sentence. Third sentence. Fourth sentence.')
+    expect(left.length).toBeGreaterThan(0)
+    expect(right.length).toBeGreaterThan(0)
+    expect(`${left} ${right}`).toContain('Fourth sentence.')
+  })
+
+  it('falls back to a word-boundary split for a single run-on sentence, covering the full text between both halves', () => {
+    const source = 'word '.repeat(40).trim()
+    const [left, right] = splitOversizedScriptChunk(source)
+    expect(left.length).toBeGreaterThan(0)
+    expect(right.length).toBeGreaterThan(0)
+    expect(left.length + right.length).toBeLessThanOrEqual(source.length)
+    expect(left.split(' ').length + right.split(' ').length).toBe(40)
+  })
+})
+
+describe('Transcript -> script reconstruction (pause-based heuristic)', () => {
+  it('inserts a period at a pause and capitalizes the following word', () => {
+    const words = [
+      { word: 'hello', start: 0, end: 0.3 },
+      { word: 'world', start: 0.4, end: 0.7 },
+      { word: 'goodbye', start: 2.0, end: 2.4 },
+      { word: 'now', start: 2.5, end: 2.8 }
+    ]
+    expect(reconstructScriptFromWords(words, 0.6)).toBe('Hello world. Goodbye now.')
+  })
+
+  it('returns an empty string for no words and never throws', () => {
+    expect(reconstructScriptFromWords([])).toBe('')
+  })
+})
+
+describe('Quota / concurrency slot budget', () => {
+  function caps(usage: Partial<ProviderCapabilities['usage']>): ProviderCapabilities {
+    return { limits: { maxDurationSeconds: 300, maxCharactersTts: 6000, maxDurationPremiumSeconds: 300, maxCharactersTtsPremium: 6000 }, usage: { concurrentCount: 0, concurrentLimit: 0, dailyUsage: 0, dailyLimit: 0, ...usage }, fetchedAt: '' }
+  }
+
+  it('reports zero available slots when the account is already at its concurrent limit', () => {
+    expect(computeSlotBudget(caps({ concurrentCount: 5, concurrentLimit: 5, dailyLimit: 100 })).availableConcurrent).toBe(0)
+  })
+
+  it('reports the exact remaining count for a partially-used limit', () => {
+    expect(computeSlotBudget(caps({ concurrentCount: 2, concurrentLimit: 5, dailyLimit: 100 })).availableConcurrent).toBe(3)
+  })
+
+  it('reports zero available daily slots when usage has reached the daily limit', () => {
+    expect(computeSlotBudget(caps({ concurrentLimit: 5, dailyUsage: 100, dailyLimit: 100 })).availableDaily).toBe(0)
+  })
+
+  it('treats a 0 limit as unbounded rather than blocked (never observed as a real zero)', () => {
+    const budget = computeSlotBudget(caps({}))
+    expect(budget.availableConcurrent).toBe(Number.POSITIVE_INFINITY)
+    expect(budget.availableDaily).toBe(Number.POSITIVE_INFINITY)
+  })
+})
+
+describe('Subtitle mode and mutual exclusion', () => {
+  it('normalizes to exactly one of none/provider/local — never both', () => {
+    expect(normalizeSubtitleMode('provider')).toBe('provider')
+    expect(normalizeSubtitleMode('local')).toBe('local')
+    expect(normalizeSubtitleMode('both')).toBe('none')
+    expect(normalizeSubtitleMode(undefined)).toBe('none')
+  })
+
+  it('builds a transient sanitized clone with account/user/media/status/task fields stripped', () => {
+    const rawSourceProject = {
+      id: 555, type: 'human', style: 'high_quality', status: 'completed', taskUuid: 'real-task-uuid',
+      user: { id: 'real-user-id', email: 'real@person.example' }, userId: 'real-user-id',
+      media: { mediaPath: 'https://cdn.talkingphotos.ai/real-output.mp4' },
+      options: { aspectRatio: '16:9', characterPrompt: 'a real prompt that must not leak' }
+    }
+    const payload = buildSubtitleCreatePayload(rawSourceProject, { title: 'subs-title', parentId: '555' })
+    expect(payload).toMatchObject({ title: 'subs-title', type: 'subtitles', style: 'high_quality', parentId: '555', options: { aspectRatio: '16:9' } })
+    const serialized = JSON.stringify(payload)
+    expect(serialized).not.toContain('real-user-id')
+    expect(serialized).not.toContain('real@person.example')
+    expect(serialized).not.toContain('real-output.mp4')
+    expect(serialized).not.toContain('a real prompt that must not leak')
+    expect(serialized).not.toContain('real-task-uuid')
+  })
+
+  it('refuses to build a payload from a source that is missing type/style', () => {
+    expect(buildSubtitleCreatePayload({ id: 1 }, { title: 't', parentId: '1' })).toBeNull()
+  })
+
+  it('normalizes a subtitles project response through pending/processing/completed without requiring a task uuid', () => {
+    expect(normalizeSubtitleProject({ id: 9, status: 'pending' })).toMatchObject({ id: '9', status: 'pending' })
+    expect(normalizeSubtitleProject({ id: 9, status: 'processing' })).toMatchObject({ id: '9', status: 'processing' })
+    expect(normalizeSubtitleProject({ id: 9, status: 'completed', media: { mediaPath: 'https://cdn.talkingphotos.ai/subbed.mp4' } })).toMatchObject({ id: '9', status: 'completed', mediaUrl: 'https://cdn.talkingphotos.ai/subbed.mp4' })
+  })
+})
+
+describe('Preferred download route (strict allowlist)', () => {
+  it('builds the download URL only from a validated positive integer id', () => {
+    expect(buildProjectDownloadUrl('12345')).toBe('https://app.talkingphotos.ai/project/download/12345')
+    expect(buildProjectDownloadUrl('0')).toBeNull()
+    expect(buildProjectDownloadUrl('-5')).toBeNull()
+    expect(buildProjectDownloadUrl('12x45')).toBeNull()
+    expect(buildProjectDownloadUrl('')).toBeNull()
+  })
+
+  it('allows only the exact origin and path shape, not any app.talkingphotos.ai URL', () => {
+    expect(isAllowedProjectDownloadUrl('https://app.talkingphotos.ai/project/download/12345')).toBe(true)
+    expect(isAllowedProjectDownloadUrl('http://app.talkingphotos.ai/project/download/12345')).toBe(false)
+    expect(isAllowedProjectDownloadUrl('https://app.talkingphotos.ai/project/12345')).toBe(false)
+    expect(isAllowedProjectDownloadUrl('https://app.talkingphotos.ai/admin')).toBe(false)
+    expect(isAllowedProjectDownloadUrl('https://evil.example.com/project/download/12345')).toBe(false)
+  })
+
+  it('sanitizes a Content-Disposition filename, stripping traversal and path separators', () => {
+    expect(sanitizeDownloadFilename('attachment; filename="../../etc/passwd"', 'fallback.mp4')).not.toContain('..')
+    expect(sanitizeDownloadFilename('attachment; filename="my video.mp4"', 'fallback.mp4')).toBe('my_video.mp4')
+    expect(sanitizeDownloadFilename(undefined, 'fallback.mp4')).toBe('fallback.mp4')
+    expect(sanitizeDownloadFilename('attachment; filename="C:\\\\Windows\\\\evil.mp4"', 'fallback.mp4')).not.toContain('\\')
   })
 })
