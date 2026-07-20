@@ -233,13 +233,13 @@ export function dimensions(quality: AppSettings['quality'], aspect: CaptionAspec
 }
 
 /** Escape an .ass path for use inside the subtitles= filter. */
-function assForFilter(p: string): string {
+export function assForFilter(p: string): string {
   return p.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'")
 }
 
 /** Directory of the bundled caption TTFs, handed to libass via subtitles=fontsdir so
  *  the preset fonts render identically on every machine (no system-font roulette). */
-function captionFontsDir(): string | undefined {
+export function captionFontsDir(): string | undefined {
   const packaged = process.resourcesPath ? join(process.resourcesPath, 'fonts') : ''
   if (packaged && existsSync(packaged)) return packaged
   const dev = join(process.cwd(), 'resources', 'fonts')
