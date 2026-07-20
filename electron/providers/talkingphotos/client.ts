@@ -12,7 +12,9 @@ import {
   normalizeLanguage,
   normalizeMotion,
   normalizeProjectSummary,
+  normalizeSubtitleProject,
   normalizeVoice,
+  parseTtsCreateResponse,
   redactProviderText,
   type ProviderCapabilities,
   type ProviderErrorNormalized,
@@ -23,7 +25,10 @@ import {
   type ProviderVoice,
   type TalkingPhotosHumanProjectPayload,
   type TalkingPhotosProjectStyle,
-  type TalkingPhotosRemoteMedia
+  type TalkingPhotosRemoteMedia,
+  type TalkingPhotosSubtitleResult,
+  type TalkingPhotosTtsCreateResult,
+  type TalkingPhotosTtsSettings
 } from '../../../shared/talkingphotos'
 import { L } from '../../services/logger'
 
@@ -196,6 +201,18 @@ export async function getDurationLimit(style: TalkingPhotosProjectStyle): Promis
   return value
 }
 
+/** Style-specific duration AND character limits in one call — the TTS/script flow
+ *  needs both (never hard-coded globally: normal vs high_quality differ). */
+export async function getProjectLimits(style: TalkingPhotosProjectStyle): Promise<{ maxDurationSec: number; maxCharactersTts: number }> {
+  const raw = await fetchProviderJson<Record<string, unknown>>('/project/video_duration_limit', { method: 'POST', body: { projectType: 'human', projectStyle: style } })
+  const maxDurationSec = Number(raw.maxDuration)
+  const maxCharactersTts = Number(raw.maxCharactersTTS)
+  if (!Number.isFinite(maxDurationSec) || maxDurationSec <= 0 || !Number.isFinite(maxCharactersTts) || maxCharactersTts <= 0) {
+    throw new ProviderRequestError(classifyProviderError({ invalidShape: true, message: 'TalkingPhotos returned invalid Human video limits.' }))
+  }
+  return { maxDurationSec, maxCharactersTts }
+}
+
 export async function trimLibraryMedia(input: { mediaId: string; startSec: number; endSec: number; title: string }): Promise<TalkingPhotosRemoteMedia> {
   const raw = await fetchProviderJson<Record<string, unknown>>('/ai_api/trim_media', { method: 'POST', body: { mediaId: Number(input.mediaId), timeStart: input.startSec, timeEnd: input.endSec, title: input.title, useFadeOut: false } })
   if (raw.success !== true) throw new ProviderRequestError(classifyProviderError({ invalidShape: true, message: 'TalkingPhotos did not confirm the trimmed audio.' }))
@@ -279,4 +296,58 @@ export async function getProject(remoteProjectId: string): Promise<ProviderProje
   const raw = await fetchProviderJson<unknown>(`/project/${encodeURIComponent(remoteProjectId)}`)
   if (!isValidProjectSummaryShape(raw)) return null
   return normalizeProjectSummary(raw)
+}
+
+/** Raw project detail, unnormalized — used only to build a sanitized subtitle-clone
+ *  payload (buildSubtitleCreatePayload strips everything else). Never logged whole. */
+export async function getProjectRaw(remoteProjectId: string): Promise<unknown> {
+  return fetchProviderJson<unknown>(`/project/${encodeURIComponent(remoteProjectId)}`)
+}
+
+/** POST /text_to_speech/create_audio_vc. Returns only the confirmed { success, uuid,
+ *  textValue } shape — the response never contains a media ID (contract critical gap);
+ *  the caller must resolve that separately through the WebSocket. */
+export async function createTtsAudio(input: { text: string; settings: TalkingPhotosTtsSettings; projectStyle: TalkingPhotosProjectStyle }): Promise<TalkingPhotosTtsCreateResult> {
+  const raw = await fetchProviderJson<unknown>('/text_to_speech/create_audio_vc', {
+    method: 'POST',
+    body: {
+      lang: input.settings.language, voice: input.settings.voice, autoTranslate: input.settings.autoTranslate,
+      text: input.text, voiceStyle: input.settings.voiceStyle, speed: input.settings.speed, pitch: input.settings.pitch,
+      projectType: 'human', projectStyle: input.projectStyle
+    }
+  })
+  const parsed = parseTtsCreateResponse(raw)
+  if (!parsed) throw new ProviderRequestError(classifyProviderError({ invalidShape: true, message: 'TalkingPhotos did not return a TTS result UUID.' }))
+  return parsed
+}
+
+export async function listProjectLanguages(): Promise<ProviderLanguage[]> {
+  const raw = await fetchProviderJson<unknown[]>('/project/languages')
+  return Array.isArray(raw) ? raw.map(normalizeLanguage) : []
+}
+
+/** POST /project/subtitles/create — payload must already be the sanitized clone from
+ *  buildSubtitleCreatePayload; this function does not build or sanitize it. */
+export async function createSubtitlesProject(payload: Record<string, unknown>): Promise<TalkingPhotosSubtitleResult> {
+  const raw = await fetchProviderJson<unknown>('/project/subtitles/create', { method: 'POST', body: payload })
+  const result = normalizeSubtitleProject(raw)
+  if (!result) throw new ProviderRequestError(classifyProviderError({ invalidShape: true, message: 'TalkingPhotos did not return the created subtitles project.' }))
+  return result
+}
+
+export async function getSubtitlesProject(remoteProjectId: string): Promise<TalkingPhotosSubtitleResult | null> {
+  const raw = await fetchProviderJson<unknown>(`/project/${encodeURIComponent(remoteProjectId)}`)
+  return normalizeSubtitleProject(raw)
+}
+
+/** GET /library/categories/media/{categoryId} — display/manual-recovery use only
+ *  (plan §4: never used to automatically infer a TTS result by picking the newest
+ *  item, which breaks under concurrent requests). */
+export async function listLibraryMedia(categoryId: string, opts: { page?: number; limit?: number } = {}): Promise<TalkingPhotosRemoteMedia[]> {
+  const params = new URLSearchParams({ page: String(opts.page ?? 1), limit: String(opts.limit ?? 20), query: '' })
+  const raw = await fetchProviderJson<{ items?: unknown[] }>(`/library/categories/media/${encodeURIComponent(categoryId)}?${params.toString()}`)
+  const items = Array.isArray(raw.items) ? raw.items : []
+  return items
+    .map((item) => { try { return normalizedRemoteMedia(item) } catch { return null } })
+    .filter((m): m is TalkingPhotosRemoteMedia => m != null)
 }
