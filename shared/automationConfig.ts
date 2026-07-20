@@ -57,7 +57,15 @@ export const DEFAULT_TALKINGPHOTOS_AUTOMATION: NonNullable<AutomationJobConfig['
   characterNegativePrompt: '',
   style: 'high_quality',
   aspectRatio: '16:9',
-  motionId: 0
+  motionId: 0,
+  mode: 'uploaded-audio',
+  script: '',
+  language: 'en-US',
+  voice: 'en-US-AndrewMultilingualNeural',
+  voiceStyle: 'general',
+  speed: 1,
+  pitch: 0,
+  subtitleMode: 'none'
 }
 
 export function finiteNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -171,7 +179,15 @@ export function normalizeAutomationConfig(config: Partial<AutomationJobConfig>):
       characterNegativePrompt: typeof talkingPhotos.characterNegativePrompt === 'string' ? talkingPhotos.characterNegativePrompt.trim().slice(0, 2_000) : '',
       style: oneOf(talkingPhotos.style, ['normal', 'high_quality'], DEFAULT_TALKINGPHOTOS_AUTOMATION.style),
       aspectRatio: oneOf(talkingPhotos.aspectRatio, ['16:9', '1:1', '9:16'], styleConfig.aspectRatio),
-      motionId: Math.round(finiteNumber(talkingPhotos.motionId, DEFAULT_TALKINGPHOTOS_AUTOMATION.motionId, 0, 1_000_000))
+      motionId: Math.round(finiteNumber(talkingPhotos.motionId, DEFAULT_TALKINGPHOTOS_AUTOMATION.motionId, 0, 1_000_000)),
+      mode: oneOf(talkingPhotos.mode, ['uploaded-audio', 'custom-script', 'transcript-tts'], DEFAULT_TALKINGPHOTOS_AUTOMATION.mode),
+      script: typeof talkingPhotos.script === 'string' ? talkingPhotos.script.trim().slice(0, 20_000) : '',
+      language: typeof talkingPhotos.language === 'string' && talkingPhotos.language.trim() ? talkingPhotos.language.trim().slice(0, 20) : DEFAULT_TALKINGPHOTOS_AUTOMATION.language,
+      voice: typeof talkingPhotos.voice === 'string' && talkingPhotos.voice.trim() ? talkingPhotos.voice.trim().slice(0, 80) : DEFAULT_TALKINGPHOTOS_AUTOMATION.voice,
+      voiceStyle: typeof talkingPhotos.voiceStyle === 'string' && talkingPhotos.voiceStyle.trim() ? talkingPhotos.voiceStyle.trim().slice(0, 40) : DEFAULT_TALKINGPHOTOS_AUTOMATION.voiceStyle,
+      speed: finiteNumber(talkingPhotos.speed, DEFAULT_TALKINGPHOTOS_AUTOMATION.speed, 0.5, 2),
+      pitch: finiteNumber(talkingPhotos.pitch, DEFAULT_TALKINGPHOTOS_AUTOMATION.pitch, -20, 20),
+      subtitleMode: oneOf(talkingPhotos.subtitleMode, ['none', 'provider', 'local'], DEFAULT_TALKINGPHOTOS_AUTOMATION.subtitleMode)
     },
     notify: {
       desktop: bool(config.notify?.desktop, false),

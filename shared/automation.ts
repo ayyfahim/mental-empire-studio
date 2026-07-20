@@ -34,11 +34,16 @@ const BASE: Array<Omit<AutomationWorkflowStep, 'id' | 'jobId' | 'ord' | 'status'
   { key: 'complete', label: 'Finish & notify', description: 'Save the result summary and send enabled notifications.', runsOn: 'local', optional: false }
 ]
 
+// 'transcript-tts' mode transcribes the downloaded audio directly inside the
+// talkingphotos step (electron/services/automation-supervisor.ts) rather than
+// through BASE's generic transcribe step, which requires a local Project checkpoint
+// TalkingPhotos automation never creates. The workflow shape stays the same for
+// every talkingPhotos.mode.
 const TALKINGPHOTOS: typeof BASE = [
   BASE[0],
   BASE[1],
   BASE[2],
-  { key: 'talkingphotos', label: 'Create TalkingPhotos videos', description: 'Upload audio and the character reference, render ordered segments, merge, and download final outputs.', runsOn: 'cloud', optional: false },
+  { key: 'talkingphotos', label: 'Create TalkingPhotos videos', description: 'Submit script/audio, render ordered segments, merge, and download final outputs.', runsOn: 'cloud', optional: false },
   BASE[8]
 ]
 

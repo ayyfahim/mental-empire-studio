@@ -35,9 +35,12 @@ import { postWebhook } from './webhook'
 import { logger } from './logger'
 import { cachedBrollClipCount, hasConfiguredBrollSource, readBrollManifestClipIds } from './broll'
 import { probeDuration } from './audio'
-import { createUploadedAudioVideo } from '../providers/talkingphotos/creation'
+import { createScriptVideo, createUploadedAudioVideo } from '../providers/talkingphotos/creation'
 import { reconcileNonTerminalProviderJobs } from '../providers/talkingphotos/poller'
-import { TALKINGPHOTOS_CONNECTION_ID } from '../../shared/talkingphotos'
+import { createProviderSubtitles } from '../providers/talkingphotos/subtitles'
+import { applyLocalCaptions } from '../providers/talkingphotos/localCaptions'
+import { transcribeAudio } from './transcribe'
+import { TALKINGPHOTOS_CONNECTION_ID, reconstructScriptFromWords } from '../../shared/talkingphotos'
 
 const LOG = logger.scope('automation-supervisor')
 let pumping = false
@@ -200,6 +203,10 @@ export function preflightAutomation(draft: AutomationJobDraft): AutomationPrefli
     if (!options?.characterPrompt.trim()) blockers.push('Enter a TalkingPhotos character prompt.')
     if (options?.style === 'normal' && (!Number.isInteger(options.motionId) || options.motionId <= 0)) blockers.push('Normal TalkingPhotos mode requires a motion ID greater than zero.')
     if (options?.style === 'high_quality' && options.motionId !== 0) blockers.push('High Quality TalkingPhotos mode requires motion ID 0.')
+    if (options?.mode === 'custom-script' && !options.script.trim()) blockers.push('Enter a TalkingPhotos script.')
+    if ((options?.mode === 'custom-script' || options?.mode === 'transcript-tts') && (!options.language.trim() || !options.voice.trim())) blockers.push('Choose a TalkingPhotos language and voice.')
+    if (options?.mode === 'transcript-tts' && !getSettings().transcription.apiKey.trim()) blockers.push('Add a Groq transcription key in Settings for transcript-based TalkingPhotos automation.')
+    if (options?.subtitleMode === 'local' && !getSettings().transcription.apiKey.trim()) blockers.push('Add a Groq transcription key in Settings to use local captions.')
   }
   if (draft.config.notify.email) warnings.push('Email notifications are not connected yet; desktop and webhook notifications will still work.')
   if (draft.config.notify.sound) warnings.push('Sound alerts use the operating system notification sound in this version.')
@@ -526,23 +533,36 @@ async function runStep(job: AutomationJob, step: AutomationWorkflowStep): Promis
     const options = config.talkingPhotos
     const characterImagePath = config.assetPaths[0]
     if (!options || !characterImagePath) throw new Error('TalkingPhotos character settings are missing.')
+    if (options.mode === 'custom-script' && !options.script.trim()) throw new Error('Enter a TalkingPhotos script.')
     await eachItem(job, step, async (item) => {
-      const download = repos.download(`dl-${item.sourceVideoId}`)
-      if (!download?.filePath || !existsSync(download.filePath)) throw new Error('Downloaded audio checkpoint is missing.')
       let providerJob = repos.providerJobs(TALKINGPHOTOS_CONNECTION_ID).find((candidate) => candidate.automationJobId === job.id && candidate.automationItemId === item.id && !candidate.parentProviderJobId)
       if (!providerJob) {
-        providerJob = await createUploadedAudioVideo({
-          title: item.title,
-          audioPath: download.filePath,
-          characterImagePath,
-          characterPrompt: options.characterPrompt,
-          characterNegativePrompt: options.characterNegativePrompt,
-          style: options.style,
-          aspectRatio: options.aspectRatio,
-          motionId: options.style === 'high_quality' ? 0 : options.motionId,
-          automationJobId: job.id,
-          automationItemId: item.id
-        })
+        if (options.mode === 'uploaded-audio') {
+          const download = repos.download(`dl-${item.sourceVideoId}`)
+          if (!download?.filePath || !existsSync(download.filePath)) throw new Error('Downloaded audio checkpoint is missing.')
+          providerJob = await createUploadedAudioVideo({
+            title: item.title, audioPath: download.filePath, characterImagePath,
+            characterPrompt: options.characterPrompt, characterNegativePrompt: options.characterNegativePrompt,
+            style: options.style, aspectRatio: options.aspectRatio, motionId: options.style === 'high_quality' ? 0 : options.motionId,
+            automationJobId: job.id, automationItemId: item.id
+          })
+        } else {
+          let script = options.script
+          if (options.mode === 'transcript-tts') {
+            const download = repos.download(`dl-${item.sourceVideoId}`)
+            if (!download?.filePath || !existsSync(download.filePath)) throw new Error('Downloaded audio checkpoint is missing.')
+            const words = await transcribeAudio(download.filePath, getSettings())
+            script = reconstructScriptFromWords(words)
+            if (!script.trim()) throw new Error('Transcription produced no usable words to build a script from.')
+          }
+          providerJob = await createScriptVideo({
+            title: item.title, script, characterImagePath,
+            characterPrompt: options.characterPrompt, characterNegativePrompt: options.characterNegativePrompt,
+            style: options.style, aspectRatio: options.aspectRatio, motionId: options.style === 'high_quality' ? 0 : options.motionId,
+            language: options.language, voice: options.voice, voiceStyle: options.voiceStyle, speed: options.speed, pitch: options.pitch,
+            subtitleMode: options.subtitleMode, automationJobId: job.id, automationItemId: item.id
+          })
+        }
         log(job.id, `${item.title}: TalkingPhotos job ${providerJob.id} submitted.`, 'info', item)
       }
       while (controlState(job.id) === 'run') {
@@ -551,6 +571,14 @@ async function runStep(job: AutomationJob, step: AutomationWorkflowStep): Promis
         const progress = Math.max(1, providerJob.progress)
         item = saveItem(item, { status: 'processing', currentStep: step.label, progress })
         if (providerJob.status === 'completed' && providerJob.localOutputPath && existsSync(providerJob.localOutputPath)) {
+          // Provider subtitles run asynchronously (their own provider job continues
+          // in the background); local captions complete synchronously here so the
+          // item's outputPath can point at the captioned derivative immediately.
+          if (options.subtitleMode === 'provider') {
+            await createProviderSubtitles(providerJob.id, { language: options.language }).catch((e: Error) => log(job.id, `${item.title}: provider subtitles request failed: ${e.message}`, 'warning', item))
+          } else if (options.subtitleMode === 'local') {
+            await applyLocalCaptions(providerJob.id, { aspect: options.aspectRatio }).catch((e: Error) => log(job.id, `${item.title}: local captions failed: ${e.message}`, 'warning', item))
+          }
           return saveItem(item, { outputPath: providerJob.localOutputPath, status: 'completed', currentStep: step.label, progress: 100 })
         }
         if (providerJob.status === 'failed' || providerJob.status === 'attention' || providerJob.status === 'cancelled') {
