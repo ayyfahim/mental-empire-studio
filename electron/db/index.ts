@@ -218,6 +218,10 @@ CREATE TABLE IF NOT EXISTS provider_jobs (
   projectId TEXT,
   requestFingerprint TEXT,
   requestJson TEXT,
+  /** '' (not NULL) when the caller supplied none, so the unique index below degenerates
+   *  cleanly to fingerprint-only dedup for every existing/automation caller that never
+   *  sets this — only an explicit, distinct value creates a deliberate duplicate. */
+  creationIntentId TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL,
   remoteStep INTEGER,
   remoteStepsTotal INTEGER,
@@ -225,6 +229,9 @@ CREATE TABLE IF NOT EXISTS provider_jobs (
   remoteMediaId TEXT,
   remoteMediaUrl TEXT,
   localOutputPath TEXT,
+  /** A local-caption derivative render, kept separate from the verified provider
+   *  output (localOutputPath) so the original is never overwritten. */
+  localCaptionedOutputPath TEXT,
   errorCode TEXT,
   errorMessage TEXT,
   segmentOrdinal INTEGER,
@@ -399,11 +406,53 @@ function migrate(d: Database.Database): void {
   ensureColumn(d, 'assets', 'missing', 'INTEGER')
   ensureColumn(d, 'assets', 'projectId', 'TEXT')
   ensureColumn(d, 'provider_jobs', 'requestJson', 'TEXT')
+  ensureColumn(d, 'provider_jobs', 'creationIntentId', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(d, 'provider_jobs', 'localCaptionedOutputPath', 'TEXT')
   d.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_content_id ON assets(id) WHERE id IS NOT NULL')
 
   purgeLegacyDemoSeed(d)
   migrateProfilesToSources(d)
   installDefaultThumbnailTemplates(d)
+  enforceProviderJobFingerprintUniqueness(d)
+}
+
+/**
+ * Phase 11 idempotency hardening. The dedup check before this migration was a plain
+ * SELECT (application-level, not DB-enforced) — this closes that gap with a real
+ * UNIQUE index on (provider, connectionId, operation, requestFingerprint,
+ * creationIntentId), so concurrent/racing creation attempts can no longer both insert.
+ *
+ * Historical rows may already violate that uniqueness (they were never constrained).
+ * Deleting them is not an option ("never delete valid historical jobs silently"), so
+ * every row after the first in each duplicate group gets a disambiguating suffix
+ * appended to its OWN creationIntentId — its identity and history are preserved, it
+ * simply stops being treated as the canonical dedup target for that fingerprint.
+ * Idempotent: rows already suffixed, or already unique, are left untouched, and
+ * CREATE UNIQUE INDEX IF NOT EXISTS is a no-op after the first successful run.
+ */
+function enforceProviderJobFingerprintUniqueness(d: Database.Database): void {
+  const tx = d.transaction(() => {
+    const dupGroups = d.prepare(
+      `SELECT provider, connectionId, operation, requestFingerprint, creationIntentId, COUNT(*) c
+       FROM provider_jobs
+       WHERE requestFingerprint IS NOT NULL AND requestFingerprint != ''
+       GROUP BY provider, connectionId, operation, requestFingerprint, creationIntentId
+       HAVING c > 1`
+    ).all() as Array<{ provider: string; connectionId: string; operation: string; requestFingerprint: string; creationIntentId: string }>
+    const relabel = d.prepare('UPDATE provider_jobs SET creationIntentId=@intentId WHERE id=@id')
+    for (const group of dupGroups) {
+      const rows = d.prepare(
+        'SELECT id, creationIntentId FROM provider_jobs WHERE provider=? AND connectionId=? AND operation=? AND requestFingerprint=? AND creationIntentId=? ORDER BY createdAt ASC, id ASC'
+      ).all(group.provider, group.connectionId, group.operation, group.requestFingerprint, group.creationIntentId) as Array<{ id: string; creationIntentId: string }>
+      // Keep the oldest row's key as-is (it remains the canonical dedup target);
+      // every later duplicate gets its own id appended to its creationIntentId.
+      for (const row of rows.slice(1)) {
+        relabel.run({ id: row.id, intentId: `${row.creationIntentId}#dup-${row.id}` })
+      }
+    }
+    d.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_jobs_fingerprint_intent ON provider_jobs(provider, connectionId, operation, requestFingerprint, creationIntentId)')
+  })
+  tx()
 }
 
 /**
@@ -619,6 +668,11 @@ export interface Repositories {
   providerJob(id: string): ProviderJob | undefined
   providerJobByRemoteId(connectionId: string, remoteProjectId: string): ProviderJob | undefined
   providerJobByFingerprint(connectionId: string, requestFingerprint: string): ProviderJob | undefined
+  /** Atomic lookup-or-insert enforced by the DB unique index on (provider,
+   *  connectionId, operation, requestFingerprint, creationIntentId) — not just an
+   *  application-level SELECT-then-INSERT. Returns the existing row (created: false)
+   *  on any collision, including one lost to a concurrent/racing caller. */
+  findOrCreateProviderJob(job: ProviderJob): { job: ProviderJob; created: boolean }
   providerJobs(connectionId?: string): ProviderJob[]
   /** Every provider job not yet in a terminal state — the startup-reconciliation set. */
   nonTerminalProviderJobs(): ProviderJob[]
@@ -867,10 +921,12 @@ function providerJobToRow(job: ProviderJob): Record<string, unknown> {
     automationItemId: job.automationItemId ?? null,
     projectId: job.projectId ?? null,
     requestFingerprint: job.requestFingerprint ?? null,
+    creationIntentId: job.creationIntentId ?? '',
     requestJson: job.requestJson ?? null,
     remoteMediaId: job.remoteMediaId ?? null,
     remoteMediaUrl: job.remoteMediaUrl ?? null,
     localOutputPath: job.localOutputPath ?? null,
+    localCaptionedOutputPath: job.localCaptionedOutputPath ?? null,
     errorCode: job.errorCode ?? null,
     errorMessage: job.errorMessage ?? null,
     lastPolledAt: job.lastPolledAt ?? null,
@@ -1424,6 +1480,33 @@ function buildRepositories(d: Database.Database): Repositories {
       const r = d.prepare('SELECT * FROM provider_jobs WHERE connectionId=? AND requestFingerprint=? ORDER BY createdAt DESC LIMIT 1').get(connectionId, requestFingerprint) as Record<string, unknown> | undefined
       return r ? rowToProviderJob(r) : undefined
     },
+    findOrCreateProviderJob: (job) => {
+      const key = { provider: job.provider, connectionId: job.connectionId, operation: job.operation, requestFingerprint: job.requestFingerprint ?? '', creationIntentId: job.creationIntentId ?? '' }
+      const findExisting = (): Record<string, unknown> | undefined =>
+        d.prepare(
+          'SELECT * FROM provider_jobs WHERE provider=@provider AND connectionId=@connectionId AND operation=@operation AND requestFingerprint=@requestFingerprint AND creationIntentId=@creationIntentId'
+        ).get(key) as Record<string, unknown> | undefined
+      try {
+        const tx = d.transaction(() => {
+          if (job.requestFingerprint) {
+            const existing = findExisting()
+            if (existing) return { job: rowToProviderJob(existing), created: false }
+          }
+          const row = providerJobToRow(job)
+          const cols = Object.keys(row)
+          d.prepare(`INSERT INTO provider_jobs (${cols.join(',')}) VALUES (${cols.map((c) => `@${c}`).join(',')})`).run(row)
+          return { job, created: true }
+        })
+        return tx()
+      } catch (e) {
+        // Lost a race on the unique index — another call already inserted first.
+        if (job.requestFingerprint && /UNIQUE constraint failed/i.test((e as Error).message)) {
+          const existing = findExisting()
+          if (existing) return { job: rowToProviderJob(existing), created: false }
+        }
+        throw e
+      }
+    },
     providerJobs: (connectionId) => {
       const rows = connectionId
         ? (d.prepare('SELECT * FROM provider_jobs WHERE connectionId=? ORDER BY createdAt DESC').all(connectionId) as Array<Record<string, unknown>>)
@@ -1444,7 +1527,7 @@ function buildRepositories(d: Database.Database): Repositories {
       const allow = new Set([
         'operation', 'remoteProjectId', 'remoteTaskUuid', 'remotePreviousTaskUuid', 'parentProviderJobId',
         'automationJobId', 'automationItemId', 'projectId', 'requestFingerprint', 'requestJson', 'status', 'remoteStep',
-        'remoteStepsTotal', 'progress', 'remoteMediaId', 'remoteMediaUrl', 'localOutputPath', 'errorCode',
+        'remoteStepsTotal', 'progress', 'remoteMediaId', 'remoteMediaUrl', 'localOutputPath', 'localCaptionedOutputPath', 'errorCode',
         'errorMessage', 'segmentOrdinal', 'internalSegment', 'lastPolledAt', 'downloadedAt'
       ])
       const sets: string[] = []
