@@ -159,9 +159,9 @@ export function TalkingVideo(): JSX.Element {
           <div style={{ fontFamily: 'var(--font-display)', fontWeight: 600, fontSize: 22, letterSpacing: '-.5px', color: '#f4f6f9' }}>Talking Video</div>
         </div>
         <div style={{ flex: 1 }} />
-        <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 11.5, color: STATUS_COLOR[status] }}>
-          <span style={{ width: 7, height: 7, borderRadius: '50%', background: STATUS_COLOR[status] }} />
-          {STATUS_LABEL[status]}
+        <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 11.5, color: STATUS_COLOR[status] ?? '#6a7180' }}>
+          <span style={{ width: 7, height: 7, borderRadius: '50%', background: STATUS_COLOR[status] ?? '#6a7180' }} />
+          {STATUS_LABEL[status] ?? 'Not connected'}
         </span>
       </div>
 

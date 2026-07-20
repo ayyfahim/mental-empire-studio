@@ -112,7 +112,7 @@ vi.mock('../../electron/db', () => ({
   })
 }))
 
-const { connectTalkingPhotos, disconnectTalkingPhotos, reconnectTalkingPhotos } = await import('../../electron/providers/talkingphotos/session')
+const { connectTalkingPhotos, disconnectTalkingPhotos, reconnectTalkingPhotos, reconcileInterruptedConnectionOnStartup } = await import('../../electron/providers/talkingphotos/session')
 const electronMock = (await import('electron')) as unknown as { __instances: FakeWindowHandle[] }
 
 function latestWindow(): FakeWindowHandle {
@@ -329,4 +329,36 @@ describe('TalkingPhotos reconnectTalkingPhotos()', () => {
     await vi.advanceTimersByTimeAsync(20 * 60_000)
     expect(healthCheckMock).not.toHaveBeenCalled()
   })
+})
+
+describe('reconcileInterruptedConnectionOnStartup()', () => {
+  it.each(['connecting', 'waiting_for_login', 'verifying'] as const)(
+    'converts a stale "%s" row (left over from a crash/restart) to attention',
+    (staleStatus) => {
+      connections.set(TALKINGPHOTOS_CONNECTION_ID, {
+        ...(connections.get(TALKINGPHOTOS_CONNECTION_ID) as ProviderConnection),
+        status: staleStatus
+      })
+      reconcileInterruptedConnectionOnStartup()
+      const row = connections.get(TALKINGPHOTOS_CONNECTION_ID)
+      expect(row?.status).toBe('attention')
+      expect(row?.lastError).toContain('restart')
+      expect(lastEmittedConnection().status).toBe('attention')
+    }
+  )
+
+  it.each(['disconnected', 'connected', 'reauth_required', 'attention'] as const)(
+    'leaves an already-terminal "%s" row untouched',
+    (terminalStatus) => {
+      connections.set(TALKINGPHOTOS_CONNECTION_ID, {
+        ...(connections.get(TALKINGPHOTOS_CONNECTION_ID) as ProviderConnection),
+        status: terminalStatus
+      })
+      emitMock.mockClear()
+      reconcileInterruptedConnectionOnStartup()
+      const row = connections.get(TALKINGPHOTOS_CONNECTION_ID)
+      expect(row?.status).toBe(terminalStatus)
+      expect(emitMock).not.toHaveBeenCalled()
+    }
+  )
 })

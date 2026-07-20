@@ -37,6 +37,7 @@ import { runProfile, newVideos } from './ipc/automation'
 import { cancelAutomationJob, createAutomationJob, getAutomationJob, pauseAutomationJob, preflightAutomation, resumeAutomationJob, startAutomationSupervisor, stopAutomationSupervisor } from './services/automation-supervisor'
 import { postWebhook } from './services/webhook'
 import { reconcileNonTerminalProviderJobs, startTalkingPhotosPoller, stopTalkingPhotosPoller } from './providers/talkingphotos/poller'
+import { reconcileInterruptedConnectionOnStartup } from './providers/talkingphotos/session'
 import { assertDisposableSmokeProfile, prepareSmokeUserDataDir } from './services/smokeSafety'
 import { createServer } from 'node:http'
 
@@ -241,6 +242,10 @@ function initPersistence(): void {
     // TalkingPhotos: reconcile any non-terminal provider job against its remote project
     // now, so a completed-while-closed cloud render surfaces immediately (plan §12).
     void reconcileNonTerminalProviderJobs().catch((e) => L.warn(`talkingphotos startup reconciliation failed: ${(e as Error).message}`))
+    // TalkingPhotos: a crash/restart mid-login can leave the connection row claiming
+    // connecting/waiting_for_login/verifying with nothing actually in progress — fix
+    // that up before any window reads connection status.
+    reconcileInterruptedConnectionOnStartup()
   } catch (e) {
     L.error(`DB init FAILED at ${dbPath}: ${(e as Error).message}`)
     throw e

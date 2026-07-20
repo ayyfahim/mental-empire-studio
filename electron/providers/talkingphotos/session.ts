@@ -240,3 +240,18 @@ export async function disconnectTalkingPhotos(): Promise<ProviderConnection> {
   await clearProviderSessionStorage()
   return setStatus('disconnected', { lastError: undefined })
 }
+
+const INTERRUPTIBLE_STATUSES: ProviderConnectionStatus[] = ['connecting', 'waiting_for_login', 'verifying']
+
+/** Startup-only: a crash/restart during an in-progress login leaves in-memory state
+ *  fresh (settled=true, no window, no timers), but the persisted row can still claim
+ *  connecting/waiting_for_login/verifying from before the crash — nothing is actually
+ *  happening, yet the UI would show that as if it were. Call once at app startup,
+ *  before any window reads connection status, so the user sees an accurate "try
+ *  again" state instead of one that looks like a login is silently still in progress. */
+export function reconcileInterruptedConnectionOnStartup(): void {
+  const current = loadConnectionRow()
+  if (INTERRUPTIBLE_STATUSES.includes(current.status)) {
+    setStatus('attention', { lastError: 'TalkingPhotos login was interrupted by an app restart — click Connect to try again.' })
+  }
+}
