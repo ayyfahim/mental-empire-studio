@@ -5,9 +5,16 @@ on:
     branches: [main, 'build/**']
   pull_request:
 
+# A new push supersedes the previous validation for the same PR/branch. This prevents
+# an obsolete real-ffmpeg smoke run from continuing to consume a runner after a fix.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,20 +30,56 @@ jobs:
       # Headless milestone smokes (M2-M7) under a virtual display.
       - name: Smoke harnesses
         run: |
-          set -e
+          set -euo pipefail
           F=test/fixtures
+
           run() {
             local mode="$1"
-            # Isolated, disposable profile dir per smoke run — required by
-            # electron/services/smokeSafety.ts, which refuses to start (and refuses any
-            # destructive resetAll()/seedDemoForSmoke()) without it, to guarantee a smoke
-            # run can never wipe a real local install's userData.
+            local limit="5m"
             local userdata
+            local logfile
+
+            # The full real-ffmpeg journey is intentionally heavier than the fixture
+            # smokes, but it must still finish in bounded time on a hosted runner.
+            if [[ "$mode" == "e2e" ]]; then
+              limit="20m"
+            fi
+
             userdata="$(mktemp -d)"
-            ME_SMOKE="$mode" ME_SMOKE_USERDATA_DIR="$userdata" ME_YTDLP_FIXTURE=$F/ytdlp ME_DOWNLOAD_FIXTURE=$F/audio/sample.mp3 \
-              ME_WHISPER_FIXTURE=$F/whisper/sample-words.json \
+            logfile="/tmp/me-smoke-${mode}.log"
+
+            cleanup() {
+              rm -rf "$userdata"
+            }
+            trap cleanup RETURN
+
+            echo "::group::ME_SMOKE=${mode} (timeout ${limit})"
+            if ! timeout --signal=TERM --kill-after=20s "$limit" \
+              env ME_SMOKE="$mode" \
+                  ME_SMOKE_USERDATA_DIR="$userdata" \
+                  ME_YTDLP_FIXTURE="$F/ytdlp" \
+                  ME_DOWNLOAD_FIXTURE="$F/audio/sample.mp3" \
+                  ME_WHISPER_FIXTURE="$F/whisper/sample-words.json" \
               xvfb-run -a node_modules/electron/dist/electron --no-sandbox out/main/main.js \
-              | tee /tmp/out.txt
-            grep -Eq "(SMOKE(_M[0-9])?|E2E)_OK" /tmp/out.txt
+              2>&1 | tee "$logfile"; then
+              status=${PIPESTATUS[0]}
+              echo "Smoke mode ${mode} failed or timed out (status=${status})."
+              echo "----- ${logfile} -----"
+              cat "$logfile"
+              echo "::endgroup::"
+              return "${status:-1}"
+            fi
+
+            if ! grep -Eq "(SMOKE(_M[0-9])?|E2E)_OK" "$logfile"; then
+              echo "Smoke mode ${mode} exited without its success marker."
+              cat "$logfile"
+              echo "::endgroup::"
+              return 1
+            fi
+
+            echo "::endgroup::"
           }
-          for m in 1 m3 m4 m5 m6 m7 e2e; do echo "== smoke $m =="; run "$m"; done
+
+          for m in 1 m3 m4 m5 m6 m7 e2e; do
+            run "$m"
+          done
