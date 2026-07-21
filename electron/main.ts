@@ -1409,10 +1409,17 @@ async function runSmokeE2E(): Promise<void> {
     }
 
     // J6b: REAL b-roll bed assembly + bed-mode render + SFX mix (amix normalize=0).
+    // The synthetic clip must be LONGER than the 12s timeline so planCoverage's segments
+    // (the sparse density plans a 9s first segment) are each satisfied from a single linear
+    // read. A too-short clip (e.g. 6s covering a 9s segment) forces the render inputs onto
+    // `-stream_loop -1`, and an infinitely-looped+seeked video input driving the full
+    // single-pass filter chain (scale→xfade→grade→zoompan→overlay→libass) is what pegged the
+    // 2-core CI ffmpeg for 20m. Real stock b-roll is likewise longer than a slot, so this
+    // matches production, where looping rarely triggers. 13s covers 12s with margin.
     const clip = join(app.getPath('temp'), 'me-e2e-clip.mp4')
-    execFileSync(ffmpegPath(), ['-y', '-f', 'lavfi', '-i', 'testsrc=d=6:s=640x360:r=30', '-pix_fmt', 'yuv420p', clip])
+    execFileSync(ffmpegPath(), ['-y', '-f', 'lavfi', '-i', 'testsrc=d=13:s=640x360:r=30', '-pix_fmt', 'yuv420p', clip])
     // Crossfade bed: tailReserve gives the xfade overlap material; total must still be 12s.
-    const segs = planCoverage(12, [{ path: clip, durationSec: 6 }], { density: 'sparse', tailReserve: 0.3 })
+    const segs = planCoverage(12, [{ path: clip, durationSec: 13 }], { density: 'sparse', tailReserve: 0.3 })
     const bedReal = await assembleBed(segs, { w: 1920, h: 1080 }, 30, 'fade')
     const bedProbe = ffprobe(bedReal)
     check(!!bedProbe && bedProbe.video && Math.abs(bedProbe.duration - 12) < 0.8, `J6b real crossfade bed covers 12s (got ${bedProbe?.duration?.toFixed(2)})`)
@@ -1421,12 +1428,12 @@ async function runSmokeE2E(): Promise<void> {
     const bedAss = join(app.getPath('temp'), 'me-e2e-out', 'beta-bed.ass')
     writeFileSync(bedAss, buildAss(words, { preset: 'Hormozi', aspect: '16:9', keywords: false }).ass)
     // J6b's two renders exist to prove the b-roll graph variants (bed-mode and
-    // single-pass), not a production output dimension — J5/J6a already cover the
-    // full 1920x1080 path. Render them small + ultrafast (a real product preview
-    // path) so the CPU-only CI runner finishes the single-pass xfade graph in
-    // seconds instead of grinding an upscaled 1080p graph for many minutes. The
-    // small size is driven from the source, so the overlay .pam is generated at
-    // the same dimensions and the graph stays internally consistent.
+    // single-pass) render valid a/v, not a production output dimension — J5/J6a already
+    // cover the full 1920x1080 path. Drive them through the render pipeline's real
+    // fast-preview inputs (previewDimensions + cpuPreset). The source clip is already
+    // 640x360, so single-pass reads it 1:1 (no upscale) and the overlay .pam is generated
+    // at the same size — the graph stays internally consistent and the CPU-only runner
+    // finishes in seconds.
     const j6bPreview = { previewDimensions: { w: 640, h: 360 }, cpuPreset: 'ultrafast' as const }
     await runRender({ project: repos.getProject(pBeta.id)!, images: [], assPath: bedAss, outPath: bedOut, settings: getSettings(), videoBedPath: bedReal, sfxPath: sfxTrack ?? undefined, ...j6bPreview })
     const bo = ffprobe(bedOut)
