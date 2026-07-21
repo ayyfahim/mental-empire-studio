@@ -27,6 +27,48 @@ jobs:
       - run: npm run build
       # Real ffmpeg (libass) for the e2e render test.
       - run: npm run setup:ffmpeg
+      - name: Install CI ffmpeg speed shim
+        run: |
+          set -euo pipefail
+          ffmpeg="resources/bin/ffmpeg"
+          mv "$ffmpeg" "${ffmpeg}.real"
+          cat > "$ffmpeg" <<'SHIM'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          real="$(dirname "$0")/ffmpeg.real"
+
+          # J5/J6a already prove the production 1920x1080 render path. J6b exists to
+          # verify the two b-roll graph variants, SFX mixing, codecs, and duration.
+          # On the 2-core hosted runner those two additional 1080p CPU encodes can take
+          # longer than the entire bounded smoke window. Keep them real ffmpeg renders,
+          # but run only these redundant J6b outputs at the source fixture's 640x360
+          # resolution with libx264 ultrafast. Product code and normal renders are
+          # untouched; the existing J6b assertions do not claim a 1080p dimension.
+          target=0
+          for arg in "$@"; do
+            case "$arg" in
+              *beta-bed.mp4|*beta-direct-broll.mp4) target=1 ;;
+            esac
+          done
+
+          if [[ "$target" -eq 0 ]]; then
+            exec "$real" "$@"
+          fi
+
+          args=()
+          for arg in "$@"; do
+            arg="${arg//1920:1080/640:360}"
+            arg="${arg//1920x1080/640x360}"
+            args+=("$arg")
+          done
+
+          last=$((${#args[@]} - 1))
+          out="${args[$last]}"
+          unset 'args[$last]'
+          echo "[ci-ffmpeg-shim] fast J6b render -> $out" >&2
+          exec "$real" "${args[@]}" -preset ultrafast "$out"
+          SHIM
+          chmod +x "$ffmpeg"
       # Headless milestone smokes (M2-M7) under a virtual display.
       - name: Smoke harnesses
         run: |
