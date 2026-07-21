@@ -5,8 +5,11 @@ import type {
   CaptionGroupModel,
   GpuRenderSpec,
   ImageMotionSpec,
-  RenderImageSpec
+  RenderImageSpec,
+  TransitionSpec
 } from '../../../../shared/renderSpec'
+import { isCaptionKeyword, limitPunchHits, resolveCaptionStyle } from '../../../../shared/captionStyle'
+import type { EffectPlan } from '../../../../shared/effectPlan'
 import { groupWords, resolutionFor } from '../../captions'
 import { gradeParamsForProject } from '../grade'
 import { FPS, LONG_FORM_FAST_SEC, CAPTION_PHRASE_WORD_COUNT, gpuBitrateMbpsFor, GPU_KEY_INTERVAL_SEC } from '../render-config'
@@ -39,34 +42,46 @@ export function gpuCaptionMode(project: Pick<Project, 'durationSec' | 'captionPa
  *  path's word grouping so timing is identical; the worker draws them on a canvas. */
 export function buildCaptionModel(
   words: TranscriptWord[],
-  project: Pick<Project, 'durationSec' | 'captionPace' | 'captionPreset' | 'captionFont' | 'captionAnim' | 'captionAspect' | 'captionLines' | 'captionPosition' | 'captionWordsPerPage'>,
-  opts: { highlightColor: string; highlightBox?: CaptionFrameModel['highlightBox']; hook?: { text: string; untilSec: number } }
+  project: Pick<Project, 'durationSec' | 'captionPace' | 'captionPreset' | 'captionFont' | 'captionAnim' | 'captionAspect' | 'captionLines' | 'captionPosition' | 'captionOffsetY' | 'captionWordsPerPage' | 'captionHighlightColor' | 'captionBoxColor' | 'keywords'>,
+  opts: { autoKeywords?: boolean; hook?: { text: string; untilSec: number } }
 ): CaptionFrameModel {
-  const isSubmagic = project.captionPreset === 'Submagic'
-  const mode = isSubmagic ? 'word' : gpuCaptionMode(project, words.length)
+  const style = resolveCaptionStyle(project)
+  const boxed = style.activeKind === 'box'
+  const mode = boxed ? 'word' : gpuCaptionMode(project, words.length)
   const aspect = project.captionAspect
-  const lines = isSubmagic ? 1 : (project.captionLines === 2 || project.captionLines === 3 ? project.captionLines : 1)
-  const wordsPerLine = aspect === '9:16' ? 3 : aspect === '1:1' ? 3 : 4
-  const isWordPreset = project.captionPreset === 'Word' && lines === 1
+  const lines = boxed ? 1 : (project.captionLines === 2 || project.captionLines === 3 ? project.captionLines : 1)
+  const wordsPerLine = aspect === '16:9' ? 4 : 3
+  const isWordPreset = style.presetId === 'Word' && lines === 1
   const wordsPerPage = project.captionWordsPerPage === 2 || project.captionWordsPerPage === 3 ? project.captionWordsPerPage : 1
-  const perGroup = isSubmagic ? wordsPerPage : isWordPreset ? 1 : Math.max(1, wordsPerLine * lines)
+  const perGroup = boxed ? wordsPerPage : isWordPreset ? 1 : Math.max(1, wordsPerLine * lines)
   const rawGroups = groupWords(words, perGroup)
+  // Keyword ordinal drives the preset's colour rotation — same rule as the ASS builder,
+  // including auto-detected keywords, so preview === burned output.
+  const autoKeywords = !!(project.keywords || opts.autoKeywords)
+  let kwCount = 0
+  const kwOrdById = new Map<string, number>()
+  for (const w of words) {
+    if (isCaptionKeyword(w.word, w.emphasis, autoKeywords)) kwOrdById.set(w.id, kwCount++)
+  }
   const groups: CaptionGroupModel[] = rawGroups.map((g) => ({
     startSec: g.start,
     endSec: Math.max(g.start + 0.3, g.end),
-    words: g.words.map((w) => ({ text: w.word, startSec: w.start, endSec: w.end, emphasis: w.emphasis }))
+    words: g.words.map((w) => ({ text: w.word, startSec: w.start, endSec: w.end, emphasis: w.emphasis, kwOrd: kwOrdById.get(w.id) }))
   }))
   return {
     groups,
+    style,
     preset: project.captionPreset,
-    font: project.captionFont || 'Anton',
+    font: style.fontFamily,
     animation: project.captionAnim || 'Pop-in',
     mode,
     position: project.captionPosition ?? 'bottom',
     lines,
-    highlightColor: opts.highlightColor,
-    highlightBox: opts.highlightBox,
-    wordsPerPage: isSubmagic ? wordsPerPage : undefined,
+    highlightColor: style.activeColor,
+    highlightBox: boxed
+      ? { enabled: true, boxColor: style.boxColor ?? '#FFD93D', textColor: style.activeColor, radius: 14, padding: 12 }
+      : undefined,
+    wordsPerPage: boxed ? wordsPerPage : undefined,
     hook: opts.hook && opts.hook.text.trim() ? { text: opts.hook.text.trim(), untilSec: opts.hook.untilSec } : undefined
   }
 }
@@ -141,6 +156,10 @@ export interface GpuSpecInputs {
   settings: AppSettings
   /** times (sec) where an emphasized word fires a punch-zoom (from buildAss zoomHits) */
   zoomHits: number[]
+  /** validated effect plan — drives per-boundary transitions (and matches the ffmpeg path) */
+  plan?: EffectPlan
+  /** style/default transition used at boundaries with no planned transition nearby */
+  defaultTransition?: { type: string; durationSec: number }
   /** mastered/normalized narration audio path (or the raw mp3) */
   voicePath: string
   /** optional transition SFX track */
@@ -165,10 +184,22 @@ export function buildGpuRenderSpec(inp: GpuSpecInputs): GpuRenderSpec {
   // Motion mirrors render.ts gating: Ken Burns / punch zoom are disabled on long-form.
   const motionPreset = longForm ? 'off' : effectiveMotionPreset(project, beta.autoZoom.atStart)
   const kenBurns = motionPreset !== 'off'
+  // Punch-zoom fires on manually emphasized words only, then gets rate-limited so a
+  // heavily auto-emphasized transcript cannot strobe the viewer. An explicit Motion
+  // "Static" keeps everything still (the UI auto-arms motion with the zoom toggles).
   const punchEnabled = motionPreset !== 'off' && (project.punchZoom || beta.autoZoom.atKeyPhrases)
   const punchAtSec = punchEnabled
-    ? [...new Set([...inp.zoomHits, ...inp.words.filter((w) => w.emphasis).map((w) => w.start)])].sort((a, b) => a - b)
+    ? limitPunchHits([...inp.zoomHits, ...inp.words.filter((w) => w.emphasis).map((w) => w.start)])
     : []
+  const introZoom = motionPreset !== 'off' && beta.autoZoom.atStart
+
+  // Per-boundary transitions from the plan; the style transition is the fallback the
+  // compositor uses at boundaries with no planned transition nearby.
+  const transitions: TransitionSpec[] = (inp.plan?.transitions ?? []).map((t) => ({
+    atSec: t.atSec,
+    type: t.type,
+    durationSec: t.durationSec
+  }))
 
   // Edge-gradient darkening overlay: rendered in the shader from these params (no .pam).
   const ov = beta.overlay
@@ -177,16 +208,7 @@ export function buildGpuRenderSpec(inp: GpuSpecInputs): GpuRenderSpec {
     : undefined
 
   const captions = buildCaptionModel(inp.words, project, {
-    highlightColor: project.captionHighlightColor ?? (project.captionPreset === 'Submagic' ? '#111111' : '#ffd93d'),
-    highlightBox: project.captionPreset === 'Submagic'
-      ? {
-          enabled: true,
-          boxColor: project.captionBoxColor ?? '#ffd93d',
-          textColor: project.captionHighlightColor ?? '#111111',
-          radius: 14,
-          padding: 12
-        }
-      : undefined,
+    autoKeywords: beta.autoHighlight,
     hook: inp.hookText ? { text: inp.hookText, untilSec: 2.6 } : undefined
   })
 
@@ -202,7 +224,9 @@ export function buildGpuRenderSpec(inp: GpuSpecInputs): GpuRenderSpec {
       startSec: s.start,
       endSec: s.end
     })),
-    motion: { kenBurns, punchAtSec },
+    motion: { kenBurns, punchAtSec, introZoom },
+    transitions: transitions.length ? transitions : undefined,
+    defaultTransition: inp.defaultTransition,
     grade,
     grain,
     overlay,

@@ -13,6 +13,9 @@ import {
   type ActivityRow,
   type AppSettings,
   type AutomationEvent,
+  type AutomationJob,
+  type AutomationJobDetail,
+  type AutomationJobDraft,
   type DownloadProgress,
   type DownloadedVideo,
   type LookAdjust,
@@ -35,8 +38,22 @@ import {
   type WorkItem
 } from '@shared/types'
 import type { GpuRenderSpec } from '@shared/renderSpec'
+import { buildAutomationWorkflow } from '@shared/automation'
 import type { ImageMotionSpec } from '@shared/renderSpec'
+import { resolveCaptionStyle } from '@shared/captionStyle'
 import { LOOKS, lookById } from '@shared/looks'
+import {
+  TALKINGPHOTOS_PARTITION,
+  TALKINGPHOTOS_PROVIDER,
+  type ProviderCapabilities,
+  type ProviderConnection,
+  type ProviderJob,
+  type ProviderLanguage,
+  type ProviderMotion,
+  type ProviderVoice,
+  type TalkingPhotosCreateInput,
+  type TalkingPhotosScriptCreateInput
+} from '@shared/talkingphotos'
 
 function grad(a: string, b: string): string {
   return `linear-gradient(135deg,${a},${b})`
@@ -120,7 +137,8 @@ function installMock(): void {
     ambientGlow: true,
     showActivityRail: true,
     outputFolder: '/Browser/MentalEmpire_out',
-    beta: { enabled: false, pexelsKey: '', pixabayKey: '', coverrKey: '' }
+    beta: { enabled: false, pexelsKey: '', pixabayKey: '', coverrKey: '' },
+    integrations: { talkingPhotos: { enabled: true } }
   } as Partial<AppSettings>)
   const appMeta = new Map<string, string>()
 
@@ -136,7 +154,10 @@ function installMock(): void {
     { title: 'Why Narcissists Panic When You Go Quiet', channel: 'Mental Empire', views: '42K', publishedAt: '2d ago' },
     { title: 'The Stoic Secret to Never Being Angry', channel: 'Mental Empire', views: '18K', publishedAt: '4d ago' }
   ]
-  const downloads: DownloadedVideo[] = []
+  const downloads: DownloadedVideo[] = [
+    { id: 'dl-demo-1', sourceId: 'src-pw', title: 'Why Discipline Beats Motivation', channel: '@powerwithinofficial-q7d', size: '1.1 MB', when: '2h ago', stage: 'Downloaded only', pct: '100%', action: 'Open', thumb: '', filePath: '/Browser/downloads/why-discipline-beats-motivation.mp3', durationSec: 184 },
+    { id: 'dl-demo-2', sourceId: 'src-nar', title: 'The Quiet Rule That Builds Discipline', channel: '@narceo05', size: '0.9 MB', when: '1d ago', stage: 'Downloaded only', pct: '100%', action: 'Open', thumb: '', filePath: '/Browser/downloads/the-quiet-rule.mp3', durationSec: 141 }
+  ]
   const projects: Project[] = []
   const projectImages = new Map<string, ProjectImage[]>()
   const transcripts = new Map<string, TranscriptWord[]>()
@@ -171,6 +192,8 @@ function installMock(): void {
   const activityCbs: Array<(p: ActivityRow) => void> = []
   const renderCbs: Array<(p: RenderProgress) => void> = []
   const automationCbs: Array<(p: AutomationEvent) => void> = []
+  const automationJobCbs: Array<(p: AutomationJob) => void> = []
+  const automationJobDetails: AutomationJobDetail[] = []
   const noop = (): void => {}
   const ns = <T extends object>(o: T): T => new Proxy(o, { get: (t, k) => (k in t ? (t as Record<string | symbol, unknown>)[k] : async () => []) }) as T
 
@@ -370,6 +393,7 @@ function installMock(): void {
       grain: { strength: adjust?.grain ?? (style === 'Cinematic' ? 0.03 : 0), temporal: style === 'Cinematic' },
       captions: {
         groups,
+        style: resolveCaptionStyle(p),
         preset: p.captionPreset,
         font: p.captionFont || 'Anton',
         animation: p.captionAnim || 'Pop-in',
@@ -391,6 +415,48 @@ function installMock(): void {
       out: { h264Path: '/Browser/preview.gpu.mp4', finalPath: '/Browser/preview.mp4' }
     }
   }
+
+  // ---- TalkingPhotos fixtures (connected account, catalogs, and a few jobs
+  // spanning every status) so the Talking Video screen can be exercised end to end. ----
+  const tpConnection: ProviderConnection = {
+    id: 'default',
+    provider: TALKINGPHOTOS_PROVIDER,
+    partition: TALKINGPHOTOS_PARTITION,
+    status: 'connected',
+    accountLabel: 'demo@talkingphotos.ai',
+    connectedAt: new Date().toISOString(),
+    lastVerifiedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  }
+  const tpCapabilities: ProviderCapabilities = {
+    limits: { maxDurationSeconds: 60, maxCharactersTts: 400, maxDurationPremiumSeconds: 60, maxCharactersTtsPremium: 250 },
+    usage: { concurrentCount: 1, concurrentLimit: 3, dailyUsage: 4, dailyLimit: 20 },
+    fetchedAt: new Date().toISOString()
+  }
+  const tpLanguages: ProviderLanguage[] = [
+    { code: 'en-US', name: 'English (US)' },
+    { code: 'en-GB', name: 'English (UK)' },
+    { code: 'es-ES', name: 'Spanish (Spain)' },
+    { code: 'fr-FR', name: 'French' },
+    { code: 'de-DE', name: 'German' }
+  ]
+  const tpVoicesFor = (languageCode: string): ProviderVoice[] => [
+    { name: `${languageCode}-AndrewMultilingualNeural`, fullName: 'Andrew (Multilingual)', gender: 'male', langCode: languageCode, category: 'Neural', type: 'standard', styleList: ['general', 'cheerful'], supportedEngines: ['neural'] },
+    { name: `${languageCode}-JennyNeural`, fullName: 'Jenny', gender: 'female', langCode: languageCode, category: 'Neural', type: 'standard', styleList: ['general'], supportedEngines: ['neural'] },
+    { name: `${languageCode}-GuyNeural`, fullName: 'Guy', gender: 'male', langCode: languageCode, category: 'Neural', type: 'standard', styleList: ['general'], supportedEngines: ['neural'] }
+  ]
+  const tpMotions: ProviderMotion[] = [
+    { id: 101, title: 'Subtle nod', tag: 'calm', thumbUrl: '', videoUrl: '', durationSeconds: 8, isPremium: false, isBonus: false },
+    { id: 102, title: 'Hand gestures', tag: 'expressive', thumbUrl: '', videoUrl: '', durationSeconds: 12, isPremium: false, isBonus: false },
+    { id: 103, title: 'Studio presenter', tag: 'professional', thumbUrl: '', videoUrl: '', durationSeconds: 10, isPremium: true, isBonus: false }
+  ]
+  let tpJobSeq = 0
+  const tpJobs: ProviderJob[] = [
+    { id: 'tpjob-1', provider: TALKINGPHOTOS_PROVIDER, connectionId: 'default', operation: 'video', remoteProjectId: '9001', status: 'completed', progress: 100, localOutputPath: '/Browser/talkingphotos-output/9001.mp4', internalSegment: false, createdAt: new Date(Date.now() - 3_600_000).toISOString(), updatedAt: new Date().toISOString(), downloadedAt: new Date().toISOString() },
+    { id: 'tpjob-2', provider: TALKINGPHOTOS_PROVIDER, connectionId: 'default', operation: 'video', remoteProjectId: '9002', status: 'running', remoteStep: 2, remoteStepsTotal: 4, progress: 45, internalSegment: false, createdAt: new Date(Date.now() - 600_000).toISOString(), updatedAt: new Date().toISOString() },
+    { id: 'tpjob-3', provider: TALKINGPHOTOS_PROVIDER, connectionId: 'default', operation: 'tts', status: 'failed', progress: 0, errorMessage: 'TalkingPhotos returned an unexpected response.', internalSegment: false, createdAt: new Date(Date.now() - 7_200_000).toISOString(), updatedAt: new Date().toISOString() }
+  ]
 
   const api = {
     platform: 'web',
@@ -414,6 +480,61 @@ function installMock(): void {
       assignChannel: async () => [],
       warm: async () => ({ nicheId: '', clips: 0, keywords: [] })
     }),
+    talkingPhotos: ns({
+      connectionStatus: async () => tpConnection,
+      connect: async () => tpConnection,
+      reconnect: async () => tpConnection,
+      disconnect: async () => ({ ...tpConnection, status: 'disconnected' as const }),
+      capabilities: async () => tpCapabilities,
+      languages: async () => tpLanguages,
+      voices: async (languageCode: string) => tpVoicesFor(languageCode),
+      motions: async () => tpMotions,
+      projects: async () => [],
+      project: async () => null,
+      sync: async () => tpJobs,
+      jobs: async () => tpJobs,
+      createUploadedAudio: async (input: TalkingPhotosCreateInput) => {
+        const job: ProviderJob = {
+          id: `tpjob-${100 + ++tpJobSeq}`, provider: TALKINGPHOTOS_PROVIDER, connectionId: 'default', operation: 'video',
+          status: 'queued', progress: 0, internalSegment: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+        }
+        tpJobs.unshift(job)
+        pushActivity(`Queued a talking video "${input.title}"`)
+        return job
+      },
+      createScript: async (input: TalkingPhotosScriptCreateInput) => {
+        const job: ProviderJob = {
+          id: `tpjob-${100 + ++tpJobSeq}`, provider: TALKINGPHOTOS_PROVIDER, connectionId: 'default', operation: 'tts',
+          status: 'queued', progress: 0, internalSegment: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+        }
+        tpJobs.unshift(job)
+        pushActivity(`Queued a talking video "${input.title}"`)
+        return job
+      },
+      downloadOutput: async (providerJobId: string) => {
+        const job = tpJobs.find((j) => j.id === providerJobId)
+        if (job) job.status = 'completed'
+        return job ?? tpJobs[0]
+      },
+      subtitleLanguages: async () => tpLanguages,
+      createProviderSubtitles: async (sourceJobId: string) => {
+        const job: ProviderJob = {
+          id: `tpjob-${100 + ++tpJobSeq}`, provider: TALKINGPHOTOS_PROVIDER, connectionId: 'default', operation: 'subtitles',
+          parentProviderJobId: sourceJobId, status: 'queued', progress: 0, internalSegment: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+        }
+        tpJobs.unshift(job)
+        return job
+      },
+      applyLocalCaptions: async (providerJobId: string) => {
+        const job = tpJobs.find((j) => j.id === providerJobId)
+        if (job) job.localCaptionedOutputPath = job.localOutputPath ? job.localOutputPath.replace('.mp4', '-captioned.mp4') : undefined
+        return job ?? tpJobs[0]
+      },
+      ttsRecoveryLibrary: async () => [],
+      confirmRecoveredTts: async () => tpJobs[0]
+    }),
+    onProviderJob: () => noop,
+    onConnectionStatusChanged: () => noop,
     pathForFile: (file: File) => `browser://${file.name}`,
     settings: ns({
       get: async () => settings,
@@ -756,7 +877,22 @@ function installMock(): void {
       openFolder: async () => {}
     }),
     assets: ns({
-      list: async () => []
+      list: async () => [],
+      import: async (paths: string[], context?: { sourceId?: string; channel?: string; channelHandle?: string; channelAvatar?: string }) => paths.map((path, index) => ({
+        id: `mock-asset-${index}-${path}`,
+        path,
+        canonicalPath: path,
+        originalPath: path,
+        sourceId: context?.sourceId,
+        channel: context?.channel || 'Unsorted',
+        channelHandle: context?.channelHandle,
+        channelAvatar: context?.channelAvatar,
+        addedAt: new Date().toISOString(),
+        firstAddedAt: new Date().toISOString(),
+        lastUsedAt: new Date().toISOString(),
+        usageCount: 1,
+        missing: false
+      }))
     }),
     publish: ns({
       list: async () => renderRows
@@ -774,6 +910,11 @@ function installMock(): void {
         })),
       reveal: async () => {},
       startDrag: () => {}
+    }),
+    gpu: ns({
+      // Browser mock: report a healthy software-ish probe so Compose renders its chip
+      // instead of crashing (there is no real WebCodecs hardware probe in a plain tab).
+      status: async () => ({ hardware: true, supported: true, vendor: 'unknown' as const, detail: 'browser mock' })
     }),
     effects: ns({
       generate: async () => JSON.stringify({
@@ -830,14 +971,50 @@ function installMock(): void {
       },
       tick: async () => {
         pushActivity('Manual auto-scrape tick completed')
-      }
+      },
+      preflight: async (draft: AutomationJobDraft) => {
+        const hasSource = draft.config.sourceKind === 'local-files'
+          ? draft.config.localMediaPaths.length > 0
+          : draft.config.sourceKind === 'youtube-url' ? /^https:\/\/(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\//i.test(draft.config.sourceUrl) : !!draft.config.sourceId
+        const itemCount = draft.config.sourceKind === 'local-files' ? draft.config.localMediaPaths.length : draft.config.selectedVideoIds.length || draft.config.sourceCount
+        return {
+        ok: hasSource,
+        blockers: hasSource ? [] : ['Choose a valid source.'],
+        warnings: [],
+        estimatedStorageGb: Math.max(0.3, itemCount * 0.75),
+        estimatedMinutes: itemCount * 18,
+        sourceItems: itemCount,
+        powerMessage: 'This job runs locally. The computer must remain powered on.',
+        appMessage: 'You may close this window; the desktop process continues in the tray.'
+      }},
+      createJob: async (draft: AutomationJobDraft) => {
+        const id = `auto-browser-${Date.now()}`
+        const at = new Date().toISOString()
+        const job: AutomationJobDetail = {
+          id, name: draft.name, goal: draft.goal, status: 'queued', progress: 0, currentStep: 'Waiting to start',
+          config: draft.config, createdAt: at, updatedAt: at, pauseRequested: false, cancelRequested: false,
+          warningCount: 0, failedCount: 0, completedCount: 0, totalItems: draft.config.sourceKind === 'local-files' ? draft.config.localMediaPaths.length : draft.config.sourceCount,
+          steps: buildAutomationWorkflow(id, draft.config, draft.goal),
+          items: [], logs: [{ id: 1, jobId: id, level: 'info', message: 'Browser preview job saved.', createdAt: at }]
+        }
+        automationJobDetails.unshift(job)
+        automationJobCbs.forEach((cb) => cb(job))
+        return job
+      },
+      jobs: async () => automationJobDetails,
+      job: async (id: string) => automationJobDetails.find((j) => j.id === id) ?? null,
+      pauseJob: async (id: string) => { const j = automationJobDetails.find((x) => x.id === id); if (j) { j.status = 'paused'; automationJobCbs.forEach((cb) => cb(j)) } },
+      resumeJob: async (id: string) => { const j = automationJobDetails.find((x) => x.id === id); if (j) { j.status = 'queued'; automationJobCbs.forEach((cb) => cb(j)) } },
+      cancelJob: async (id: string) => { const j = automationJobDetails.find((x) => x.id === id); if (j) { j.status = 'cancelled'; automationJobCbs.forEach((cb) => cb(j)) } },
+      retryJob: async (id: string) => { const j = automationJobDetails.find((x) => x.id === id); if (j) { j.status = 'queued'; j.error = undefined; automationJobCbs.forEach((cb) => cb(j)) } }
     }),
     onActivity: (cb: (row: ActivityRow) => void) => { activityCbs.push(cb); return noop },
     onScrapeProgress: () => noop,
     onDownloadProgress: (cb: (p: DownloadProgress) => void) => { dlCbs.push(cb); return noop },
     onTranscribeProgress: () => noop,
     onRenderProgress: (cb: (p: RenderProgress) => void) => { renderCbs.push(cb); return noop },
-    onAutomation: (cb: (p: AutomationEvent) => void) => { automationCbs.push(cb); return noop }
+    onAutomation: (cb: (p: AutomationEvent) => void) => { automationCbs.push(cb); return noop },
+    onAutomationJob: (cb: (p: AutomationJob) => void) => { automationJobCbs.push(cb); return noop }
   }
 
   function catalogFor(url: string): ScrapedVideo[] {

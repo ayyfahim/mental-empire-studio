@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { buildGpuRenderSpec, buildImageSpecs } from '../../electron/services/engine/gpu/spec'
 import { activeImageIndex } from '../../shared/renderSpec'
+import { transitionProgressFor } from '../../src/render-worker/compositor'
 import type { BrollManifestSegment } from '../../electron/services/broll'
 import type { AppSettings, Project } from '../../shared/types'
 
@@ -70,5 +71,10 @@ describe('GPU B-roll spec builder', () => {
     expect(activeImageIndex(activeSegs, 3)).toBe(0)
     expect(activeImageIndex(activeSegs, 8)).toBe(1)
     expect(activeImageIndex(activeSegs, 15)).toBe(1) // clamps to last
+  })
+
+  it('never blends B-roll into the empty next-video texture', () => {
+    expect(transitionProgressFor(true, true, 0.1, 0.4)).toBe(0)
+    expect(transitionProgressFor(false, true, 0.1, 0.4)).toBeCloseTo(0.75)
   })
 })

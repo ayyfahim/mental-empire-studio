@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import type { AppSettings, ScrapedVideo } from '../../shared/types'
 import { resolveBinDir, resolveYtdlpPath } from './bin'
-import { formatOutputName } from './audio'
+import { formatOutputName, probeDuration } from './audio'
 import { L } from './logger'
 
 /** Vendored ffmpeg dir if present, else undefined → yt-dlp falls back to PATH.
@@ -38,6 +38,15 @@ export interface DownloadParams {
   bitrate: number
   settings: AppSettings
   onProgress?: (pct: number) => void
+  delaySec?: number
+  supervised?: boolean
+}
+
+export class DownloadFailure extends Error {
+  constructor(message: string, public readonly details: { httpStatus?: number; exitCode?: number | null; stderr?: string; stderrCategory?: string; retryAfterSec?: number }) {
+    super(message)
+    this.name = 'DownloadFailure'
+  }
 }
 
 const runningDownloads = new Map<string, ChildProcess>()
@@ -75,13 +84,30 @@ export function targetPath(outDir: string, channel: string, title: string): stri
   return join(outDir, `${formatOutputName('{channel} - {title}', { channel, title })}.mp3`)
 }
 
+function quarantineIncomplete(dest: string): void {
+  const stamp = Date.now()
+  const stem = basename(dest, '.mp3')
+  const candidates = existsSync(dirname(dest))
+    ? readdirSync(dirname(dest)).filter((name) => name === basename(dest) || (name.startsWith(`${stem}.`) && /\.(?:part|ytdl)$/i.test(name)))
+    : []
+  for (const name of candidates) {
+    const path = join(dirname(dest), name)
+    try { renameSync(path, `${path}.partial-${stamp}`) } catch { /* keep the original for diagnostics if quarantine is unavailable */ }
+  }
+}
+
+async function isVerifiedAudio(path: string): Promise<boolean> {
+  if (!existsSync(path) || statSync(path).size < 1024) return false
+  try { return (await probeDuration(path)) > 0 } catch { return false }
+}
+
 export async function downloadAudio(params: DownloadParams): Promise<DownloadResult> {
   const { video, downloadId, channel, outDir, bitrate, settings, onProgress } = params
   mkdirSync(outDir, { recursive: true })
   const dest = targetPath(outDir, channel, video.title)
 
   // Resume: a finished file is reused, never re-downloaded.
-  if (existsSync(dest) && statSync(dest).size > 0) {
+  if (await isVerifiedAudio(dest)) {
     onProgress?.(100)
     return { filePath: dest, skipped: true }
   }
@@ -90,11 +116,23 @@ export async function downloadAudio(params: DownloadParams): Promise<DownloadRes
   const fixture = process.env['ME_DOWNLOAD_FIXTURE']
   if (fixture) {
     copyFileSync(fixture, dest)
+    if (!await isVerifiedAudio(dest)) throw new DownloadFailure('Download fixture did not produce valid audio.', { stderrCategory: 'invalid-media' })
     onProgress?.(100)
     return { filePath: dest, skipped: false }
   }
 
-  await runYtdlpDownload(video, dest, bitrate, settings, onProgress, downloadId)
+  // A tiny/truncated file is never a completed cache hit. Quarantine it before yt-dlp
+  // resumes so a stale artifact cannot be mistaken for success on the next attempt.
+  quarantineIncomplete(dest)
+  if ((params.delaySec ?? 0) > 0) {
+    const delayMs = Math.round((params.delaySec as number) * 1000 + Math.random() * 750)
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs))
+  }
+  await runYtdlpDownload(video, dest, bitrate, settings, onProgress, downloadId, !!params.supervised)
+  if (!await isVerifiedAudio(dest)) {
+    quarantineIncomplete(dest)
+    throw new DownloadFailure('Download completed without a valid, non-empty audio stream.', { stderrCategory: 'invalid-media' })
+  }
   return { filePath: dest, skipped: false }
 }
 
@@ -104,7 +142,8 @@ function runYtdlpDownload(
   bitrate: number,
   settings: AppSettings,
   onProgress?: (pct: number) => void,
-  downloadId?: string
+  downloadId?: string,
+  supervised = false
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const a = settings.autoScrape
@@ -118,7 +157,7 @@ function runYtdlpDownload(
       '--js-runtimes', 'node',
       // Self-recover from transient network stalls before our watchdog has to step in.
       '--socket-timeout', '30',
-      '--retries', '3',
+      '--retries', supervised ? '0' : '3',
       '-o', dest.replace(/\.mp3$/, '.%(ext)s')
     ]
     const ffmpegDir = vendoredFfmpegDir()
@@ -129,7 +168,8 @@ function runYtdlpDownload(
     args.push(watchUrl(video.id))
 
     const bin = resolveYtdlpPath()
-    L.info(`yt-dlp download: ${bin} ${args.join(' ')}`)
+    const safeArgs = args.map((arg, index) => args[index - 1] === '--cookies' ? '[configured-cookie-file]' : args[index - 1] === '--proxy' ? '[configured-proxy]' : arg)
+    L.info(`yt-dlp download: ${bin} ${safeArgs.join(' ')}`)
     if (!existsSync(bin)) L.error(`yt-dlp binary missing at ${bin} — download will fail`)
     const child = spawn(bin, args, { windowsHide: true })
     if (downloadId) runningDownloads.set(downloadId, child)
@@ -176,8 +216,15 @@ function runYtdlpDownload(
         onProgress?.(100)
         resolve()
       } else {
-        L.error(`yt-dlp download failed (${code}) for "${video.title}": ${err.slice(0, 600)}`)
-        reject(new Error(`yt-dlp download failed (${code}): ${err.slice(0, 300)}`))
+        const safeStderr = err.replace(/([?&](?:key|token|signature|sig)=)[^&\s]+/gi, '$1[redacted]').slice(0, 500)
+        L.error(`yt-dlp download failed (${code}) for "${video.title}": ${safeStderr}`)
+        const httpStatus = Number(safeStderr.match(/HTTP Error (\d{3})|\b(403|429)\b/i)?.slice(1).find(Boolean)) || undefined
+        const stderrCategory = /login required|sign in|cookies? required|confirm you(?:'re| are) not a bot/i.test(safeStderr)
+          ? 'authentication' : /private|members?-only/i.test(safeStderr) ? 'private' : /age|region|country/i.test(safeStderr) ? 'restriction'
+            : httpStatus ? `http-${httpStatus}` : 'ytdlp'
+        const retryAfterSec = Number(safeStderr.match(/retry-after\s*[:=]\s*(\d+)/i)?.[1]) || undefined
+        quarantineIncomplete(dest)
+        reject(new DownloadFailure(`yt-dlp download failed (${code ?? 'unknown'}): ${safeStderr.slice(0, 300)}`, { httpStatus, exitCode: code, stderr: safeStderr, stderrCategory, retryAfterSec }))
       }
     })
   })

@@ -5,7 +5,9 @@ import { dirname, join } from 'node:path'
 import type { AppSettings, BetaVideoOpts, Project, ProjectImage, RenderCapabilities } from '../../shared/types'
 import { projectVideoOpts } from '../../shared/types'
 import type { EffectPlan } from '../../shared/effectPlan'
+import { limitPunchHits } from '../../shared/captionStyle'
 import { resolutionFor, type CaptionAspect } from './captions'
+import { effectiveMotionPreset, imageMotionFor } from './engine/gpu/spec'
 import { FALLBACK_CAPS, selectEncoder } from './engine/encoder'
 import { FPS, LONG_FORM_FAST_SEC, crfFor } from './engine/render-config'
 import { createProgressSmoother, parseFfmpegProgressBlock, type FfmpegProgress } from './engine/progress'
@@ -40,22 +42,77 @@ function longFormFastPath(project: Pick<Project, 'durationSec'>): boolean {
   return project.durationSec >= LONG_FORM_FAST_SEC
 }
 
-function punchZoomFilter(project: Project, beta: BetaVideoOpts, w: number, h: number, allowCpuMotion: boolean): string {
-  const preset = project.motionPreset ?? (project.kenBurns ? 'subtle' : 'off')
-  const requested = preset !== 'off' && (project.punchZoom || beta.autoZoom.atKeyPhrases)
-  return requested && !longFormFastPath(project) && allowCpuMotion
-    ? `,zoompan=z='min(zoom+0.0015,1.08)':d=1:s=${w}x${h}:fps=${FPS}`
-    : ''
+/** Eased progress expression 0→1 over `frames` output frames (smoothstep — avoids
+ *  the visible linear "conveyor" feel and per-frame stepping of the old constant
+ *  increment). `on` is zoompan's output-frame counter. */
+function easedProgressExpr(frames: number): string {
+  const p = `min(1,on/${Math.max(1, frames)})`
+  return `(pow(${p},2)*(3-2*${p}))`
 }
 
-function stillMotionFilter(project: Project, beta: BetaVideoOpts, index: number, frames: number, w: number, h: number, allowCpuMotion: boolean): string {
-  const preset = project.motionPreset ?? (project.kenBurns ? 'subtle' : 'off')
-  const requested = preset !== 'off' || (beta.autoZoom.atStart && index === 0)
-  const maxZoom = preset === 'cinematic' ? 1.2 : 1.1
-  const inc = ((maxZoom - 1) / Math.max(1, frames)).toFixed(7)
-  return requested && !longFormFastPath(project) && allowCpuMotion
-    ? `,zoompan=z='min(zoom+${inc},${maxZoom.toFixed(2)})':d=${frames}:s=${w}x${h}:fps=${FPS}`
-    : `,fps=${FPS}`
+/**
+ * Punch-zoom + intro push-in as a single zoompan pass applied to the finished footage
+ * BEFORE captions are burned (so text stays steady while the shot punches — matching
+ * the GPU compositor). Pulses use the shared envelope (quick ~0.08s attack, ~0.37s
+ * decay, +7%) at the rate-limited hit times; the intro eases 1.09→1 over 1.2s.
+ * Returns '' when there is nothing to do.
+ */
+export function punchZoomFilter(
+  project: Project,
+  beta: BetaVideoOpts,
+  hits: number[] | undefined,
+  w: number,
+  h: number
+): string {
+  if (longFormFastPath(project)) return ''
+  // An explicit Motion "Static" keeps the whole frame still — the zoom toggles in the
+  // Style tab auto-arm motion, so this only bites when the user forced Static.
+  if (effectiveMotionPreset(project, beta.autoZoom.atStart) === 'off') return ''
+  const wantsPunch = project.punchZoom || beta.autoZoom.atKeyPhrases
+  const pulses = wantsPunch ? limitPunchHits(hits ?? []) : []
+  const intro = beta.autoZoom.atStart
+  if (!pulses.length && !intro) return ''
+  const t = `(on/${FPS})`
+  const terms = pulses.map((hit) => {
+    const T = hit.toFixed(2)
+    // punchEnvelope(t, T): attack (t-T)/0.08 for 80ms, then decay 1-((t-T)-0.08)/0.37.
+    return `if(lt(${t}-${T},0),0,if(lt(${t}-${T},0.08),(${t}-${T})/0.08,max(0,1-((${t}-${T})-0.08)/0.37)))`
+  })
+  const pulseExpr = terms.length ? `(1+0.07*(${terms.join('+')}))` : '1'
+  // introZoomAt(t): 1.09 → 1 with cubic ease-out over the first 1.2 seconds.
+  const introExpr = intro ? `(1.09-0.09*(1-pow(1-min(1,${t}/1.2),3)))` : '1'
+  const z = introExpr === '1' ? pulseExpr : pulseExpr === '1' ? introExpr : `${introExpr}*${pulseExpr}`
+  return `zoompan=z='${z}':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d=1:s=${w}x${h}:fps=${FPS}`
+}
+
+/**
+ * Real Ken Burns for one still: zoom AND pan with smoothstep easing, derived from the
+ * SAME per-image motion model the GPU preview uses (imageMotionFor), so what you see
+ * in Compose is what ffmpeg renders. Applies regardless of the selected encoder —
+ * filters always run on the CPU side of the graph anyway; only long-form renders skip
+ * motion (it doubles the filter cost of a 10+ minute video for little visible gain).
+ */
+export function stillMotionFilter(
+  project: Project,
+  beta: BetaVideoOpts,
+  image: Pick<ProjectImage, 'ord' | 'motionPreset' | 'motionDirection' | 'motionAmount'> | undefined,
+  index: number,
+  frames: number,
+  w: number,
+  h: number
+): string {
+  const preset = image?.motionPreset ?? effectiveMotionPreset(project, beta.autoZoom.atStart)
+  if (preset === 'off' || longFormFastPath(project)) return `,fps=${FPS}`
+  const m = imageMotionFor(image?.ord ?? index, project.seed, preset, {
+    direction: image?.motionDirection,
+    amount: image?.motionAmount
+  })
+  if (!m) return `,fps=${FPS}`
+  const e = easedProgressExpr(frames)
+  const z = `${m.zoomFrom.toFixed(4)}+${(m.zoomTo - m.zoomFrom).toFixed(4)}*${e}`
+  const x = `max(0,min(iw-iw/zoom,(iw-iw/zoom)/2-(${m.panX.toFixed(4)})*${e}*iw))`
+  const y = `max(0,min(ih-ih/zoom,(ih-ih/zoom)/2-(${m.panY.toFixed(4)})*${e}*ih))`
+  return `,fps=${FPS},zoompan=z='${z}':x='${x}':y='${y}':d=1:s=${w}x${h}:fps=${FPS}`
 }
 
 function codecArgsForFilterOutput(
@@ -176,8 +233,17 @@ export function dimensions(quality: AppSettings['quality'], aspect: CaptionAspec
 }
 
 /** Escape an .ass path for use inside the subtitles= filter. */
-function assForFilter(p: string): string {
+export function assForFilter(p: string): string {
   return p.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'")
+}
+
+/** Directory of the bundled caption TTFs, handed to libass via subtitles=fontsdir so
+ *  the preset fonts render identically on every machine (no system-font roulette). */
+export function captionFontsDir(): string | undefined {
+  const packaged = process.resourcesPath ? join(process.resourcesPath, 'fonts') : ''
+  if (packaged && existsSync(packaged)) return packaged
+  const dev = join(process.cwd(), 'resources', 'fonts')
+  return existsSync(dev) ? dev : undefined
 }
 
 /** Beta "background overlay": smooth alpha ramp cached as a tiny PAM image.
@@ -229,7 +295,9 @@ function pushFinishedVideo(
   opts: { overlayIdx?: number; assPath: string; punch: string; afterSubtitles?: string; prefix: string }
 ): void {
   const base = `${opts.prefix}base`
-  const activeFilters = filters.filter(Boolean)
+  // The punch-zoom runs on the footage BEFORE the caption burn so the text stays
+  // steady while the shot pulses (matching the GPU compositor's layering).
+  const activeFilters = [...filters, opts.punch].filter(Boolean)
   parts.push(`${source}${activeFilters.length ? activeFilters.join(',') : 'null'}[${base}]`)
   let current = base
   if (opts.overlayIdx != null) {
@@ -237,7 +305,9 @@ function pushFinishedVideo(
     parts.push(`[${current}][${opts.overlayIdx}:v]overlay=0:0:format=auto[${over}]`)
     current = over
   }
-  parts.push(`[${current}]subtitles='${assForFilter(opts.assPath)}'${opts.punch}${opts.afterSubtitles ?? ''}[v]`)
+  const fontsDir = captionFontsDir()
+  const fontsArg = fontsDir ? `:fontsdir='${assForFilter(fontsDir)}'` : ''
+  parts.push(`[${current}]subtitles='${assForFilter(opts.assPath)}'${fontsArg}${opts.afterSubtitles ?? ''}[v]`)
 }
 
 export interface RenderInputs {
@@ -269,6 +339,8 @@ export interface RenderInputs {
   previewDimensions?: { w: number; h: number }
   /** CPU preview renders should favor speed over quality; GPU choices remain strict. */
   cpuPreset?: 'ultrafast' | 'veryfast'
+  /** rate-limited punch-zoom hit times (seconds) from the caption build */
+  punchHits?: number[]
 }
 
 /** The transition type/duration to use at a segment boundary: the nearest planned
@@ -299,7 +371,6 @@ export function buildRenderArgs(inp: RenderInputs): string[] {
   const { w, h } = inp.previewDimensions ?? dimensions(settings.quality, project.captionAspect)
   const cf = typeof project.crossfade === 'number' ? project.crossfade : 0
   const longForm = longFormFastPath(project)
-  const allowCpuMotion = (settings.encoder ?? 'cpu') === 'cpu'
   const effectiveCf = longForm ? 0 : cf
   // Project video effects are no-op by default and are not gated by the legacy
   // global beta toggle. A saved project option should render exactly as previewed.
@@ -327,7 +398,7 @@ export function buildRenderArgs(inp: RenderInputs): string[] {
 
     const parts: string[] = []
     const grade = gradeChain(beta.style, project).replace(/,+$/, '')
-    const punch = punchZoomFilter(project, beta, w, h, allowCpuMotion)
+    const punch = punchZoomFilter(project, beta, inp.punchHits, w, h)
     pushFinishedVideo(parts, '[0:v]', useCudaFinal
       ? [`scale_cuda=w=${w}:h=${h}:force_original_aspect_ratio=increase`, 'hwdownload', 'format=nv12', `crop=${w}:${h}`, 'setsar=1', `fps=${FPS}`, grade]
       : [`scale=${w}:${h}:force_original_aspect_ratio=increase`, `crop=${w}:${h}`, 'setsar=1', `fps=${FPS}`, grade], {
@@ -392,7 +463,7 @@ export function buildRenderArgs(inp: RenderInputs): string[] {
     }
 
     const grade = gradeChain(beta.style, project).replace(/,+$/, '')
-    const punch = punchZoomFilter(project, beta, w, h, allowCpuMotion)
+    const punch = punchZoomFilter(project, beta, inp.punchHits, w, h)
     pushFinishedVideo(parts, `[${last}]`, [grade], { overlayIdx, assPath, punch, prefix: 'bd' })
     const aMap = audioWithSfx(parts, audioIdx, sfxIdx)
     const crf = crfFor(settings.quality)
@@ -416,7 +487,7 @@ export function buildRenderArgs(inp: RenderInputs): string[] {
   if (inp.videoBedPath) {
     const overlayPath = overlayGradientPath(beta.overlay, w, h)
     const grade = gradeChain(beta.style, project).replace(/,+$/, '')
-    const punch = punchZoomFilter(project, beta, w, h, allowCpuMotion)
+    const punch = punchZoomFilter(project, beta, inp.punchHits, w, h)
     const crfBed = crfFor(settings.quality)
     const bedParts: string[] = []
     const sfxIdx = inp.sfxPath ? 2 : null
@@ -471,7 +542,7 @@ export function buildRenderArgs(inp: RenderInputs): string[] {
     // Ken Burns is intentionally disabled on long-form jobs: with burned captions it
     // becomes a second full-video CPU filter pass and made image-only renders as slow
     // as B-roll on the user's 19-minute tests.
-    const motion = stillMotionFilter(project, beta, i, frames, w, h, allowCpuMotion)
+    const motion = stillMotionFilter(project, beta, im, i, frames, w, h)
     parts.push(`${base}${motion}[v${i}]`)
   })
 
@@ -497,8 +568,8 @@ export function buildRenderArgs(inp: RenderInputs): string[] {
 
   // Beta darkening gradient goes under the captions (applied before the subtitles burn).
   const grade = gradeChain(beta.style, project).replace(/,+$/, '')
-  // Burn captions; punch-zoom adds a subtle pulse when enabled (project flag or beta key-phrases).
-  const punch = punchZoomFilter(project, beta, w, h, allowCpuMotion)
+  // Punch-zoom pulses on emphasized words + the intro push-in, before the caption burn.
+  const punch = punchZoomFilter(project, beta, inp.punchHits, w, h)
   pushFinishedVideo(parts, `[${last}]`, [grade], { overlayIdx, assPath, punch, prefix: 'img' })
   const aMap = audioWithSfx(parts, audioIdx, sfxIdx)
 
@@ -543,8 +614,8 @@ export async function runRender(inp: RenderInputs, onProgress?: (p: FfmpegProgre
       const caps = inp.caps ?? FALLBACK_CAPS
       const gpuEncode = enc !== 'cpu'
       const cudaScale = args.some((arg) => arg.includes('scale_cuda') || arg.includes('hwupload_cuda') || arg.includes('hwdownload'))
-      const motion = (inp.settings.encoder ?? 'cpu') === 'cpu'
-      appendFileSync(inp.logPath, `\n[render] encoder=${enc} encode=${gpuEncode ? 'GPU' : 'CPU'} scale=${cudaScale ? 'GPU(cuda)' : 'CPU'} subtitles=CPU(libass) kenBurns/punch=${motion ? 'on' : 'off (disabled when a GPU encoder is selected, to keep filters light)'} quality=${inp.settings.quality}${inp.previewDimensions ? ` preview=${inp.previewDimensions.w}x${inp.previewDimensions.h}` : ''} durationSec=${inp.project.durationSec.toFixed(2)}\n`)
+      const motion = args.some((arg) => arg.includes('zoompan'))
+      appendFileSync(inp.logPath, `\n[render] encoder=${enc} encode=${gpuEncode ? 'GPU' : 'CPU'} scale=${cudaScale ? 'GPU(cuda)' : 'CPU'} subtitles=CPU(libass) kenBurns/punch=${motion ? 'on' : 'off (static preset or long-form fast path)'} quality=${inp.settings.quality}${inp.previewDimensions ? ` preview=${inp.previewDimensions.w}x${inp.previewDimensions.h}` : ''} durationSec=${inp.project.durationSec.toFixed(2)}\n`)
       appendFileSync(inp.logPath, `\n[ffmpeg]\n${ffmpegCommandLine(args)}\n`)
     }
     try {

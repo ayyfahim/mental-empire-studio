@@ -20,6 +20,12 @@ function videosTab(url: string): string {
   return /\/(videos|streams|shorts|about)$/.test(base) ? base : `${base}/videos`
 }
 
+/** Video and playlist URLs are already concrete collections. Appending `/videos`
+ * turns a valid input into a nonexistent URL, so only channel-like URLs use the tab. */
+function isConcreteYoutubeUrl(url: string): boolean {
+  return /youtu\.be\//i.test(url) || /youtube\.com\/(?:watch|playlist|shorts)\b/i.test(url) || /[?&]list=/i.test(url)
+}
+
 function handleOf(data: YtdlpPlaylist, fallbackUrl: string): string {
   if (data.uploader_id && data.uploader_id.startsWith('@')) return data.uploader_id
   const m = fallbackUrl.match(/@([A-Za-z0-9_.-]+)/)
@@ -63,7 +69,8 @@ export async function scrapeChannel(
 ): Promise<ScrapedChannel> {
   const base = channelUrl(handleOrUrl)
   const rawChannelUrl = base.replace(/\/(videos|streams|shorts|about)$/, '')
-  const targetUrl = videosTab(rawChannelUrl)
+  const concrete = isConcreteYoutubeUrl(base)
+  const targetUrl = concrete ? base : videosTab(rawChannelUrl)
   let data: YtdlpPlaylist
   try {
     data = await runYtdlpJson(targetUrl, { ...ytdlpOptionsFromSettings(settings), ...fetch })
@@ -74,7 +81,8 @@ export async function scrapeChannel(
       throw err
     }
   }
-  const videos = (data.entries ?? []).filter((e): e is YtdlpEntry => !!e).map(toScrapedVideo)
+  const entries = data.entries ?? (data.id && data.title ? [data as YtdlpEntry] : [])
+  const videos = entries.filter((e): e is YtdlpEntry => !!e).map(toScrapedVideo)
   const summedViews = videos.reduce((a, v) => a + v.views, 0)
   // yt-dlp exposes the channel avatar as `thumbnail` at the playlist level, or as the
   // highest-resolution entry in `thumbnails`. Prefer an https URL; ignore data URIs.

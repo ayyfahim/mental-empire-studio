@@ -60,7 +60,7 @@ describe('buildRenderArgs — still-image ffmpeg path', () => {
   } as unknown as Project
   const image = { id: 'im1', projectId: 'p1', ord: 0, path: 'still.png', thumb: 'still-thumb.jpg', rangeStart: 0, rangeEnd: 12, manual: false } as ProjectImage
 
-  it('uses CPU filters plus NVENC encode for ordinary still-image renders', () => {
+  it('uses CPU motion filters plus NVENC encode for ordinary still-image renders', () => {
     const args = buildRenderArgs({
       project,
       images: [image],
@@ -75,7 +75,9 @@ describe('buildRenderArgs — still-image ffmpeg path', () => {
     expect(joined).not.toContain('hwupload_cuda')
     expect(joined).not.toContain('hwdownload')
     expect(joined).toContain('h264_nvenc')
-    expect(joined).not.toContain('zoompan')
+    // This fixture explicitly enables Ken Burns motion, so the CPU filtergraph
+    // should keep the seeded zoom/pan while NVENC handles only the encode.
+    expect(joined).toContain('zoompan')
   })
 
   it('does not use CUDA filters on CPU renders', () => {

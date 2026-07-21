@@ -4,6 +4,20 @@
 
 import type { GpuRenderSpec } from './renderSpec'
 import type { GpuEngineStatus } from './gpuStatus'
+import type {
+  ProviderCapabilities,
+  ProviderConnection,
+  ProviderJob,
+  ProviderLanguage,
+  ProviderMotion,
+  ProviderMotionQuery,
+  ProviderProjectSummary,
+  ProviderVoice,
+  TalkingPhotosAspectRatio,
+  TalkingPhotosCreateInput,
+  TalkingPhotosRemoteMedia,
+  TalkingPhotosScriptCreateInput
+} from './talkingphotos'
 
 export type AccentName = 'Amber' | 'Violet' | 'Emerald' | 'Crimson'
 
@@ -21,6 +35,7 @@ export type ScreenKey =
   | 'niches'
   | 'profiles'
   | 'settings'
+  | 'talking-video'
 
 export type UploadStatus = 'Uploaded' | 'Scheduled' | 'Draft'
 
@@ -213,9 +228,27 @@ export interface RecentUpload {
 /** An image previously used in some project, kept around so a later project targeting the
  *  same channel can reuse the same set instead of re-picking from disk. */
 export interface LibraryAsset {
+  /** Stable content-addressed id. Legacy rows derive this during migration. */
+  id: string
+  /** Canonical shared-library file. `path` is retained as a compatibility alias. */
   path: string
+  canonicalPath: string
+  originalPath?: string
+  sourceId?: string
   channel: string
+  channelHandle?: string
+  channelAvatar?: string
+  thumbnailPath?: string
+  mimeType?: string
+  width?: number
+  height?: number
+  fileSize?: number
   addedAt: string
+  firstAddedAt: string
+  lastUsedAt: string
+  usageCount: number
+  missing: boolean
+  projectId?: string
 }
 
 export interface GoalsPatch {
@@ -283,6 +316,263 @@ export interface AutomationEvent {
   step?: { current: number; total: number; label?: string }
   /** project ids created this run (for the interactive quick-edit) */
   projectIds?: string[]
+}
+
+// ---- Durable goal-based automation (persistent local worker) ----
+export type AutomationGoal =
+  | 'source-to-export'
+  | 'talkingphotos-video'
+  | 'download-edit'
+  | 'long-to-shorts'
+  | 'images-to-video'
+  | 'transcribe-subtitle'
+  | 'multi-platform'
+  | 'batch-source'
+  | 'apply-style'
+  | 'review-export'
+
+export type AutomationJobStatus =
+  | 'queued'
+  | 'running'
+  | 'pausing'
+  | 'paused'
+  | 'attention'
+  | 'completed'
+  | 'completed_with_warnings'
+  | 'failed'
+  | 'cancelled'
+
+export type AutomationStepStatus = 'pending' | 'running' | 'completed' | 'warning' | 'skipped' | 'failed' | 'paused'
+export type AutomationItemStatus = 'waiting' | 'processing' | 'completed' | 'warning' | 'skipped' | 'failed' | 'cancelled'
+export type AutomationErrorKind =
+  | 'temporary'
+  | 'user_action'
+  | 'unsupported_input'
+  | 'missing_asset'
+  | 'authentication'
+  | 'download'
+  | 'transcription'
+  | 'editing'
+  | 'export'
+  | 'storage'
+  | 'connection'
+  | 'interruption'
+  | 'resource'
+
+export interface AutomationRules {
+  minDurationSec: number
+  skipDownloaded: boolean
+  continueOnError: boolean
+  maxRetries: number
+  minimumFreeSpaceGb: number
+  captions: boolean
+  autoBroll: boolean
+  removeSilence: boolean
+  reduceFillerWords: boolean
+  keepAwake: boolean
+  /** Skip videos already published to the linked owned channel. */
+  skipUploaded: boolean
+  /** Explicit selections are never substituted unless this opt-in is true. */
+  fillSkippedSelections: boolean
+  allowStaleUploadCache: boolean
+  uploadFreshnessMinutes: number
+  /** Delay immediately before a real YouTube request; cache/local paths bypass it. */
+  downloadDelaySec: number
+  retryBaseDelaySec: number
+  retryMaxDelaySec: number
+}
+
+export type AutomationBrollFallbackPolicy = 'selected-only' | 'prefer-selected' | 'all-sources'
+export type AutomationBrollShufflePolicy = 'per-video' | 'ranked'
+export type AutomationGradientEdge = 'none' | 'top' | 'bottom' | 'left' | 'right'
+
+/** One shared style contract from setup through project, preview, and final render. */
+export interface AutomationStyleConfig {
+  videoStyle: VideoStyle
+  captionPreset: string
+  captionFont: string
+  captionAnimation: string
+  captionPosition: 'top' | 'middle' | 'bottom'
+  captionOffsetY?: number
+  captionLines: 1 | 2 | 3
+  captionPace: 'auto' | 'word' | 'phrase'
+  wordsPerCaption: 1 | 2 | 3
+  highlightColor: string
+  boxColor: string
+  imageMode: ImageMode
+  crossfadeSec: number
+  motionPreset: MotionPreset
+  gradientEdge: AutomationGradientEdge
+  gradientIntensity: number
+  aspectRatio: '16:9' | '1:1' | '9:16'
+  brollMode: 'off' | 'full' | 'overlay'
+  brollDensity: BrollDensity
+  brollPoolSize: number
+  brollPoolKey?: string
+  brollFallbackPolicy: AutomationBrollFallbackPolicy
+  brollShufflePolicy: AutomationBrollShufflePolicy
+}
+
+export type AutomationUploadMatchType = 'exact-id' | 'high-title' | 'ambiguous-title' | 'manual' | 'none'
+export interface AutomationSelectionDecision {
+  videoId: string
+  title: string
+  matchType: AutomationUploadMatchType
+  score: number
+  action: 'selected' | 'skipped-uploaded' | 'eligible-ambiguous' | 'excluded-duration'
+  matchedUploadId?: string
+  matchedTitle?: string
+}
+
+export interface AutomationItemStepState {
+  attempts: number
+  status: 'pending' | 'completed' | 'warning' | 'failed'
+  checkpoint?: Record<string, unknown>
+  error?: string
+}
+
+export interface AutomationJobConfig {
+  /** Where the production media comes from. Legacy jobs default to saved-source. */
+  sourceKind: 'saved-source' | 'youtube-url' | 'local-files'
+  sourceId: string
+  sourceUrl: string
+  sourceName: string
+  sourceOrder: ScrapeOrder
+  sourceCount: number
+  /** Optional explicit source video ids; empty means apply the automatic selection rules. */
+  selectedVideoIds: string[]
+  /** Local audio/video files selected by the user. Empty for YouTube-backed jobs. */
+  localMediaPaths: string[]
+  assetPaths: string[]
+  style: VideoStyle
+  captionPreset: string
+  aspectRatios: Array<'16:9' | '1:1' | '9:16'>
+  /** Canonical style contract. Legacy mirrors above remain readable. */
+  styleConfig: AutomationStyleConfig
+  rules: AutomationRules
+  /** TalkingPhotos-specific settings. The first assetPath is the character
+   * reference image; source downloads/local files provide the uploaded audio. */
+  talkingPhotos?: {
+    characterPrompt: string
+    characterNegativePrompt: string
+    style: 'normal' | 'high_quality'
+    aspectRatio: '16:9' | '1:1' | '9:16'
+    motionId: number
+    /** 'uploaded-audio' (default) preserves the original behavior exactly — real
+     *  downloaded/local audio submitted as-is. 'custom-script' feeds `script` through
+     *  TTS. 'transcript-tts' reconstructs a script from the item's own transcript and
+     *  feeds that through TTS instead of the original audio. */
+    mode: 'uploaded-audio' | 'custom-script' | 'transcript-tts'
+    script: string
+    language: string
+    voice: string
+    voiceStyle: string
+    speed: number
+    pitch: number
+    subtitleMode: 'none' | 'provider' | 'local'
+  }
+  notify: { desktop: boolean; webhook: boolean; sound: boolean; email: boolean }
+  execution: 'local'
+  scheduledFor?: string
+}
+
+export interface AutomationJobDraft {
+  name: string
+  goal: AutomationGoal
+  config: AutomationJobConfig
+}
+
+export interface AutomationWorkflowStep {
+  id: string
+  jobId: string
+  key: string
+  label: string
+  description: string
+  ord: number
+  status: AutomationStepStatus
+  progress: number
+  attempts: number
+  maxAttempts: number
+  runsOn: 'local' | 'online-service' | 'cloud'
+  optional: boolean
+  startedAt?: string
+  completedAt?: string
+  error?: string
+  checkpoint?: Record<string, unknown>
+}
+
+export interface AutomationJobItem {
+  id: string
+  jobId: string
+  sourceVideoId: string
+  title: string
+  status: AutomationItemStatus
+  currentStep: string
+  progress: number
+  attempts: number
+  stepStates?: Record<string, AutomationItemStepState>
+  selectionDecision?: AutomationSelectionDecision
+  brollSeed?: number
+  brollClipIds?: string[]
+  retryAt?: string
+  projectId?: string
+  renderJobId?: string
+  outputPath?: string
+  warning?: string
+  error?: string
+  updatedAt: string
+}
+
+export interface AutomationJobLog {
+  id: number
+  jobId: string
+  itemId?: string
+  level: 'info' | 'warning' | 'error'
+  message: string
+  createdAt: string
+}
+
+export interface AutomationJob {
+  id: string
+  name: string
+  goal: AutomationGoal
+  status: AutomationJobStatus
+  progress: number
+  currentStep: string
+  config: AutomationJobConfig
+  createdAt: string
+  updatedAt: string
+  startedAt?: string
+  completedAt?: string
+  lastCheckpointAt?: string
+  nextRetryAt?: string
+  pauseRequested: boolean
+  cancelRequested: boolean
+  warningCount: number
+  failedCount: number
+  completedCount: number
+  totalItems: number
+  errorKind?: AutomationErrorKind
+  error?: string
+  result?: { outputPaths: string[]; summary: string }
+}
+
+export interface AutomationJobDetail extends AutomationJob {
+  steps: AutomationWorkflowStep[]
+  items: AutomationJobItem[]
+  logs: AutomationJobLog[]
+}
+
+export interface AutomationPreflight {
+  ok: boolean
+  blockers: string[]
+  warnings: string[]
+  estimatedStorageGb: number
+  estimatedMinutes: number
+  sourceItems: number
+  powerMessage: string
+  appMessage: string
+  uploadDataState?: 'fresh' | 'stale' | 'unavailable' | 'not-linked'
 }
 
 // ---- Thumbnail editor model (req #4) ----
@@ -477,7 +767,16 @@ export interface BetaVideoOpts {
   /** automatic zoom — at the start, and/or punch-zoom on emphasized words */
   autoZoom: { atStart: boolean; atKeyPhrases: boolean }
   // ---- phase 2: themed b-roll pool ----
-  broll: { enabled: boolean; density: BrollDensity; poolSize: number; mode: 'full' | 'overlay' }
+  broll: {
+    enabled: boolean
+    density: BrollDensity
+    poolSize: number
+    mode: 'full' | 'overlay'
+    poolKey?: string
+    fallbackPolicy?: AutomationBrollFallbackPolicy
+    shufflePolicy?: AutomationBrollShufflePolicy
+    seed?: number
+  }
   // ---- phase 3: style + transition/text-effect plan ----
   style: VideoStyle
   /** optional manual/LLM-generated effect plan JSON (overrides the style's rule engine) */
@@ -499,7 +798,7 @@ export const DEFAULT_BETA_OPTS: BetaVideoOpts = {
   autoHighlight: false,
   overlay: { bottom: false, top: false, left: false, right: false, intensity: 50 },
   autoZoom: { atStart: false, atKeyPhrases: false },
-  broll: { enabled: false, density: 'sparse', poolSize: 18, mode: 'full' },
+  broll: { enabled: false, density: 'sparse', poolSize: 18, mode: 'full', fallbackPolicy: 'prefer-selected', shufflePolicy: 'per-video' },
   style: 'None',
   effectPlanJson: ''
 }
@@ -557,7 +856,11 @@ export function asBetaOpts(v: unknown): BetaVideoOpts {
       enabled: boolValue(broll.enabled, DEFAULT_BETA_OPTS.broll.enabled),
       density,
       poolSize: Math.round(clampNumber(broll.poolSize, DEFAULT_BETA_OPTS.broll.poolSize, 1, 200)),
-      mode
+      mode,
+      poolKey: typeof broll.poolKey === 'string' && broll.poolKey.trim() ? broll.poolKey.trim() : undefined,
+      fallbackPolicy: broll.fallbackPolicy === 'selected-only' || broll.fallbackPolicy === 'all-sources' ? broll.fallbackPolicy : 'prefer-selected',
+      shufflePolicy: broll.shufflePolicy === 'ranked' ? 'ranked' : 'per-video',
+      seed: broll.seed == null ? undefined : Math.round(clampNumber(broll.seed, 0, 0, 2_147_483_647))
     },
     style,
     effectPlanJson: stringValue(o.effectPlanJson, DEFAULT_BETA_OPTS.effectPlanJson)
@@ -588,6 +891,9 @@ export interface Project {
   captionAspect: '16:9' | '1:1' | '9:16'
   captionLines?: 1 | 2 | 3
   captionPosition?: 'top' | 'middle' | 'bottom'
+  /** fine vertical caption placement, % of frame height from the top (4–96);
+   *  overrides the coarse captionPosition when set */
+  captionOffsetY?: number
   captionPace?: 'auto' | 'word' | 'phrase'
   /** active/highlighted caption text colour (#rrggbb); Submagic uses this inside the box */
   captionHighlightColor?: string
@@ -637,6 +943,10 @@ export interface TranscribeProgress {
 export interface DownloadOptions {
   bitrate: number
   sourceUrl: string
+  /** Automation-only pacing before a real network request. */
+  delaySec?: number
+  /** Let the visible Automation supervisor own retry semantics. */
+  supervised?: boolean
 }
 
 // ---- Render pipeline (M6) ----
@@ -756,6 +1066,8 @@ export interface AppSettings {
   detection: { auto: boolean; confirmBand: [number, number] }
   /** duplicate-download behavior for source videos already uploaded to owned channels */
   dedup: { allowReupload: boolean }
+  /** third-party cloud provider connections, gated off by default until each is ready */
+  integrations: { talkingPhotos: { enabled: boolean } }
   /** global Sentry kill switch — crash reports, perf traces, and resource sampling.
    *  Flipping this off fully disables telemetry app-wide, live, no restart needed. */
   telemetryEnabled: boolean
@@ -798,6 +1110,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   features: { workflowP1: true, videoEditorV2: true, thumbEditorV2: true },
   detection: { auto: true, confirmBand: [0.6, 0.82] },
   dedup: { allowReupload: false },
+  integrations: { talkingPhotos: { enabled: false } },
   telemetryEnabled: true
 }
 
@@ -1033,6 +1346,8 @@ export interface NativeApi {
   assets: {
     /** every image used in a past project, grouped client-side by channel */
     list(): Promise<LibraryAsset[]>
+    /** Copy/dedupe images into the canonical library before project use. */
+    import(paths: string[], context?: { sourceId?: string; channel?: string; channelHandle?: string; channelAvatar?: string; projectId?: string }): Promise<LibraryAsset[]>
   }
   publish: {
     /** every finished render, with a fuzzy-matched upload status */
@@ -1054,6 +1369,54 @@ export interface NativeApi {
     deleteProfile(profileId: string): Promise<Profile[]>
     /** trigger one scheduler tick now */
     tick(): Promise<void>
+    /** inspect a goal configuration before persisting/starting it */
+    preflight(draft: AutomationJobDraft): Promise<AutomationPreflight>
+    /** persist a durable job and let the local supervisor run it */
+    createJob(draft: AutomationJobDraft): Promise<AutomationJobDetail>
+    /** list current and historical durable jobs */
+    jobs(): Promise<AutomationJob[]>
+    /** get steps, items and understandable logs for one durable job */
+    job(id: string): Promise<AutomationJobDetail | null>
+    pauseJob(id: string): Promise<void>
+    resumeJob(id: string): Promise<void>
+    cancelJob(id: string): Promise<void>
+    retryJob(id: string): Promise<void>
+  }
+  /** TalkingPhotos.ai cloud provider — session, catalogs, sync, and confirmed
+   *  uploaded-library-audio Human video creation. */
+  talkingPhotos: {
+    connectionStatus(): Promise<ProviderConnection>
+    connect(): Promise<ProviderConnection>
+    reconnect(): Promise<ProviderConnection>
+    disconnect(): Promise<ProviderConnection>
+    capabilities(): Promise<ProviderCapabilities>
+    languages(): Promise<ProviderLanguage[]>
+    voices(languageCode: string): Promise<ProviderVoice[]>
+    motions(query: ProviderMotionQuery): Promise<ProviderMotion[]>
+    /** locally-known provider jobs joined with a fresh remote project listing */
+    projects(): Promise<ProviderProjectSummary[]>
+    project(remoteProjectId: string): Promise<ProviderProjectSummary | null>
+    /** reconcile every non-terminal provider job against its remote project now */
+    sync(): Promise<ProviderJob[]>
+    jobs(): Promise<ProviderJob[]>
+    /** Create a Human video from local uploaded audio; long audio is segmented and merged. */
+    createUploadedAudio(input: TalkingPhotosCreateInput): Promise<ProviderJob>
+    /** Create a Human video from a custom script (or automation transcript
+     *  reconstruction) via TTS, gated behind the confirmed WebSocket resolution. */
+    createScript(input: TalkingPhotosScriptCreateInput): Promise<ProviderJob>
+    /** (re)download a completed job's output; safe to call repeatedly */
+    downloadOutput(providerJobId: string): Promise<ProviderJob>
+    subtitleLanguages(): Promise<ProviderLanguage[]>
+    /** Submit provider subtitles for an already-completed source video. */
+    createProviderSubtitles(sourceJobId: string, language?: string): Promise<ProviderJob>
+    /** Burn local captions onto an already-downloaded, verified output — mutually
+     *  exclusive with provider subtitles on the same video. */
+    applyLocalCaptions(providerJobId: string, aspect?: TalkingPhotosAspectRatio): Promise<ProviderJob>
+    /** Display-only TTS library listing for explicit, user-confirmed recovery —
+     *  never used to automatically infer a result. */
+    ttsRecoveryLibrary(): Promise<TalkingPhotosRemoteMedia[]>
+    /** Persist a user-confirmed manual recovery choice for an unresolved TTS job. */
+    confirmRecoveredTts(jobId: string, mediaId: string, durationSec: number): Promise<ProviderJob>
   }
   /** pick an output folder via the OS dialog; returns the chosen path or '' */
   chooseFolder(): Promise<string>
@@ -1088,6 +1451,14 @@ export interface NativeApi {
   onRenderProgress(cb: (p: RenderProgress) => void): () => void
   /** subscribe to profile-run events; returns an unsubscribe fn */
   onAutomation(cb: (e: AutomationEvent) => void): () => void
+  /** subscribe to durable automation job changes; SQLite remains source of truth */
+  onAutomationJob(cb: (job: AutomationJob) => void): () => void
+  /** subscribe to TalkingPhotos provider-job changes; provider_jobs remains source of truth */
+  onProviderJob(cb: (job: ProviderJob) => void): () => void
+  /** subscribe to TalkingPhotos connection-status changes; this is the only source of
+   *  progress/outcome once talkingPhotos.connect()'s login window is open — the
+   *  connect() promise itself resolves as soon as the window opens. */
+  onConnectionStatusChanged(cb: (connection: ProviderConnection) => void): () => void
 }
 
 declare global {

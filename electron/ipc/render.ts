@@ -8,12 +8,16 @@ import { runAll, outputDir } from '../services/queue'
 import { cancelRender, markCancelIntent } from '../services/render'
 import { safeName } from '../../shared/sanitize'
 import { itemDirForProject, itemThumbDir } from '../services/storage'
+import { cachedBrollClipCount, hasConfiguredBrollSource } from '../services/broll'
+import { effectiveBrollPool } from '../../shared/automationBroll'
+import { getSettings } from '../store/settings'
 
 // Render queue IPC (M6): the joined queue view, run-all, cancel, and an output
 // folder picker for the Render Queue screen.
 
 function jobsView(): RenderQueueRow[] {
   const repos = getRepos()
+  const settings = getSettings()
   const thumbsDir = join(outputDir(), 'thumbnails')
   return repos.renderJobs().map((job) => {
     const project = repos.getProject(job.projectId)
@@ -32,6 +36,12 @@ function jobsView(): RenderQueueRow[] {
     const missing: string[] = []
     if (!hasMp3) missing.push('MP3')
     if (!project?.durationSec || project.durationSec <= 0) missing.push('duration')
+    if (project && images.length === 0) {
+      const effectivePool = effectiveBrollPool({ projectBroll: projectVideoOpts(project).broll, sourceNichePoolKey: repos.nicheKeyForDownload(project.downloadId) })
+      const poolKey = effectivePool.poolKey
+      const brollAvailable = broll && (cachedBrollClipCount(poolKey) > 0 || (effectivePool.allowLive && hasConfiguredBrollSource(settings)))
+      if (!brollAvailable) missing.push('visual media')
+    }
     return {
       job,
       images: images.length,

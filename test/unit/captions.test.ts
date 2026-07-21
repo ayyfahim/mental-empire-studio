@@ -36,7 +36,7 @@ describe('buildAss — caption flicker fix (G1)', () => {
     expect(dialogueLines(ass).length).toBe(1)
   })
 
-  it('Submagic uses an active-word box and keeps ffmpeg fallback word-by-word', () => {
+  it('Boxed (legacy Submagic) uses a colour box and stays word-by-word', () => {
     const { ass } = buildAss(words(3), {
       ...base,
       preset: 'Submagic',
@@ -45,11 +45,13 @@ describe('buildAss — caption flicker fix (G1)', () => {
       highlightBox: { enabled: true, boxColor: '#00ff00', textColor: '#111111' }
     })
     const lines = dialogueLines(ass)
-    expect(lines.length).toBe(3)
-    expect(ass).toContain('&H0000FF00')
-    expect(ass).toContain('&H00111111')
-    expect(ass).toContain(',3,7,0,')
+    expect(lines.length).toBe(3) // one event per word even when phrase mode was asked
+    expect(ass).toContain('&H0000FF00') // box colour in the style's BackColour
+    expect(ass).toContain('&H00111111') // box text colour
+    expect(ass).toMatch(/,0,0,3,\d+(\.\d+)?,0,5,/) // BorderStyle 3 opaque box, alignment 5
+    // two-word pages: the first page shows both its words, never the next page's
     expect(lines[0]).toContain('WORD0')
-    expect(lines[0]).not.toContain('WORD1')
+    expect(lines[0]).toContain('WORD1')
+    expect(lines[0]).not.toContain('WORD2')
   })
 })

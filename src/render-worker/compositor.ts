@@ -1,5 +1,5 @@
 import type { GpuRenderSpec } from '@shared/renderSpec'
-import { activeImageIndex } from '@shared/renderSpec'
+import { activeImageIndex, introZoomAt, punchEnvelope } from '@shared/renderSpec'
 import type { LutTexture } from './lut'
 
 // WebGL2 compositor: one full-screen quad, one fragment shader that applies the whole
@@ -26,7 +26,8 @@ uniform sampler2D u_imgB;
 uniform sampler2D u_caption;
 uniform sampler2D u_lut;
 
-uniform float u_mix;          // crossfade A->B
+uniform float u_mix;          // transition progress A->B (0 = all A)
+uniform int   u_transMode;    // transition type (see transitionModeFor)
 uniform vec2  u_scaleA;       // ken-burns/punch zoom for A
 uniform vec2  u_scaleB;
 uniform vec2  u_panA;
@@ -56,10 +57,44 @@ float hash(vec2 p) {
   return fract(p.x * p.y);
 }
 
+vec3 sampleA(vec2 uv) { return texture(u_imgA, zoomUv(uv, u_scaleA, u_panA)).rgb; }
+vec3 sampleB(vec2 uv) { return texture(u_imgB, zoomUv(uv, u_scaleB, u_panB)).rgb; }
+
+// Style/plan transitions, mirroring the ffmpeg xfade types the render path uses:
+// 0 fade · 1 fadeblack · 2 fadewhite · 3 slide/wipe-left · 4 slide/wipe-right ·
+// 5 slideup · 6 slidedown · 7 zoomin · 8 dissolve/radial · 9 circleopen · 10 circleclose
 vec3 baseColor(vec2 uv) {
-  vec3 a = texture(u_imgA, zoomUv(uv, u_scaleA, u_panA)).rgb;
-  vec3 b = texture(u_imgB, zoomUv(uv, u_scaleB, u_panB)).rgb;
-  return mix(a, b, u_mix);
+  float m = clamp(u_mix, 0.0, 1.0);
+  if (m <= 0.0) return sampleA(uv);
+  if (u_transMode == 1) {
+    return m < 0.5 ? sampleA(uv) * (1.0 - m * 2.0) : sampleB(uv) * (m * 2.0 - 1.0);
+  } else if (u_transMode == 2) {
+    return m < 0.5 ? mix(sampleA(uv), vec3(1.0), m * 2.0) : mix(vec3(1.0), sampleB(uv), m * 2.0 - 1.0);
+  } else if (u_transMode >= 3 && u_transMode <= 6) {
+    vec2 dir = u_transMode == 3 ? vec2(1.0, 0.0)
+             : u_transMode == 4 ? vec2(-1.0, 0.0)
+             : u_transMode == 5 ? vec2(0.0, 1.0)
+             : vec2(0.0, -1.0);
+    float e = m * m * (3.0 - 2.0 * m); // smooth slide
+    vec2 uvA = uv + dir * e;
+    if (uvA.x >= 0.0 && uvA.x <= 1.0 && uvA.y >= 0.0 && uvA.y <= 1.0) return sampleA(uvA);
+    return sampleB(uvA - dir);
+  } else if (u_transMode == 7) {
+    float z = 1.0 + m * 0.45;
+    vec2 uvA = (uv - 0.5) / z + 0.5;
+    return mix(sampleA(uvA), sampleB(uv), smoothstep(0.35, 1.0, m));
+  } else if (u_transMode == 8) {
+    float n = hash(uv * vec2(917.0, 533.0));
+    float edge = smoothstep(m - 0.08, m + 0.08, n);
+    return mix(sampleB(uv), sampleA(uv), edge);
+  } else if (u_transMode == 9) {
+    float d = distance(uv, vec2(0.5));
+    return mix(sampleA(uv), sampleB(uv), smoothstep(m * 0.78, m * 0.78 - 0.06, d));
+  } else if (u_transMode == 10) {
+    float d = distance(uv, vec2(0.5));
+    return mix(sampleB(uv), sampleA(uv), smoothstep((1.0 - m) * 0.78, (1.0 - m) * 0.78 - 0.06, d));
+  }
+  return mix(sampleA(uv), sampleB(uv), m);
 }
 
 vec3 sampleLut(vec3 rgb) {
@@ -143,6 +178,40 @@ void main() {
   fragColor = vec4(col, 1.0);
 }`
 
+/** Map an ffmpeg xfade transition name onto the shader's mode int. Unknown names
+ *  degrade to a plain crossfade rather than failing. */
+export function transitionModeFor(type: string): number {
+  switch (type) {
+    case 'fadeblack': return 1
+    case 'fadewhite': return 2
+    case 'wipeleft':
+    case 'smoothleft': return 3
+    case 'wiperight':
+    case 'smoothright': return 4
+    case 'slideup': return 5
+    case 'slidedown': return 6
+    case 'zoomin': return 7
+    case 'dissolve':
+    case 'radial': return 8
+    case 'circleopen': return 9
+    case 'circleclose': return 10
+    default: return 0
+  }
+}
+
+/** B-roll is decoded one segment at a time, so no next-video texture exists for a
+ * dissolve. Keep those boundaries as hard cuts; still-image transitions retain the
+ * requested blend. Exported to make this black-frame regression unit-testable. */
+export function transitionProgressFor(
+  isBroll: boolean,
+  hasNext: boolean,
+  remainSec: number,
+  durationSec: number
+): number {
+  if (isBroll || !hasNext || remainSec >= durationSec) return 0
+  return Math.min(1, Math.max(0, (durationSec - remainSec) / durationSec))
+}
+
 function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
   const sh = gl.createShader(type)
   if (!sh) throw new Error('createShader failed')
@@ -201,7 +270,7 @@ export class Compositor {
     gl.enableVertexAttribArray(loc)
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0)
 
-    for (const name of ['u_imgA', 'u_imgB', 'u_caption', 'u_lut', 'u_mix', 'u_scaleA', 'u_scaleB', 'u_panA', 'u_panB', 'u_lutSize', 'u_lutStrength', 'u_saturation', 'u_contrast', 'u_brightness', 'u_colorBalance', 'u_vignette', 'u_grain', 'u_grainSeed', 'u_sharpen', 'u_texel', 'u_hasLut', 'u_ovEdges', 'u_ovIntensity']) {
+    for (const name of ['u_imgA', 'u_imgB', 'u_caption', 'u_lut', 'u_mix', 'u_transMode', 'u_scaleA', 'u_scaleB', 'u_panA', 'u_panB', 'u_lutSize', 'u_lutStrength', 'u_saturation', 'u_contrast', 'u_brightness', 'u_colorBalance', 'u_vignette', 'u_grain', 'u_grainSeed', 'u_sharpen', 'u_texel', 'u_hasLut', 'u_ovEdges', 'u_ovIntensity']) {
       this.uniforms[name] = gl.getUniformLocation(program, name)
     }
 
@@ -312,11 +381,28 @@ export class Compositor {
         s = 1 + 0.12 * p
       }
     }
+    // Punch pulses (already rate-limited in the spec) + the intro push-in. Same
+    // envelope curves as the ffmpeg expression (shared/renderSpec.ts).
     for (const at of this.spec.motion.punchAtSec) {
-      const d = timeSec - at
-      if (d >= 0 && d < 0.4) s *= 1 + 0.06 * (1 - d / 0.4)
+      const env = punchEnvelope(timeSec, at)
+      if (env > 0) s *= 1 + 0.07 * env
     }
+    if (this.spec.motion.introZoom) s *= introZoomAt(timeSec)
     return [s, s, panX, panY]
+  }
+
+  /** Transition to use at a segment boundary: the nearest planned transition within
+   *  tolerance, else the style/default fallback (mirrors render.ts transitionAt). */
+  private transitionFor(boundarySec: number): { mode: number; dur: number } {
+    let best: { type: string; dur: number } | null = null
+    let bestDist = 1.6
+    for (const t of this.spec.transitions ?? []) {
+      const d = Math.abs(t.atSec - boundarySec)
+      if (d < bestDist) { bestDist = d; best = { type: t.type, dur: t.durationSec } }
+    }
+    const fallback = this.spec.defaultTransition ?? { type: 'fade', durationSec: 0.4 }
+    const chosen = best ?? { type: fallback.type, dur: fallback.durationSec }
+    return { mode: transitionModeFor(chosen.type), dur: Math.max(0, Math.min(1, chosen.dur)) }
   }
 
   /** Draw one frame at time `t`. Assumes updateCaption() already ran for this frame. */
@@ -330,16 +416,22 @@ export class Compositor {
     const idx = activeSegs.length ? activeImageIndex(activeSegs as any, timeSec) : 0
     const nextIdx = Math.min(idx + 1, Math.max(0, activeSegs.length - 1))
 
-    // Crossfade in the last 0.4s of an image/B-roll window when a next segment exists.
+    // Transition over the tail of the current segment when a next segment exists. The
+    // type/duration come from the effect plan / style default, matching the ffmpeg path.
     let mix = 0
+    let transMode = 0
     const seg = activeSegs[idx]
     if (seg && nextIdx !== idx) {
+      const tr = this.transitionFor(seg.endSec)
       const remain = seg.endSec - timeSec
-      if (remain < 0.4) mix = Math.min(1, Math.max(0, (0.4 - remain) / 0.4))
+      mix = transitionProgressFor(isBroll, true, remain, tr.dur)
+      if (mix > 0) {
+        transMode = tr.mode
+      }
     }
 
     const textureA = isBroll ? this.videoTexA : this.imgTextures[Math.min(idx, this.imgTextures.length - 1)]
-    const textureB = isBroll ? this.videoTexB : this.imgTextures[nextIdx]
+    const textureB = isBroll ? this.videoTexA : this.imgTextures[nextIdx]
 
     gl.useProgram(this.program)
     gl.viewport(0, 0, this.canvas.width, this.canvas.height)
@@ -361,6 +453,7 @@ export class Compositor {
     const [sbx, sby, pbx, pby] = this.transformAt(nextIdx, timeSec)
     const lutStrength = g.lut ? (g.lutStrength ?? 1) : 0
     gl.uniform1f(this.uniforms.u_mix, mix)
+    gl.uniform1i(this.uniforms.u_transMode, transMode)
     gl.uniform2f(this.uniforms.u_scaleA, sax, say)
     gl.uniform2f(this.uniforms.u_scaleB, sbx, sby)
     gl.uniform2f(this.uniforms.u_panA, pax, pay)

@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { existsSync, mkdirSync, statSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, statSync, writeFileSync, readFileSync, rmSync, unlinkSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { applyLoginItem, trayIconPath } from './services/background'
 import * as scheduler from './services/scheduler'
@@ -16,8 +16,9 @@ import { firedNotifications } from './services/notify'
 import { channelUrl, orderVideos } from './services/scraper'
 import { splitRanges } from './services/audio'
 import { autoArrangeText } from '../shared/thumbnail'
-import { THUMB_W, THUMB_H, DEFAULT_BETA_OPTS, type Project, type TextLayer, type ThumbnailTemplate, type TranscriptWord } from '../shared/types'
+import { THUMB_W, THUMB_H, DEFAULT_BETA_OPTS, type AutomationJobDraft, type Project, type TextLayer, type ThumbnailTemplate, type TranscriptWord } from '../shared/types'
 import { buildAss } from './services/captions'
+import { resolveCaptionStyle } from '../shared/captionStyle'
 import { isAllowedExternalUrl } from '../shared/url'
 import { buildRenderArgs, runRender, dimensions } from './services/render'
 import { ffmpegPath, ffprobePath, resolveYtdlpPath } from './services/bin'
@@ -33,7 +34,11 @@ import { instrumentIpcMain, setSentryEnabled, telemetryForcedOff } from './servi
 import { runAll, lastMaxActive } from './services/queue'
 import { destroyGpuWorker } from './services/engine/gpu/host'
 import { runProfile, newVideos } from './ipc/automation'
+import { cancelAutomationJob, createAutomationJob, getAutomationJob, pauseAutomationJob, preflightAutomation, resumeAutomationJob, startAutomationSupervisor, stopAutomationSupervisor } from './services/automation-supervisor'
 import { postWebhook } from './services/webhook'
+import { reconcileNonTerminalProviderJobs, startTalkingPhotosPoller, stopTalkingPhotosPoller } from './providers/talkingphotos/poller'
+import { reconcileInterruptedConnectionOnStartup } from './providers/talkingphotos/session'
+import { assertDisposableSmokeProfile, prepareSmokeUserDataDir } from './services/smokeSafety'
 import { createServer } from 'node:http'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -41,6 +46,30 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 // Set a stable app name so userData (DB + settings) lands in a dedicated folder
 // rather than the generic "Electron" dir shared with other dev apps.
 app.setName('Mental Empire Studio')
+
+// Hard safety guard: a headless smoke/screenshot run must NEVER touch the real
+// production/dev userData directory (mental-empire.db, settings, logs). Several
+// smoke harnesses call repos.resetAll() + seedDemoForSmoke(), which wipes and
+// reseeds whatever DB they're pointed at — fine on a disposable CI runner, but
+// catastrophic against a real local install. ME_SMOKE_USERDATA_DIR is required
+// whenever ME_SMOKE/ME_SHOOT is set, must resolve to somewhere other than the
+// real default userData path, and is applied via app.setPath BEFORE anything else
+// (initSettings/getRepos/initDatabase) touches userData. This must run first,
+// synchronously, with a hard process.exit — not app.exit, which only schedules an
+// async quit and would let later userData-touching code run first.
+//
+// prepareSmokeUserDataDir() additionally writes a `.mental-empire-smoke-profile`
+// sentinel into the validated dir — see electron/services/smokeSafety.ts.
+// assertDisposableSmokeProfile() (imported below) re-checks that marker immediately
+// before every destructive resetAll()/seedDemoForSmoke() call site in the smoke
+// harnesses, so the code that actually runs the destructive work is permanently
+// required to re-verify disposability, not just something checked once here at
+// startup — a future refactor of this block can't silently reopen the hole.
+if (process.env['ME_SMOKE'] || process.env['ME_SHOOT']) {
+  const resolvedOverride = prepareSmokeUserDataDir(process.env['ME_SMOKE_USERDATA_DIR'], app.getPath('userData'))
+  if (!resolvedOverride) process.exit(1) // prepareSmokeUserDataDir's default `fail` already exits; this is belt-and-suspenders.
+  app.setPath('userData', resolvedOverride)
+}
 
 // Wrap ipcMain.handle app-wide BEFORE any handler registers, so every renderer→main
 // call (across every electron/ipc/* module) gets Sentry tracing for free once telemetry
@@ -210,6 +239,13 @@ function initPersistence(): void {
   try {
     initDatabase(dbPath)
     recoverInterruptedRenderJobs()
+    // TalkingPhotos: reconcile any non-terminal provider job against its remote project
+    // now, so a completed-while-closed cloud render surfaces immediately (plan §12).
+    void reconcileNonTerminalProviderJobs().catch((e) => L.warn(`talkingphotos startup reconciliation failed: ${(e as Error).message}`))
+    // TalkingPhotos: a crash/restart mid-login can leave the connection row claiming
+    // connecting/waiting_for_login/verifying with nothing actually in progress — fix
+    // that up before any window reads connection status.
+    reconcileInterruptedConnectionOnStartup()
   } catch (e) {
     L.error(`DB init FAILED at ${dbPath}: ${(e as Error).message}`)
     throw e
@@ -490,7 +526,9 @@ async function runSmokeM6(): Promise<void> {
     const ass916 = buildAss(words, { preset: 'Hormozi', aspect: '9:16', keywords: false })
     const assPop = buildAss(words, { preset: 'Pop', aspect: '16:9', keywords: false })
     const assTop = buildAss(words, { preset: 'Hormozi', aspect: '16:9', keywords: false, position: 'top' })
-    const assFont = buildAss(words, { preset: 'Hormozi', font: 'Impact', aspect: '16:9', keywords: false })
+    const assFont = buildAss(words, { preset: 'Hormozi', font: 'Bebas Neue', aspect: '16:9', keywords: false })
+    const assLegacyFont = buildAss(words, { preset: 'Hormozi', font: 'Impact', aspect: '16:9', keywords: false })
+    const assOffset = buildAss(words, { preset: 'Hormozi', aspect: '16:9', keywords: false, offsetY: 85 })
     const countDialogues = (ass: string): number => ass.split(/\r?\n/).filter((line) => line.startsWith('Dialogue: 0,')).length
     const longWords: TranscriptWord[] = Array.from({ length: 1600 }, (_, i) => ({
       id: `lw${i}`,
@@ -509,9 +547,16 @@ async function runSmokeM6(): Promise<void> {
     const assOk =
       ass169.ass.includes('PlayResX: 1920') && ass916.ass.includes('PlayResX: 1080') &&
       !ass169.ass.includes('\\kf') && ass169.ass.includes('\\fscx112') && ass169.ass.includes('&H003DD9FF') &&
+      // the manually-emphasized word carries the Hormozi keyword rotation colour
+      // (green #3BFF6F), which is distinct from the active-word yellow above
+      ass169.ass.includes('&H006FFF3B') &&
       ass169.zoomHits.length === 1 &&
-      ass169.ass.includes('Anton') && assPop.ass.includes('Anton') &&
-      assTop.ass.includes(',8,60,60,') && assFont.ass.includes('Style: Default,Impact,')
+      // preset fonts genuinely differ: Hormozi=Anton, legacy Pop alias→Karaoke=Montserrat
+      ass169.ass.includes('Anton') && assPop.ass.includes('Montserrat ExtraBold') &&
+      // vertical placement: coarse position + the fine offsetY override both map to \pos
+      assTop.ass.includes('\\pos(960,140)') && assOffset.ass.includes('\\pos(960,918)') &&
+      // font override honours bundled families; never-bundled legacy names alias sanely
+      assFont.ass.includes('Style: Default,Bebas Neue,') && assLegacyFont.ass.includes('Style: Default,Anton,')
 
     const proj = (id: string, title: string): Parameters<typeof repos.createProject>[0] => ({
       id, downloadId: id, title, channel: 'Mental Empire', mp3Path: join(process.cwd(), 'test', 'fixtures', 'audio', 'sample.mp3'),
@@ -596,8 +641,10 @@ async function runSmokeM6(): Promise<void> {
     const betaImgs = [{ id: 'i0', projectId: 'p-beta', ord: 0, path: '/x/a.png', thumb: '', rangeStart: 0, rangeEnd: 12, manual: false }]
     const betaSettings = { ...smokeSettings, beta: { enabled: true, pexelsKey: '', pixabayKey: '', coverrKey: '' } }
     const betaArgs = buildRenderArgs({ project: betaProj, images: betaImgs, assPath: '/tmp/x.ass', outPath: '/tmp/o.mp4', settings: betaSettings }).join(' ')
-    // Beta OFF (default settings) → no overlay/zoom injected (regression guard).
-    const offArgs = buildRenderArgs({ project: betaProj, images: betaImgs, assPath: '/tmp/x.ass', outPath: '/tmp/o.mp4', settings: { ...smokeSettings, beta: { enabled: false, pexelsKey: '', pixabayKey: '', coverrKey: '' } } }).join(' ')
+    // Everything off on the PROJECT (static motion, no overlay/zoom flags) → no
+    // overlay/zoompan in the graph (regression guard for the no-effects default).
+    const offProj = { ...proj('p-beta-off', 'BetaOff'), kenBurns: false, punchZoom: false, motionPreset: 'off' as const, betaOpts: { ...DEFAULT_BETA_OPTS } }
+    const offArgs = buildRenderArgs({ project: offProj, images: betaImgs, assPath: '/tmp/x.ass', outPath: '/tmp/o.mp4', settings: betaSettings }).join(' ')
     const betaOk =
       assHook.ass.includes('Style: Hook') && assHook.ass.includes('Dialogue: 1,') &&
       betaArgs.includes('overlay=0:0') && betaArgs.includes('.pam') && betaArgs.includes('zoompan') &&
@@ -816,7 +863,7 @@ async function runSmokeM6(): Promise<void> {
     const probeLogOk = logTxt.includes('[probe] output=') && logTxt.includes('expectedSec=12.00')
     const captionPaceLogOk = logTxt.includes('mode=phrase') && logTxt.includes('pace=phrase') && logTxt.includes('lines=3')
 
-    console.log(`SMOKE_M6_ASS ok=${assOk} zoomHits=${ass169.zoomHits.length} top=${assTop.ass.includes(',8,60,60,')}`)
+    console.log(`SMOKE_M6_ASS ok=${assOk} zoomHits=${ass169.zoomHits.length} top=${assTop.ass.includes('\\pos(960,140)')} offset=${assOffset.ass.includes('\\pos(960,918)')}`)
     console.log(`SMOKE_M6_ARGS ok=${argsOk} eta=${etaOk}`)
     console.log(`SMOKE_M6_LONGFORM captions=${captionPerfOk} wordEvents=${longWordDialogues} phraseEvents=${longPhraseDialogues} motion=${longMotionOk} brollFast=${longBrollFastArgsOk}`)
     console.log(`SMOKE_M6_QUEUE status=${j1?.status} pct=${j1?.pct} maxActive=${lastMaxActive()} out=${!!j1?.outputPath} ass=${assFileOk} stageTiming=${stageTimingOk} probe=${probeLogOk} captionPace=${captionPaceLogOk}`)
@@ -841,6 +888,7 @@ async function runSmokeM7(): Promise<void> {
   const repos = getRepos()
   const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
   try {
+    assertDisposableSmokeProfile(app.getPath('userData'))
     repos.resetAll()
     seedDemoForSmoke()
     // pure: frequency map + cursor
@@ -1189,7 +1237,7 @@ async function runSmokeBrollGpuReal(): Promise<void> {
       motion: { kenBurns: false, punchAtSec: [] },
       grade: { style: 'None' as const, saturation: 1, contrast: 1, brightness: 0, colorBalance: { r: 0, g: 0, b: 0 }, vignette: 0, sharpen: 0 },
       grain: { strength: 0, temporal: false },
-      captions: { groups: [], preset: 'Clean' as const, font: 'Anton', animation: 'Pop-in', mode: 'word' as const, position: 'bottom' as const, lines: 1 as const, highlightColor: '#ffffff' },
+      captions: { groups: [], style: resolveCaptionStyle({ captionPreset: 'Minimal' }), preset: 'Clean' as const, font: 'Anton', animation: 'Pop-in', mode: 'word' as const, position: 'bottom' as const, lines: 1 as const, highlightColor: '#ffffff' },
       audio: { voicePath: audioPath },
       encoder: { codec: 'avc' as const, bitrateMbps: 6, keyIntervalSec: 2 },
       out: { h264Path, finalPath }
@@ -1243,6 +1291,7 @@ async function runSmokeE2E(): Promise<void> {
 
     // Deterministic state: production no longer seeds demo content, and prior smoke
     // runs share this userData DB — so wipe + seed the demo dataset for a clean journey.
+    assertDisposableSmokeProfile(app.getPath('userData'))
     repos.resetAll()
     seedDemoForSmoke()
 
@@ -1465,6 +1514,123 @@ async function runDemoRender(): Promise<void> {
   app.exit(job?.status === 'done' ? 0 : 1)
 }
 
+/** Automation-specific end-to-end smoke. Uses a real local audio fixture, real image
+ * import, the durable supervisor, SQLite checkpoints, and a real ffmpeg encode. It
+ * also simulates an interrupted persisted row to prove startup recovery preserves a
+ * completed checkpoint. Run with ME_SMOKE=automation and an isolated user-data dir. */
+async function runSmokeAutomation(): Promise<void> {
+  const repos = getRepos()
+  const problems: string[] = []
+  const check = (ok: boolean, label: string): void => {
+    console.log(`  ${ok ? '✓' : '✗'} ${label}`)
+    if (!ok) problems.push(label)
+  }
+  const fixture = (path: string): string => join(process.cwd(), 'test', 'fixtures', path)
+  const output = join(app.getPath('temp'), `me-automation-smoke-${process.pid}`)
+  delete process.env['ME_RENDER_FIXTURE']
+  try {
+    assertDisposableSmokeProfile(app.getPath('userData'))
+    repos.resetAll()
+    setSettings({ outputFolder: output, libraryFolder: output, quality: '720p', encoder: 'cpu', renderEngine: 'ffmpeg', beta: { enabled: false } })
+    const draft: AutomationJobDraft = {
+      name: 'Local fixture to finished video',
+      goal: 'source-to-export',
+      config: {
+        sourceKind: 'local-files', sourceId: '', sourceUrl: '', sourceName: 'sample.mp3', sourceOrder: 'Latest', sourceCount: 1,
+        selectedVideoIds: [], localMediaPaths: [fixture('audio/sample.mp3')], assetPaths: [fixture('images/img1.png')],
+        style: 'Clean', captionPreset: 'Hormozi', aspectRatios: ['16:9'], execution: 'local',
+        styleConfig: { videoStyle: 'Clean', captionPreset: 'Hormozi', captionFont: 'Montserrat', captionAnimation: 'Pop-in', captionPosition: 'bottom', captionLines: 1, captionPace: 'auto', wordsPerCaption: 2, highlightColor: '#f5b323', boxColor: '#111111', imageMode: 'sequence', crossfadeSec: 0.8, motionPreset: 'subtle', gradientEdge: 'none', gradientIntensity: 50, aspectRatio: '16:9', brollMode: 'off', brollDensity: 'sparse', brollPoolSize: 18, brollFallbackPolicy: 'prefer-selected', brollShufflePolicy: 'per-video' },
+        rules: { minDurationSec: 0, skipDownloaded: true, continueOnError: true, maxRetries: 1, minimumFreeSpaceGb: 1, captions: false, autoBroll: false, removeSilence: false, reduceFillerWords: false, keepAwake: false, skipUploaded: true, fillSkippedSelections: false, allowStaleUploadCache: true, uploadFreshnessMinutes: 360, downloadDelaySec: 0, retryBaseDelaySec: 1, retryMaxDelaySec: 2 },
+        notify: { desktop: false, webhook: false, sound: false, email: false }
+      }
+    }
+    const preflight = preflightAutomation(draft)
+    check(preflight.ok, `preflight passes (${preflight.blockers.join('; ') || 'no blockers'})`)
+    process.env['ME_AUTOMATION_FAIL_ONCE'] = 'preflight'
+    const created = createAutomationJob(draft)
+    check(created.status === 'queued' && created.steps.length === 8, 'job and generated workflow persist before processing')
+    startAutomationSupervisor()
+    let finished = getAutomationJob(created.id)
+    for (let attempt = 0; attempt < 360 && finished && !['completed','completed_with_warnings','attention','failed','cancelled'].includes(finished.status); attempt++) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 500))
+      finished = getAutomationJob(created.id)
+    }
+    check(finished?.status === 'completed', `job completes (status=${finished?.status}, error=${finished?.error || 'none'})`)
+    check(finished?.steps.find((step) => step.key === 'preflight')?.attempts === 2, 'temporary failure retries automatically and then succeeds')
+    check(finished?.logs.some((row) => row.level === 'warning' && row.message.includes('retry automatically')) === true, 'automatic retry is explained in the job log')
+    delete process.env['ME_AUTOMATION_FAIL_ONCE']
+    check(finished?.steps.every((step) => step.status === 'completed') === true, 'every workflow step has a completed checkpoint')
+    const outputPath = finished?.result?.outputPaths[0]
+    check(!!outputPath && existsSync(outputPath), `verified output exists (${outputPath || 'missing'})`)
+    const media = outputPath ? ffprobe(outputPath) : null
+    check(!!media?.video && !!media?.audio && media.duration > 11 && media.duration < 13, `output has video+audio and expected duration (${media?.duration ?? 0}s)`)
+    const durableAsset = repos.listAssets()[0]
+    const renderedItem = finished?.items.find((item) => !!item.projectId)
+    const projectImage = renderedItem?.projectId ? repos.getProjectImages(renderedItem.projectId)[0] : undefined
+    check(!!durableAsset && existsSync(durableAsset.canonicalPath) && durableAsset.canonicalPath.includes(join(app.getPath('userData'), 'asset-library')), 'asset is stored in the canonical shared library')
+    check(!!projectImage && !!durableAsset && projectImage.path !== durableAsset.canonicalPath, 'project uses an independent asset copy, so project cleanup cannot remove the library original')
+
+    const recoveryDraft: AutomationJobDraft = {
+      ...draft,
+      name: 'Interrupted recovery fixture',
+      config: { ...draft.config, scheduledFor: new Date(Date.now() + 3_600_000).toISOString() }
+    }
+    const recovery = createAutomationJob(recoveryDraft)
+    const firstStep = recovery.steps[0]
+    repos.updateAutomationStep(firstStep.id, { status: 'completed', progress: 100, checkpoint: { verified: true }, completedAt: new Date().toISOString() })
+    repos.updateAutomationJob(recovery.id, { status: 'running', currentStep: 'Interrupted fixture' })
+    stopAutomationSupervisor()
+    startAutomationSupervisor()
+    const recovered = getAutomationJob(recovery.id)
+    check(recovered?.status === 'queued' && recovered.currentStep.includes('Recovering'), 'startup converts interrupted work to recoverable queued state')
+    check(recovered?.steps[0].status === 'completed' && recovered.steps[0].checkpoint?.verified === true, 'startup preserves completed step checkpoint')
+
+    const control = createAutomationJob({ ...recoveryDraft, name: 'Control fixture', config: { ...recoveryDraft.config, scheduledFor: new Date(Date.now() + 7_200_000).toISOString() } })
+    pauseAutomationJob(control.id)
+    check(getAutomationJob(control.id)?.status === 'paused', 'queued job pauses persistently')
+    resumeAutomationJob(control.id)
+    check(getAutomationJob(control.id)?.status === 'queued', 'paused job resumes to the durable queue')
+    cancelAutomationJob(control.id)
+    check(getAutomationJob(control.id)?.status === 'cancelled', 'queued job cancels without deleting checkpoints')
+
+    stopAutomationSupervisor()
+    mkdirSync(output, { recursive: true })
+    const disappearingMedia = join(output, 'disappearing-after-preflight.mp3')
+    copyFileSync(fixture('audio/sample.mp3'), disappearingMedia)
+    const batchDraft: AutomationJobDraft = {
+      ...draft,
+      name: 'Continue-on-error batch fixture',
+      goal: 'batch-source',
+      config: { ...draft.config, sourceName: 'Two local files', sourceCount: 2, localMediaPaths: [fixture('audio/sample.mp3'), disappearingMedia] }
+    }
+    const batch = createAutomationJob(batchDraft)
+    const batchPreflight = batch.steps.find((step) => step.key === 'preflight')!
+    repos.updateAutomationStep(batchPreflight.id, { status: 'completed', progress: 100, checkpoint: { verifiedBeforeInputDisappeared: true }, completedAt: new Date().toISOString() })
+    unlinkSync(disappearingMedia)
+    startAutomationSupervisor()
+    let batchFinished = getAutomationJob(batch.id)
+    for (let attempt = 0; attempt < 180 && batchFinished && !['completed','completed_with_warnings','attention','failed','cancelled'].includes(batchFinished.status); attempt++) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 250))
+      batchFinished = getAutomationJob(batch.id)
+    }
+    check(batchFinished?.status === 'completed_with_warnings', `batch continues after a permanent item failure (status=${batchFinished?.status})`)
+    check(batchFinished?.failedCount === 1 && batchFinished.completedCount === 1, 'batch summary isolates one failed item and keeps one completed output')
+    check(batchFinished?.items.some((item) => item.status === 'failed' && item.error?.includes('missing')) === true, 'failed item keeps an actionable missing-file explanation')
+    check((batchFinished?.result?.outputPaths.length ?? 0) === 1, 'successful batch item retains its verified output')
+
+    stopAutomationSupervisor()
+    console.log(problems.length ? `AUTOMATION_SMOKE_PROBLEMS ${JSON.stringify(problems)}` : `AUTOMATION_SMOKE_OK output=${outputPath}`)
+    closeDatabase()
+    app.exit(problems.length ? 1 : 0)
+  } catch (error) {
+    stopAutomationSupervisor()
+    console.log(`AUTOMATION_SMOKE_FAIL ${(error as Error).message}`)
+    console.log((error as Error).stack)
+    closeDatabase()
+    app.exit(1)
+  }
+}
+
 /** Remove transient render artifacts (e.g. per-render SFX WAVs) left in temp by a
  *  previous, possibly crashed, run so they don't accumulate. Crash-proof. */
 function sweepTempArtifacts(): void {
@@ -1509,6 +1675,10 @@ app.whenReady().then(() => {
     void runSmokeE2E()
     return
   }
+  if (process.env['ME_SMOKE'] === 'automation') {
+    void runSmokeAutomation()
+    return
+  }
   if (process.env['ME_SMOKE'] === 'broll-real') {
     void runSmokeBrollReal()
     return
@@ -1520,6 +1690,7 @@ app.whenReady().then(() => {
   // Demo-dependent smokes (M2–M7) assert against deterministic seeded rows. Production
   // now starts clean, so the harness seeds the demo dataset explicitly here.
   if (['1', 'm3', 'm4', 'm5', 'm6', 'm7'].includes(process.env['ME_SMOKE'] ?? '')) {
+    assertDisposableSmokeProfile(app.getPath('userData'))
     seedDemoForSmoke()
   }
   if (process.env['ME_SMOKE'] === 'm7') {
@@ -1545,6 +1716,39 @@ app.whenReady().then(() => {
   if (process.env['ME_SMOKE']) {
     runSmokeTest()
     return
+  }
+
+  // UI screenshot seeding (ME_SHOOT + ME_SHOOT_SEED=1): one REAL fixture-backed
+  // download + composed project (images + transcript) so the editor screens can be
+  // captured with data. Mirrors the M4 flow but writes rows directly for determinism.
+  if (process.env['ME_SHOOT'] && process.env['ME_SHOOT_SEED']) {
+    try {
+      const repos = getRepos()
+      assertDisposableSmokeProfile(app.getPath('userData'))
+      repos.resetAll()
+      const fixtures = join(process.cwd(), 'test', 'fixtures')
+      const dlId = 'dl-shoot-0000000001-0'
+      repos.upsertDownload({
+        id: dlId,
+        sourceId: 'src-shoot',
+        title: 'Why Discipline Beats Motivation',
+        channel: '@powerwithin',
+        size: '1.2 MB',
+        when: 'now',
+        stage: 'Downloaded only',
+        pct: '100%',
+        action: 'Open',
+        thumb: ''
+      })
+      repos.setDownloadProgress(dlId, { filePath: join(fixtures, 'audio', 'sample.mp3'), durationSec: 12, pct: '100%', stage: 'Downloaded only', action: 'Open' })
+      const project = createProject(dlId)
+      setImages(project.id, ['img1.png', 'img2.png', 'img3.png'].map((n) => join(fixtures, 'images', n)))
+      const whisper = JSON.parse(readFileSync(join(fixtures, 'whisper', 'sample-words.json'), 'utf8')) as { words: Array<{ word: string; start: number; end: number }> }
+      repos.replaceTranscript(project.id, whisper.words.map((w, i) => ({ id: `shoot-w${i}`, projectId: project.id, ord: i, word: w.word, start: w.start, end: w.end, emphasis: i % 4 === 1 })))
+      console.log(`SHOOT_SEED_OK project=${project.id}`)
+    } catch (e) {
+      console.log(`SHOOT_SEED_FAIL ${(e as Error).message}`)
+    }
   }
 
   const startHidden = shouldStartHidden()
@@ -1594,10 +1798,11 @@ app.whenReady().then(() => {
 
         if (process.env['ME_BATCH']) {
           await wc.executeJavaScript(
-            `(() => { const b=[...document.querySelectorAll('div')].find(e=>e.textContent.trim().startsWith('Generate all')); if(b){b.click();return true;} return false; })()`
+            `(() => { const b=[...document.querySelectorAll('button,div')].find(e=>e.textContent.trim().startsWith('Generate all')); if(b){b.click();return true;} return false; })()`
           )
           await new Promise((r) => setTimeout(r, 3500)) // let 4 rasterizations + writes land
-          const dir = join(getSettings().outputFolder || app.getPath('temp'), 'thumbnails')
+          // writePng lands ad-hoc PNGs in <outputFolder>/_cache/thumbnails (see ipc/thumbnails.ts)
+          const dir = join(getSettings().outputFolder || app.getPath('temp'), '_cache', 'thumbnails')
           let pngs: string[] = []
           try {
             pngs = fs.readdirSync(dir).filter((f) => f.endsWith('.png'))
@@ -1679,9 +1884,15 @@ app.whenReady().then(() => {
   }
 
   // M7 background automation: tray, start-on-sign-in, and the auto-watch scheduler.
-  buildTray()
-  applyLoginItem(getSettings())
-  scheduler.start()
+  // Screenshot validation is read-only unless its explicit seed/run flags are set;
+  // never let a UI capture unexpectedly advance the user's queued Automation jobs.
+  if (!process.env['ME_SHOOT']) {
+    buildTray()
+    applyLoginItem(getSettings())
+    scheduler.start()
+    startAutomationSupervisor()
+    startTalkingPhotosPoller()
+  }
   // M8 auto-update (packaged production builds only).
   void initAutoUpdate()
 
@@ -1694,6 +1905,8 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   isQuitting = true
   scheduler.stop()
+  stopAutomationSupervisor()
+  stopTalkingPhotosPoller()
   // Tear down the hidden GPU render-worker window if it was created.
   destroyGpuWorker()
   // Close the DB here too: with the tray enabled, the real quit comes through here

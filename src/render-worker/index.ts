@@ -1,8 +1,11 @@
 import '@fontsource/anton'
 import '@fontsource/hanken-grotesk'
+import '../styles/caption-fonts.css'
 import type { GpuRenderSpec } from '@shared/renderSpec'
 import { totalFrames } from '@shared/renderSpec'
+import { CAPTION_FONTS } from '@shared/captionStyle'
 import { encodeSpec, probeHardwareEncode } from './encoder'
+import { warmCaptionFonts } from './captions'
 import { SegmentDecoder } from './decoder'
 
 // Entry for the hidden render-worker page. It waits for a spec from the host, loads the
@@ -24,6 +27,9 @@ async function run(spec: GpuRenderSpec): Promise<void> {
   try {
     const isSelfTest = spec.jobId === 'selftest'
     console.log(`[worker] run start: job=${spec.jobId} isSelfTest=${isSelfTest} imageCount=${spec.images.length} brollCount=${spec.broll?.length ?? 0} durationSec=${spec.durationSec}`)
+    // Block until the bundled caption fonts are usable — a canvas draw with an
+    // unloaded font silently falls back and bakes the wrong glyphs into the video.
+    await warmCaptionFonts(document, CAPTION_FONTS.map((f) => f.family))
     let images: ImageBitmap[] = []
 
     if (!isSelfTest) {

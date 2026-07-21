@@ -18,6 +18,8 @@ import { probeRenderCapabilities } from '../services/engine/caps'
 import { probeGpuEngine } from '../services/engine/gpu/host'
 import { runUploadDetection } from '../services/uploads-detect'
 import { setSentryEnabled, telemetryForcedOff } from '../services/sentry'
+import { registerTalkingPhotosIpc } from './talkingphotos'
+import { clearProviderSessionStorage } from '../providers/talkingphotos/partition'
 
 // All native capability the renderer can reach is registered here as invoke
 // handlers and exposed through the typed preload bridge (window.api.*).
@@ -60,9 +62,12 @@ export function registerIpc(): void {
     getRepos().setAppMeta(reqId(key, 'key'), String(value))
   })
   // Factory reset: settings back to defaults + wipe all projects/profiles/channels/jobs.
-  ipcMain.handle('app:reset', () => {
+  // Also logs out of TalkingPhotos (its connection row is wiped along with everything
+  // else, so the Chromium partition should not silently stay authenticated underneath it).
+  ipcMain.handle('app:reset', async () => {
     const next = resetSettings()
     getRepos().resetAll()
+    await clearProviderSessionStorage().catch(() => {})
     applyLoginItem(next)
     schedulerStart()
     return next
@@ -133,6 +138,9 @@ export function registerIpc(): void {
   registerAutomationIpc()
   ipcMain.handle('automation:tick', () => tick())
 
+  // ---- TalkingPhotos cloud provider: session, sync, and uploaded-audio Human creation ----
+  registerTalkingPhotosIpc()
+
   // ---- beta: effect-plan generation via Groq (reuses the transcription key) ----
   ipcMain.handle('effects:generate', async (_e, projectId: string, style: import('../../shared/types').VideoStyle) => {
     const project = getRepos().getProject(reqId(projectId, 'projectId'))
@@ -143,4 +151,3 @@ export function registerIpc(): void {
     return json
   })
 }
-

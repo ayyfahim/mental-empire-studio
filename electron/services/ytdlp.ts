@@ -21,6 +21,10 @@ export interface YtdlpEntry {
 
 export interface YtdlpPlaylist {
   id?: string
+  title?: string
+  duration?: number
+  view_count?: number
+  upload_date?: string
   channel?: string
   uploader?: string
   uploader_id?: string

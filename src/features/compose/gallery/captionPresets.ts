@@ -1,27 +1,35 @@
 import type { Project } from '@shared/types'
+import { CAPTION_PRESET_IDS, captionPresetSpec } from '@shared/captionStyle'
 
-export const CAPTION_PRESETS = ['Hormozi', 'Submagic', 'Pop', 'Bold', 'Word', 'Neon', 'Minimal'] as const
-export const QUICK_CAPTION_PRESETS = ['Hormozi', 'Submagic', 'Pop', 'Minimal'] as const
+// UI-facing preset list. The actual visual definitions live in shared/captionStyle.ts
+// (one source of truth for the ASS burn, the GPU canvas, and these cards).
 
-export type CaptionPresetName = typeof CAPTION_PRESETS[number]
+export const CAPTION_PRESETS = CAPTION_PRESET_IDS
+export const QUICK_CAPTION_PRESETS = ['Hormozi', 'Beast', 'Boxed', 'Minimal'] as const
 
-type CaptionPresetProject = Pick<
-  Project,
-  'captionFont' | 'captionHighlightColor' | 'captionBoxColor' | 'captionWordsPerPage'
->
+export type CaptionPresetName = (typeof CAPTION_PRESETS)[number]
 
+/**
+ * Patch applied when the user picks a preset: adopt the preset's designed font and
+ * clear stale per-project colour overrides so the card's look is exactly what they
+ * get (they can still re-override font/colours afterwards).
+ */
 export function captionPresetPatch(
-  project: Partial<CaptionPresetProject> | null | undefined,
+  _project: Partial<Project> | null | undefined,
   captionPreset: string
 ): Partial<Project> {
-  const patch: Partial<Project> = { captionPreset }
-  if (captionPreset === 'Submagic') {
+  const spec = captionPresetSpec(captionPreset)
+  // null (not undefined) so the DB patch actually clears old colour overrides.
+  const patch = {
+    captionPreset,
+    captionFont: spec.fontFamily,
+    captionHighlightColor: null,
+    captionBoxColor: null
+  } as unknown as Partial<Project>
+  if (spec.active.kind === 'box') {
     patch.captionPace = 'word'
     patch.captionLines = 1
-    patch.captionFont = project?.captionFont || 'Anton'
-    patch.captionHighlightColor = project?.captionHighlightColor ?? '#111111'
-    patch.captionBoxColor = project?.captionBoxColor ?? '#ffd93d'
-    patch.captionWordsPerPage = project?.captionWordsPerPage ?? 1
+    patch.captionWordsPerPage = 2
   }
   return patch
 }

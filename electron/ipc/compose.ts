@@ -13,12 +13,14 @@ import { getSettings } from '../store/settings'
 import { getRepos } from '../db'
 import { splitRanges } from '../services/audio'
 import { importImages, seededShuffle } from '../services/images'
+import { ensureLibraryAssets } from '../services/asset-library'
+import { effectiveBrollPool } from '../../shared/automationBroll'
 import { transcribeAudio } from '../services/transcribe'
 import { emit, hhmm, pushActivity } from './events'
 import { outputDir } from '../services/queue'
 import { itemDirForProject, itemImagesDir, itemThumbDir, cacheDir, ensureDir, writeProjectManifest, videoIdFromProjectId } from '../services/storage'
 import { buildAss } from '../services/captions'
-import { buildCachedBrollPreviewSegments } from '../services/broll'
+import { buildCachedBrollPreviewSegments, cachedBrollClipCount, hasConfiguredBrollSource } from '../services/broll'
 import { buildGpuRenderSpec, gpuDimensions } from '../services/engine/gpu/spec'
 import { ffmpegPath } from '../services/bin'
 
@@ -45,7 +47,7 @@ function defaultProject(downloadId: string, title: string, channel: string, mp3P
     seed: Math.floor(Math.random() * 9000) + 1000,
     crossfade: 0.8,
     captionPreset: 'Hormozi',
-    captionFont: 'Montserrat',
+    captionFont: 'Anton',
     captionAnim: 'Pop-in',
     captionAspect: '16:9',
     captionLines: 2,
@@ -100,7 +102,9 @@ function setImages(projectId: string, paths: string[]): ProjectImage[] {
   const repos = getRepos()
   const project = repos.getProject(projectId)
   if (!project) throw new Error(`Unknown project: ${projectId}`)
-  let copied = importImages(itemImagesDir(itemDirForProject(project)), paths)
+  const source = repos.sourceChannelByUrl(project.channel)
+  const library = ensureLibraryAssets(paths, { sourceId: source?.id, channel: source?.name || project.channel, channelHandle: source?.handle, channelAvatar: source?.avatar, projectId })
+  let copied = importImages(itemImagesDir(itemDirForProject(project)), library.filter((asset) => !asset.missing).map((asset) => asset.canonicalPath))
   if (project.imageMode === 'pool') copied = seededShuffle(copied, project.seed)
   const ranges = splitRanges(project.durationSec, copied.length)
   const rows: ProjectImage[] = copied.map((path, i) => ({
@@ -117,7 +121,6 @@ function setImages(projectId: string, paths: string[]): ProjectImage[] {
   writeProjectManifest(itemDirForProject(project), { imagePaths: rows.map((r) => r.path) })
   // Remember these as reusable library assets for this channel (P2 I) so a later project
   // targeting the same channel can pick the same set again instead of re-selecting from disk.
-  repos.recordAssets(rows.map((r) => r.path), project.channel)
   return rows
 }
 
@@ -146,14 +149,19 @@ function validateRenderReady(projectId: string): void {
   const repos = getRepos()
   const project = repos.getProject(projectId)
   if (!project) throw new Error(`Unknown project: ${projectId}`)
-  // Only the audio is truly required to queue/produce a video. Images are optional
-  // (the render falls back to a solid background, or B-roll supplies the visuals),
-  // captions are optional (no subtitles), and the thumbnail is a separate PNG that
-  // never enters the mp4. So we don't block "Save & send to render" on them — they're
-  // surfaced as advisory checklist items on the Render Queue instead.
+  // Captions and the thumbnail are optional, but a video without either still images
+  // or usable B-roll is not: allowing it through creates a technically-valid black MP4.
   const missing: string[] = []
   if (!project.mp3Path || !existsSync(project.mp3Path)) missing.push('MP3')
   if (!project.durationSec || project.durationSec <= 0) missing.push('audio duration')
+  const images = repos.getProjectImages(projectId)
+  if (images.length === 0) {
+    const broll = projectVideoOpts(project).broll.enabled
+    const effectivePool = effectiveBrollPool({ projectBroll: projectVideoOpts(project).broll, sourceNichePoolKey: repos.nicheKeyForDownload(project.downloadId) })
+    const poolKey = effectivePool.poolKey
+    const brollAvailable = broll && (cachedBrollClipCount(poolKey) > 0 || (effectivePool.allowLive && hasConfiguredBrollSource(getSettings())))
+    if (!brollAvailable) missing.push('visual media (add images or warm/configure Auto B-roll)')
+  }
   if (missing.length) throw new Error(`Project is not render-ready. Missing: ${missing.join(', ')}.`)
 }
 
@@ -328,15 +336,14 @@ function previewSpec(projectId: string, draftOverrides?: Partial<Project>): GpuR
     aspect: draftProject.captionAspect,
     lines: draftProject.captionLines ?? 1,
     position: draftProject.captionPosition ?? 'bottom',
+    offsetY: draftProject.captionOffsetY,
     mode: draftProject.captionPace === 'word' ? 'word' : draftProject.captionPace === 'phrase' ? 'phrase' : undefined,
     keywords: draftProject.keywords || beta.autoHighlight,
     hook: hookText ? { text: hookText, untilSec: 2.6 } : undefined,
     styleLead,
     textEffects: plan.textEffects,
     highlightColor: draftProject.captionHighlightColor,
-    highlightBox: draftProject.captionPreset === 'Submagic'
-      ? { enabled: true, boxColor: draftProject.captionBoxColor ?? '#ffd93d', textColor: draftProject.captionHighlightColor ?? '#111111' }
-      : undefined,
+    boxColor: draftProject.captionBoxColor,
     wordsPerPage: draftProject.captionWordsPerPage
   })
   const dims = gpuDimensions(settings.quality, draftProject.captionAspect)
@@ -351,7 +358,9 @@ function previewSpec(projectId: string, draftOverrides?: Partial<Project>): GpuR
         poolSize: beta.broll.poolSize,
         dims,
         maxSegments: Math.max(1, Math.min(8, Math.ceil(Math.max(1, draftProject.durationSec) / 9))),
-        poolKey: repos.nicheKeyForDownload(draftProject.downloadId)
+        poolKey: effectiveBrollPool({ projectBroll: beta.broll, sourceNichePoolKey: repos.nicheKeyForDownload(draftProject.downloadId) }).poolKey,
+        seed: beta.broll.seed ?? draftProject.seed,
+        shuffle: beta.broll.shufflePolicy !== 'ranked'
       })
     : []
   return buildGpuRenderSpec({
@@ -360,6 +369,11 @@ function previewSpec(projectId: string, draftOverrides?: Partial<Project>): GpuR
     words,
     settings,
     zoomHits,
+    plan,
+    defaultTransition: {
+      type: style !== 'None' ? styleTransition(style) : 'fade',
+      durationSec: Math.max(0, Math.min(0.8, draftProject.crossfade ?? 0.4))
+    },
     voicePath: draftProject.mp3Path,
     hookText,
     out: {

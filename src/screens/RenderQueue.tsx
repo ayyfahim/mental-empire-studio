@@ -2,10 +2,39 @@ import { useEffect } from 'react'
 import { ScreenPad } from '../components/primitives'
 import { useStore } from '../store/useStore'
 import { useData } from '../store/useData'
+import { useTalkingPhotos } from '../store/useTalkingPhotos'
 import type { RenderProgress, RenderQueueRow, RenderStage, RenderStatus } from '@shared/types'
 import { mediaSrc } from '../lib/media'
 import { renderLiveState } from '../lib/renderProgress'
 import { PipelineRibbon } from '../components/PipelineRibbon'
+
+const PROVIDER_JOB_LABEL: Record<string, string> = {
+  queued: 'Queued', running: 'Processing', downloading: 'Downloading', completed: 'Completed', failed: 'Failed', attention: 'Reconnect needed', cancelled: 'Cancelled'
+}
+
+/** Read-only, additive TalkingPhotos section — presents provider_jobs alongside the
+ *  local render queue without touching any local render row/state above. */
+function TalkingPhotosJobsSection(): JSX.Element | null {
+  const enabled = useStore((s) => s.settings.integrations.talkingPhotos.enabled)
+  const jobs = useTalkingPhotos((s) => s.jobs)
+  const loadJobs = useTalkingPhotos((s) => s.loadJobs)
+  useEffect(() => { if (enabled) void loadJobs() }, [enabled, loadJobs])
+  if (!enabled || jobs.length === 0) return null
+  return (
+    <div style={{ marginTop: 22 }}>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.6px', color: '#5b616f', marginBottom: 10 }}>TALKINGPHOTOS</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {jobs.map((j) => (
+          <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 10, border: '1px solid #1d2129', borderRadius: 10, padding: '9px 13px', background: '#12151b' }}>
+            <span style={{ fontSize: 9.5, fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-ink)', background: 'var(--accent)', borderRadius: 5, padding: '2px 6px', flex: 'none' }}>TP</span>
+            <span style={{ fontSize: 12, color: '#cdd2da', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.remoteProjectId ? `Project ${j.remoteProjectId}` : j.id}</span>
+            <span style={{ fontSize: 10.5, color: j.status === 'completed' ? '#4fd6a0' : j.status === 'failed' || j.status === 'attention' ? '#ff8a96' : '#8a909c' }}>{PROVIDER_JOB_LABEL[j.status] ?? j.status}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 const THUMB_BG = 'linear-gradient(135deg,#2a2540,#46243a)'
 const STAGES: RenderStage[] = ['preparing', 'captioning', 'fetching-broll', 'assembling', 'encoding', 'finalizing']
@@ -292,6 +321,7 @@ export function RenderQueue(): JSX.Element {
           )
         })}
       </div>
+      <TalkingPhotosJobsSection />
     </ScreenPad>
   )
 }

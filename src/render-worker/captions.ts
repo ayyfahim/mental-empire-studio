@@ -1,27 +1,49 @@
 import type { CaptionFrameModel, CaptionGroupModel } from '@shared/renderSpec'
 import { activeCaptionGroup, activeWordInGroup } from '@shared/renderSpec'
+import { keywordColor, type ResolvedCaptionStyle } from '@shared/captionStyle'
 
 // GPU caption layer — replaces libass. Draws the active caption group onto a 2D canvas
-// (word-by-word highlight + simple pop animation) which is then uploaded as a texture and
-// composited in the WebGL pass. Everything is driven by frame-time (seconds), never
-// wall-clock, so output is deterministic and reproducible.
+// (word-by-word highlight + pop animation) which is then uploaded as a texture and
+// composited in the WebGL pass. All visual decisions come from the shared preset table
+// (shared/captionStyle.ts) via model.style, so this renderer and the ffmpeg/ASS burn
+// stay in lockstep. Everything is driven by frame-time (seconds), never wall-clock.
 
 const FONT_FALLBACK = 'Anton, Impact, sans-serif'
 
 function withFont(family: string): string {
-  // Caption fonts are bundled via @fontsource and registered on the worker document.
-  return `${family}, ${FONT_FALLBACK}`
+  // Caption fonts are bundled TTFs registered via @font-face on the host document.
+  return `"${family}", ${FONT_FALLBACK}`
 }
 
 /** Font size in px derived from height + preset (mirrors the ffmpeg/ASS sizing). Pure so
  *  preview (smaller canvas) and final (larger canvas) provably share one sizing formula —
  *  the only difference between them is the height it's evaluated at. */
-export function captionFontSizePx(width: number, height: number, preset: CaptionFrameModel['preset']): number {
+export function captionFontSizePx(width: number, height: number, style: Pick<ResolvedCaptionStyle, 'sizeFactor'>): number {
   const aspectTall = height > width
   const base = aspectTall ? height * 0.11 : height * 0.085
   const px = Math.round(Math.max(64, Math.min(aspectTall ? 150 : 108, base)))
-  if (preset === 'Submagic') return Math.round(px * 1.04)
-  return preset === 'Word' ? Math.round(px * 1.12) : px
+  return Math.round(px * style.sizeFactor)
+}
+
+/** Kick off loading of every bundled caption font on the given document so canvas
+ *  drawing never silently falls back mid-render. Resolves when all are settled. */
+export function warmCaptionFonts(doc: Document, families: string[]): Promise<unknown> {
+  const fonts = (doc as Document & { fonts?: FontFaceSet }).fonts
+  if (!fonts) return Promise.resolve()
+  return Promise.allSettled(families.map((f) => fonts.load(`700 64px "${f}"`)))
+}
+
+/** Active-word pop progress (0→1 over the first 160ms of the word). */
+function popPhase(timeSec: number, wordStartSec: number): number {
+  return Math.max(0, Math.min(1, (timeSec - wordStartSec) / 0.16))
+}
+
+/** Ease-out-back — small overshoot for a lively CapCut-style pop. */
+function easePop(p: number): number {
+  const c1 = 1.70158
+  const c3 = c1 + 1
+  const t = p - 1
+  return 1 + c3 * t * t * t + c1 * t * t
 }
 
 export class CaptionLayer {
@@ -43,23 +65,17 @@ export class CaptionLayer {
     this.lastKey = ' ' // force the next draw() to repaint even if timeSec is unchanged
   }
 
-  private fontSizePx(): number {
-    return captionFontSizePx(this.width, this.height, this.model.preset)
+  private style(): ResolvedCaptionStyle {
+    return this.model.style
   }
 
-  /** Vertical baseline anchor for the caption block, by position. */
+  /** Vertical centre of the caption block (shared anchor formula with the ASS path). */
   private anchorY(): number {
-    switch (this.model.position) {
-      case 'top': return Math.round(this.height * (this.height > this.width ? 0.16 : 0.13))
-      case 'middle': return Math.round(this.height / 2)
-      default: return this.height - Math.round(this.height * (this.height > this.width ? 0.28 : 0.26))
-    }
+    return Math.round((this.height * this.style().anchorPct) / 100)
   }
 
-  /** Greedily wrap words into lines so no line exceeds maxWidth — keeps captions inside the
-   *  frame regardless of phrase length (the old count-based split could overflow horizontally
-   *  and push text off-screen). Word order is preserved so the flat active-word index still
-   *  maps to group.words. `ctx.font` must already be set. */
+  /** Greedily wrap words into lines so no line exceeds maxWidth. Word order is
+   *  preserved so the flat active-word index still maps to group.words. */
   private wrapByWidth(words: string[], maxWidth: number, spaceW: number): string[][] {
     const lines: string[][] = []
     let cur: string[] = []
@@ -82,7 +98,8 @@ export class CaptionLayer {
 
   /**
    * Draw the caption state for time `t`. Returns true if the canvas changed (so the
-   * compositor can skip re-uploading the texture when nothing moved).
+   * compositor can skip re-uploading the texture when nothing moved). The key includes
+   * a quantized pop phase so the active word animates for its first ~160ms.
    */
   draw(timeSec: number): boolean {
     const hook = this.model.hook
@@ -104,13 +121,17 @@ export class CaptionLayer {
       return true
     }
     const group = this.model.groups[gi]
-    const wi = this.model.mode === 'word' || this.model.highlightBox?.enabled ? activeWordInGroup(group, timeSec) : -1
-    const key = `${gi}:${wi}`
+    const wi = this.model.mode === 'word' ? activeWordInGroup(group, timeSec) : -1
+    const phase = this.model.animation === 'Fade'
+      ? popPhase(timeSec, group.startSec)
+      : wi >= 0 && this.model.animation !== 'None' ? popPhase(timeSec, Math.max(group.words[wi].startSec, group.startSec)) : 1
+    const phaseQ = phase >= 1 ? 4 : Math.floor(phase * 4)
+    const key = `${gi}:${wi}:${phaseQ}`
     if (key === this.lastKey) return false
     this.lastKey = key
 
     this.clear()
-    this.drawGroup(group, wi)
+    this.drawGroup(group, wi, timeSec)
     return true
   }
 
@@ -152,30 +173,53 @@ export class CaptionLayer {
     ctx.closePath()
   }
 
-  private drawGroup(group: CaptionGroupModel, activeWordIdx: number): void {
+  /** Fill colour of a word given its state, per the resolved preset style. */
+  private wordFill(
+    style: ResolvedCaptionStyle,
+    word: CaptionGroupModel['words'][number],
+    state: 'past' | 'active' | 'future'
+  ): { color: string; alpha: number } {
+    if (style.activeKind === 'box') return { color: style.activeColor, alpha: 1 }
+    if (state === 'active') return { color: style.activeColor, alpha: 1 }
+    if (word.kwOrd != null) return { color: keywordColor(style, word.kwOrd), alpha: 1 }
+    if (style.activeKind === 'karaoke') {
+      if (state === 'past') return { color: style.activeColor, alpha: 1 }
+      return { color: style.baseColor, alpha: style.futureAlpha ?? 1 }
+    }
+    return { color: style.baseColor, alpha: 1 }
+  }
+
+  private drawGroup(group: CaptionGroupModel, activeWordIdx: number, timeSec: number): void {
     const ctx = this.ctx
-    // Emphasis "pop": the active word is drawn slightly larger. Layout reserves this scaled
-    // width so the enlarged (yellow) word never overlaps its neighbours — the old code only
-    // reserved the unscaled width, which is why highlighted words collided.
-    const ACTIVE_SCALE = 1.1
-    let size = this.fontSizePx()
+    const style = this.style()
+    const boxKind = style.activeKind === 'box'
+    // Layout reserves the scaled width of the active word so the enlarged word never
+    // overlaps its neighbours.
+    const popP = activeWordIdx >= 0 && this.model.animation !== 'None' && this.model.animation !== 'Fade'
+      ? easePop(popPhase(timeSec, Math.max(group.words[activeWordIdx]?.startSec ?? 0, group.startSec)))
+      : 1
+    const ACTIVE_SCALE = 1 + (style.activeScale - 1) * Math.max(0, popP)
+    const fadeAlpha = this.model.animation === 'Fade' ? popPhase(timeSec, group.startSec) : 1
+    let size = captionFontSizePx(this.width, this.height, style)
+    const fontOf = (px: number): string => `${style.fontWeight} ${px}px ${withFont(style.fontFamily)}`
     ctx.save()
-    ctx.font = `700 ${size}px ${withFont(this.model.font)}`
+    ctx.globalAlpha = fadeAlpha
+    ctx.font = fontOf(size)
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.lineJoin = 'round'
     ctx.miterLimit = 2
 
-    const words = group.words.map((w) => w.text.toUpperCase())
-    // Keep captions inside a title-safe width. If a single word is still too wide (long
-    // compound word on a narrow 9:16 frame), shrink the font so it fits rather than clip.
+    const words = group.words.map((w) => (style.uppercase ? w.text.toUpperCase() : w.text))
+    // Keep captions inside a title-safe width. If a single word is still too wide,
+    // shrink the font so it fits rather than clip.
     const safeMaxW = this.width * 0.9
     const widestWord = words.reduce((m, w) => Math.max(m, ctx.measureText(w).width), 0)
     if (widestWord > safeMaxW && widestWord > 0) {
-      size = Math.max(28, Math.floor((size * safeMaxW) / (widestWord * ACTIVE_SCALE)))
-      ctx.font = `700 ${size}px ${withFont(this.model.font)}`
+      size = Math.max(28, Math.floor((size * safeMaxW) / (widestWord * style.activeScale)))
+      ctx.font = fontOf(size)
     }
-    const lineH = size * 1.16
+    const lineH = size * 1.18
     const spaceW = ctx.measureText(' ').width
     const lines = this.wrapByWidth(words, safeMaxW, spaceW)
     const totalH = lines.length * lineH
@@ -188,45 +232,65 @@ export class CaptionLayer {
       const y = startY + li * lineH
       const widths = line.map((w) => ctx.measureText(w).width)
       // Reserve the *scaled* width for the active word so nothing overlaps it.
-      const effWidths = line.map((w, wi) => widths[wi] * (flat + wi === activeWordIdx ? ACTIVE_SCALE : 1))
+      const effWidths = line.map((w, wi) => widths[wi] * (flat + wi === activeWordIdx ? style.activeScale : 1))
       const lineW = effWidths.reduce((a, b) => a + b, 0) + spaceW * (line.length - 1)
+
+      // Full-line backgrounds first: the boxed page or the podcast band.
+      if (boxKind || style.band) {
+        const padX = size * 0.34
+        const padY = size * (boxKind ? 0.18 : 0.22)
+        const bh = lineH + padY
+        this.roundedRect(cx - lineW / 2 - padX, y - bh / 2, lineW + padX * 2, bh, boxKind ? size * (style.boxRadiusEm ?? 0.18) : size * 0.16)
+        if (boxKind) {
+          ctx.fillStyle = style.boxColor ?? '#FFD93D'
+          ctx.globalAlpha = fadeAlpha
+        } else {
+          ctx.fillStyle = style.band!.color
+          ctx.globalAlpha = style.band!.alpha * fadeAlpha
+        }
+        ctx.fill()
+        ctx.globalAlpha = fadeAlpha
+      }
+
       let x = cx - lineW / 2
       line.forEach((word, wi) => {
         const globalIdx = flat + wi
         const isActive = globalIdx === activeWordIdx
         const wordModel = group.words[globalIdx]
-        const emphasized = !!wordModel?.emphasis
+        const state: 'past' | 'active' | 'future' = isActive ? 'active' : globalIdx < activeWordIdx ? 'past' : 'future'
         const wx = x + effWidths[wi] / 2
         const scale = isActive ? ACTIVE_SCALE : 1
-        const box = this.model.highlightBox
-        const boxed = isActive && !!box?.enabled
         ctx.save()
         ctx.translate(wx, y)
         ctx.scale(scale, scale)
-        if (boxed) {
-          const pad = Math.max(0, box?.padding ?? 0)
-          const boxW = widths[wi] + pad * 2
-          const boxH = size * 1.04 + pad * 1.25
-          this.roundedRect(-boxW / 2, -boxH / 2, boxW, boxH, box?.radius ?? 0)
-          ctx.fillStyle = box?.boxColor ?? this.model.highlightColor
-          ctx.fill()
-        }
-        // Cleaner, more professional finish: a crisp outline plus a soft drop shadow for
-        // separation from the footage (instead of a single flat heavy stroke).
-        if (!boxed) {
+
+        const fill = this.wordFill(style, wordModel ?? { text: word, startSec: 0, endSec: 0, emphasis: false }, state)
+
+        if (style.activeKind === 'glow') {
+          // Neon: coloured glow behind every word, hotter on the active one.
+          ctx.shadowColor = style.glowColor ?? '#22D3EE'
+          ctx.shadowBlur = size * (style.glowPct ?? 0.25) * (isActive ? 1.5 : 1)
+        } else if (!boxKind && style.shadowPct > 0) {
           ctx.shadowColor = 'rgba(0,0,0,0.55)'
-          ctx.shadowBlur = size * 0.10
-          ctx.shadowOffsetX = 0
-          ctx.shadowOffsetY = Math.round(size * 0.04)
+          ctx.shadowBlur = size * Math.min(0.2, style.shadowPct * 2)
+          ctx.shadowOffsetY = Math.round(size * Math.min(0.08, style.shadowPct))
         }
-        ctx.lineWidth = boxed ? Math.max(1.5, size * 0.03) : size * 0.11
-        ctx.strokeStyle = boxed ? 'rgba(0,0,0,0.25)' : 'rgba(0,0,0,0.92)'
-        ctx.strokeText(word, 0, 0)
-        // Turn the shadow off for the fill so glyph interiors stay crisp.
-        ctx.shadowColor = 'transparent'
-        ctx.shadowBlur = 0
-        ctx.shadowOffsetY = 0
-        ctx.fillStyle = boxed ? (box?.textColor ?? '#111111') : isActive || emphasized ? this.model.highlightColor : '#ffffff'
+
+        if (style.outlinePct > 0 && !boxKind) {
+          ctx.lineWidth = size * style.outlinePct * 2 // canvas strokes are centred; ×2 ≈ ASS outline
+          ctx.strokeStyle = style.activeKind === 'glow' ? (style.glowColor ?? style.outlineColor) : style.outlineColor
+          ctx.globalAlpha = fill.alpha * fadeAlpha
+          ctx.strokeText(word, 0, 0)
+        }
+
+        // Turn the shadow off for the fill so glyph interiors stay crisp (glow keeps it).
+        if (style.activeKind !== 'glow') {
+          ctx.shadowColor = 'transparent'
+          ctx.shadowBlur = 0
+          ctx.shadowOffsetY = 0
+        }
+        ctx.globalAlpha = fill.alpha * fadeAlpha
+        ctx.fillStyle = fill.color
         ctx.fillText(word, 0, 0)
         ctx.restore()
         x += effWidths[wi] + spaceW

@@ -17,8 +17,11 @@ import type {
   ThumbnailTemplate,
   TranscribeProgress,
   RenderProgress,
-  AutomationEvent
+  AutomationEvent,
+  AutomationJobDraft,
+  AutomationJob
 } from '../shared/types'
+import type { ProviderConnection, ProviderJob, ProviderMotionQuery, TalkingPhotosAspectRatio, TalkingPhotosCreateInput, TalkingPhotosScriptCreateInput } from '../shared/talkingphotos'
 
 /** Subscribe to a main→renderer event; returns an unsubscribe fn. */
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -174,7 +177,8 @@ const api: NativeApi = {
   },
 
   assets: {
-    list: () => ipcRenderer.invoke('assets:list')
+    list: () => ipcRenderer.invoke('assets:list'),
+    import: (paths, context) => ipcRenderer.invoke('assets:import', paths, context)
   },
 
   publish: {
@@ -188,7 +192,38 @@ const api: NativeApi = {
     runSource: (sourceId: string, headless?: boolean) => ipcRenderer.invoke('automation:runSource', sourceId, headless),
     upsertProfile: (profile: Profile) => ipcRenderer.invoke('automation:upsertProfile', profile),
     deleteProfile: (profileId: string) => ipcRenderer.invoke('automation:deleteProfile', profileId),
-    tick: () => ipcRenderer.invoke('automation:tick')
+    tick: () => ipcRenderer.invoke('automation:tick'),
+    preflight: (draft: AutomationJobDraft) => ipcRenderer.invoke('automation:preflight', draft),
+    createJob: (draft: AutomationJobDraft) => ipcRenderer.invoke('automation:createJob', draft),
+    jobs: () => ipcRenderer.invoke('automation:jobs'),
+    job: (id: string) => ipcRenderer.invoke('automation:job', id),
+    pauseJob: (id: string) => ipcRenderer.invoke('automation:pauseJob', id),
+    resumeJob: (id: string) => ipcRenderer.invoke('automation:resumeJob', id),
+    cancelJob: (id: string) => ipcRenderer.invoke('automation:cancelJob', id),
+    retryJob: (id: string) => ipcRenderer.invoke('automation:retryJob', id)
+  },
+
+  talkingPhotos: {
+    connectionStatus: () => ipcRenderer.invoke('talkingphotos:connectionStatus'),
+    connect: () => ipcRenderer.invoke('talkingphotos:connect'),
+    reconnect: () => ipcRenderer.invoke('talkingphotos:reconnect'),
+    disconnect: () => ipcRenderer.invoke('talkingphotos:disconnect'),
+    capabilities: () => ipcRenderer.invoke('talkingphotos:capabilities'),
+    languages: () => ipcRenderer.invoke('talkingphotos:languages'),
+    voices: (languageCode: string) => ipcRenderer.invoke('talkingphotos:voices', languageCode),
+    motions: (query: ProviderMotionQuery) => ipcRenderer.invoke('talkingphotos:motions', query),
+    projects: () => ipcRenderer.invoke('talkingphotos:projects'),
+    project: (remoteProjectId: string) => ipcRenderer.invoke('talkingphotos:project', remoteProjectId),
+    sync: () => ipcRenderer.invoke('talkingphotos:sync'),
+    jobs: () => ipcRenderer.invoke('talkingphotos:jobs'),
+    createUploadedAudio: (input: TalkingPhotosCreateInput) => ipcRenderer.invoke('talkingphotos:createUploadedAudio', input),
+    createScript: (input: TalkingPhotosScriptCreateInput) => ipcRenderer.invoke('talkingphotos:createScript', input),
+    downloadOutput: (providerJobId: string) => ipcRenderer.invoke('talkingphotos:downloadOutput', providerJobId),
+    subtitleLanguages: () => ipcRenderer.invoke('talkingphotos:subtitleLanguages'),
+    createProviderSubtitles: (sourceJobId: string, language?: string) => ipcRenderer.invoke('talkingphotos:createProviderSubtitles', sourceJobId, language),
+    applyLocalCaptions: (providerJobId: string, aspect?: TalkingPhotosAspectRatio) => ipcRenderer.invoke('talkingphotos:applyLocalCaptions', providerJobId, aspect),
+    ttsRecoveryLibrary: () => ipcRenderer.invoke('talkingphotos:ttsRecoveryLibrary'),
+    confirmRecoveredTts: (jobId: string, mediaId: string, durationSec: number) => ipcRenderer.invoke('talkingphotos:confirmRecoveredTts', jobId, mediaId, durationSec)
   },
 
   chooseFolder: () => ipcRenderer.invoke('fs:chooseFolder'),
@@ -226,7 +261,10 @@ const api: NativeApi = {
   onDownloadProgress: (cb: (p: DownloadProgress) => void) => subscribe('download:progress', cb),
   onTranscribeProgress: (cb: (p: TranscribeProgress) => void) => subscribe('transcribe:progress', cb),
   onRenderProgress: (cb: (p: RenderProgress) => void) => subscribe('render:progress', cb),
-  onAutomation: (cb: (e: AutomationEvent) => void) => subscribe('automation:event', cb)
+  onAutomation: (cb: (e: AutomationEvent) => void) => subscribe('automation:event', cb),
+  onAutomationJob: (cb: (job: AutomationJob) => void) => subscribe('automation:job', cb),
+  onProviderJob: (cb: (job: ProviderJob) => void) => subscribe('talkingphotos:job', cb),
+  onConnectionStatusChanged: (cb: (connection: ProviderConnection) => void) => subscribe('talkingphotos:connectionStatus', cb)
 }
 
 contextBridge.exposeInMainWorld('api', api)

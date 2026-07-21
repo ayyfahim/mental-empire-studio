@@ -3,8 +3,8 @@ import { randomUUID } from 'node:crypto'
 import type { Niche } from '../../shared/types'
 import { getRepos } from '../db'
 import { getSettings } from '../store/settings'
-import { normalizeNiche } from '../services/niche'
-import { readNichePoolHealth, warmBrollLibraryFromNiche } from '../services/broll'
+import { normalizeNiche, poolKeyForNiche } from '../services/niche'
+import { cachedBrollClipCount, hasConfiguredBrollSource, readNichePoolHealth, warmBrollLibraryFromNiche } from '../services/broll'
 import { refreshNichePools } from '../services/pool-refresh'
 import { hhmm, pushActivity } from './events'
 import { L } from '../services/logger'
@@ -50,8 +50,15 @@ export function registerNicheIpc(): void {
     const niche = getRepos().niches().find((n) => n.id === id)
     if (!niche) throw new Error('niche not found')
     try {
-      const res = await warmBrollLibraryFromNiche(getSettings(), niche)
+      if (niche.keywords.length === 0) throw new Error('Add at least one B-roll search phrase before warming this pool.')
+      const settings = getSettings()
+      const poolKey = poolKeyForNiche(id)
+      if (!hasConfiguredBrollSource(settings) && cachedBrollClipCount(poolKey) === 0) {
+        throw new Error('No stock-footage source is configured. Add a Pexels, Pixabay, or Coverr API key in Settings, then warm the pool again.')
+      }
+      const res = await warmBrollLibraryFromNiche(settings, niche)
       const health = readNichePoolHealth(id)
+      if (!res && health.clips === 0) throw new Error('The pool did not find any usable clips. Check its search phrases and stock-provider settings.')
       pushActivity({ t: hhmm(), icon: '🎞', color: '#36c98e', text: `B-roll pool "${niche.name}" — ${health.clips} clips` })
       L.info(`niche pool warmed id=${id} clips=${health.clips} result=${res ? 'ok' : 'noop'}`)
       return health

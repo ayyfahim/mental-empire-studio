@@ -294,6 +294,18 @@ export interface LayerImages {
   [layerId: string]: HTMLImageElement
 }
 
+/** Build the Konva node for a single (already normalized) layer. Returns null when the
+ *  layer can't render yet (e.g. a subject whose image hasn't decoded). */
+export function buildLayerNode(l: ThumbnailLayer, image?: HTMLImageElement): Konva.Shape | Konva.Group | null {
+  let node: Konva.Shape | Konva.Group | null = null
+  if (l.kind === 'background') node = drawBackground(l, image)
+  else if (l.kind === 'subject') node = drawSubject(l, image)
+  else if (l.kind === 'shape') node = drawShape(l)
+  else if (l.kind === 'text') node = drawText(l)
+  if (node) node.setAttr('layerId', l.id)
+  return node
+}
+
 /** Build a Konva.Group containing every visible layer, drawn in order. */
 export function buildLayerGroup(layers: ThumbnailLayer[], images: LayerImages = {}): Konva.Group {
   const group = new Konva.Group()
@@ -302,15 +314,8 @@ export function buildLayerGroup(layers: ThumbnailLayer[], images: LayerImages = 
   // paint in reverse: background first (bottom), headline last (on top).
   for (const l of [...safeLayers].reverse()) {
     if (!l.visible) continue
-    let node: Konva.Shape | Konva.Group | null = null
-    if (l.kind === 'background') node = drawBackground(l, images[l.id])
-    else if (l.kind === 'subject') node = drawSubject(l, images[l.id])
-    else if (l.kind === 'shape') node = drawShape(l)
-    else if (l.kind === 'text') node = drawText(l)
-    if (node) {
-      node.setAttr('layerId', l.id)
-      group.add(node)
-    }
+    const node = buildLayerNode(l, images[l.id])
+    if (node) group.add(node)
   }
   return group
 }

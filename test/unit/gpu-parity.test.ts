@@ -84,8 +84,8 @@ describe('preview/final GPU spec parity', () => {
   it('derives caption font size from one shared formula, scaling with height', () => {
     const preview = buildAt('720p')
     const final = buildAt('1080p')
-    const previewPx = captionFontSizePx(preview.width, preview.height, preview.captions.preset)
-    const finalPx = captionFontSizePx(final.width, final.height, final.captions.preset)
+    const previewPx = captionFontSizePx(preview.width, preview.height, preview.captions.style)
+    const finalPx = captionFontSizePx(final.width, final.height, final.captions.style)
     // Larger canvas never yields a smaller caption; the only knobs are height + preset,
     // shared by both preview and final — no separate preview-only sizing path exists.
     expect(finalPx).toBeGreaterThanOrEqual(previewPx)

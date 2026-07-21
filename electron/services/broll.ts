@@ -12,6 +12,7 @@ import { ffmpegErrorTail } from './engine/ffmpeg-error'
 import { logger } from './logger'
 import { cacheDir } from './storage'
 import { poolKeyForNiche, nicheSearchThemes, dimsForOrientation, planPoolPrune } from './niche'
+import { seededBrollOrder } from '../../shared/automationBroll'
 
 // Auto B-roll: themed stock-footage pool driven by the transcript. We pick the
 // video's dominant themes, fetch a small pool of clips (Pexels → Pixabay → Coverr),
@@ -373,14 +374,14 @@ export async function fetchPool(
   target: { w: number; h: number },
   poolSize: number,
   logPath?: string,
-  opts: { skipLibrary?: boolean; poolKey?: string } = {}
+  opts: { skipLibrary?: boolean; poolKey?: string; allowLive?: boolean; seed?: number; shuffle?: boolean } = {}
 ): Promise<BrollCandidate[]> {
   brollInfo(logPath, `themes selected=${themes.join(',') || 'cinematic background'} target=${target.w}x${target.h} requested=${poolSize}`)
   // Local real-clip seam (genuine assembly, offline).
   if (process.env['ME_BROLL_LOCAL']) {
     const localPool = localCandidates(themes, target).slice(0, poolSize)
     brollInfo(logPath, `provider local pool count=${localPool.length} requested=${poolSize} dir=${process.env['ME_BROLL_LOCAL']}`)
-    return localPool
+    return seededBrollOrder(localPool, opts.seed ?? 1, !!opts.shuffle)
   }
   // Fixture seam: recorded candidates so the pipeline is testable offline.
   const fixture = process.env['ME_BROLL_FIXTURE']
@@ -388,12 +389,13 @@ export async function fetchPool(
     const recorded = JSON.parse(readFileSync(join(fixture, 'candidates.json'), 'utf8')) as BrollCandidate[]
     const fixturePool = recorded.slice(0, poolSize)
     brollInfo(logPath, `provider fixture pool count=${fixturePool.length} requested=${poolSize} dir=${fixture}`)
-    return fixturePool
+    return seededBrollOrder(fixturePool, opts.seed ?? 1, !!opts.shuffle)
   }
-  const cached = opts.skipLibrary ? [] : libraryCandidates(themes, target, poolSize, logPath, opts.poolKey)
+  const cached = opts.skipLibrary ? [] : libraryCandidates(themes, target, poolSize, logPath, opts.poolKey, opts.seed, opts.shuffle)
   const out: BrollCandidate[] = [...cached]
   const seen = new Set<string>(out.map((c) => `${c.provider}:${c.id}`))
   if (out.length >= poolSize) return out.slice(0, poolSize)
+  if (opts.allowLive === false) return out.slice(0, poolSize)
   const providers: Array<{ name: ProviderName; search: (q: string) => Promise<BrollCandidate[]> }> = []
   if (settings.beta.pexelsKey) providers.push({ name: 'pexels', search: (q) => searchPexels(settings.beta.pexelsKey, q, target, logPath) })
   if (settings.beta.pixabayKey) providers.push({ name: 'pixabay', search: (q) => searchPixabay(settings.beta.pixabayKey, q, logPath) })
@@ -431,7 +433,7 @@ export async function fetchPool(
   if (out.length === 0 && rateLimited.size === providers.length) {
     throw new Error('Stock B-roll unavailable: all configured providers are rate-limited or quota-blocked')
   }
-  return out
+  return seededBrollOrder(out, opts.seed ?? 1, !!opts.shuffle)
 }
 
 function brollDir(): string {
@@ -442,6 +444,16 @@ function brollDir(): string {
 
 function safeId(id: string): string {
   return (id.replace(/[^a-z0-9_.-]/gi, '_').trim() || 'broll').slice(0, 120)
+}
+
+/** Clip identity/order recorded by the latest deterministic manifest for a render job. */
+export function readBrollManifestClipIds(jobId: string): string[] {
+  const path = join(brollDir(), safeId(jobId), 'manifest.json')
+  if (!existsSync(path)) return []
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as { clips?: Array<{ provider?: string; id?: string }> }
+    return (parsed.clips || []).map((clip) => `${clip.provider || 'unknown'}:${clip.id || 'unknown'}`)
+  } catch { return [] }
 }
 
 function brollLibraryDir(): string {
@@ -490,6 +502,23 @@ function readLibraryIndexes(): BrollLibraryIndex[] {
     }
   }
   return out
+}
+
+/** Number of usable cached clips, optionally scoped to one niche/source pool. */
+export function cachedBrollClipCount(poolKey?: string): number {
+  const indexes = poolKey ? [readLibraryIndex(poolKey)] : readLibraryIndexes()
+  return indexes.reduce((total, index) => total + index.keywords.reduce(
+    (sum, group) => sum + group.clips.filter((clip) => !!clip.path && clip.durationSec > 0 && existsSync(clip.path)).length,
+    0
+  ), 0)
+}
+
+/** Whether a render can search/download new stock clips right now. */
+export function hasConfiguredBrollSource(settings: AppSettings): boolean {
+  return !!(
+    settings.beta.pexelsKey || settings.beta.pixabayKey || settings.beta.coverrKey ||
+    process.env['ME_BROLL_LOCAL'] || process.env['ME_BROLL_FIXTURE']
+  )
 }
 
 /** Health summary for a niche's cached b-roll pool (clip count + freshness). */
@@ -546,7 +575,7 @@ function themeTokens(themes: string[]): string[] {
     .filter((t) => t.length >= 3 && !STOPWORDS.has(t))
 }
 
-function libraryCandidates(themes: string[], target: { w: number; h: number }, poolSize: number, logPath?: string, poolKey?: string): BrollCandidate[] {
+function libraryCandidates(themes: string[], target: { w: number; h: number }, poolSize: number, logPath?: string, poolKey?: string, seed?: number, shuffle = false): BrollCandidate[] {
   const tokens = themeTokens(themes)
   const wanted = new Set(tokens)
   const landscape = target.w >= target.h
@@ -570,7 +599,6 @@ function libraryCandidates(themes: string[], target: { w: number; h: number }, p
         if ((clip.width >= clip.height) === landscape) score += 3
         if (clip.width >= target.w && clip.height >= target.h) score += 2
         if (clip.durationSec >= 4) score += 1
-        score += Math.random() * 0.5
         const item = {
           score,
           candidate: {
@@ -589,7 +617,8 @@ function libraryCandidates(themes: string[], target: { w: number; h: number }, p
     }
   }
   const ranked = scored.length ? scored : fallback
-  const out = ranked.sort((a, b) => b.score - a.score).slice(0, poolSize).map((s) => s.candidate)
+  const stable = ranked.sort((a, b) => b.score - a.score || a.candidate.id.localeCompare(b.candidate.id)).slice(0, poolSize).map((s) => s.candidate)
+  const out = seededBrollOrder(stable, seed ?? 1, shuffle)
   if (out.length) brollInfo(logPath, `library pool hit count=${out.length} requested=${poolSize} themes=${themes.join(',')}`)
   return out
 }
@@ -605,10 +634,12 @@ export function buildCachedBrollPreviewSegments(opts: {
   dims: { w: number; h: number }
   maxSegments?: number
   poolKey?: string
+  seed?: number
+  shuffle?: boolean
   logPath?: string
 }): BrollManifestSegment[] {
   const themes = extractThemes(opts.words)
-  const candidates = libraryCandidates(themes, opts.dims, Math.max(1, opts.poolSize), opts.logPath, opts.poolKey)
+  const candidates = libraryCandidates(themes, opts.dims, Math.max(1, opts.poolSize), opts.logPath, opts.poolKey, opts.seed, opts.shuffle)
   const clips = candidates.map((c) => ({
     path: c.url,
     durationSec: c.durationSec || probeDurationSec(c.url)
@@ -798,7 +829,7 @@ export async function warmLibraryForThemes(
   } = {}
 ): Promise<BrollLibraryWarmResult | null> {
   if (!themes.length) return null
-  const hasProvider = !!(settings.beta.pexelsKey || settings.beta.pixabayKey || settings.beta.coverrKey || process.env['ME_BROLL_LOCAL'] || process.env['ME_BROLL_FIXTURE'])
+  const hasProvider = hasConfiguredBrollSource(settings)
   const targetClips = Math.max(1, Math.min(200, opts.targetClips ?? 60))
   const dims = opts.dims ?? { w: 1920, h: 1080 }
   if (!hasProvider) {
@@ -1001,11 +1032,14 @@ export async function buildBrollManifest(opts: {
   maxSegments?: number
   /** scope library selection to a single niche pool (niche-<id>) */
   poolKey?: string
+  allowLive?: boolean
+  seed?: number
+  shuffle?: boolean
   shouldCancel?: () => boolean
   logPath?: string
   onProgress?: (phase: 'fetch' | 'download' | 'normalize' | 'manifest', done: number, total: number, ffmpeg?: FfmpegProgress) => void
 }): Promise<BrollManifestResult | null> {
-  brollInfo(opts.logPath, `manifest build start job=${opts.jobId ?? 'none'} duration=${opts.durationSec.toFixed(2)} density=${opts.density} poolSize=${opts.poolSize} dims=${opts.dims.w}x${opts.dims.h} fps=${opts.fps} style=${opts.style ?? 'None'}`)
+  brollInfo(opts.logPath, `manifest build start job=${opts.jobId ?? 'none'} duration=${opts.durationSec.toFixed(2)} density=${opts.density} poolSize=${opts.poolSize} dims=${opts.dims.w}x${opts.dims.h} fps=${opts.fps} style=${opts.style ?? 'None'} pool=${opts.poolKey || 'all'} seed=${opts.seed ?? 'ranked'} shuffle=${!!opts.shuffle}`)
   const planned = await buildBrollSegments({
     settings: opts.settings,
     words: opts.words,
@@ -1015,6 +1049,9 @@ export async function buildBrollManifest(opts: {
     dims: opts.dims,
     maxSegments: opts.maxSegments,
     poolKey: opts.poolKey,
+    allowLive: opts.allowLive,
+    seed: opts.seed,
+    shuffle: opts.shuffle,
     logPath: opts.logPath,
     onProgress: (phase, done, total) => opts.onProgress?.(phase, done, total)
   })
@@ -1062,7 +1099,7 @@ export async function buildBrollManifest(opts: {
     clips: planned.clips.map((c) => ({ provider: c.provider, id: c.id, path: c.path, durationSec: c.durationSec })),
     segments: normalized
   }, null, 2))
-  brollInfo(opts.logPath, `manifest build done job=${opts.jobId ?? 'none'} clips=${planned.clips.length} segments=${normalized.length} manifest=${manifestPath} json=${jsonPath}`)
+  brollInfo(opts.logPath, `manifest build done job=${opts.jobId ?? 'none'} clips=${planned.clips.length} order=${planned.clips.map((clip) => `${clip.provider}:${clip.id}`).join(',')} segments=${normalized.length} manifest=${manifestPath} json=${jsonPath}`)
   opts.onProgress?.('manifest', total, total)
   return { clips: planned.clips, segments: normalized, manifestPath, jsonPath }
 }
@@ -1149,6 +1186,9 @@ export async function buildBrollBed(opts: {
   transition?: string
   /** scope library selection to a single niche pool (niche-<id>) */
   poolKey?: string
+  allowLive?: boolean
+  seed?: number
+  shuffle?: boolean
   caps?: RenderCapabilities
   onProgress?: (phase: 'fetch' | 'download' | 'assemble', done: number, total: number, ffmpeg?: FfmpegProgress) => void
 }): Promise<string | null> {
@@ -1178,11 +1218,14 @@ export async function buildBrollSegments(opts: {
   logPath?: string
   /** scope library selection to a single niche pool (niche-<id>) */
   poolKey?: string
+  allowLive?: boolean
+  seed?: number
+  shuffle?: boolean
   onProgress?: (phase: 'fetch' | 'download', done: number, total: number) => void
 }): Promise<BrollPlanResult | null> {
   const themes = extractThemes(opts.words)
   opts.onProgress?.('fetch', 0, opts.poolSize)
-  const cands = await fetchPool(opts.settings, themes, opts.dims, opts.poolSize, opts.logPath, { poolKey: opts.poolKey })
+  const cands = await fetchPool(opts.settings, themes, opts.dims, opts.poolSize, opts.logPath, { poolKey: opts.poolKey, allowLive: opts.allowLive, seed: opts.seed, shuffle: opts.shuffle })
   opts.onProgress?.('fetch', cands.length, opts.poolSize)
   const clips = await downloadPool(cands, opts.poolSize, (done, total) => opts.onProgress?.('download', done, total), opts.logPath)
   if (clips.length === 0) return null

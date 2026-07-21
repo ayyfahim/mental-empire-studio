@@ -34,6 +34,9 @@ extraResources:
   - from: resources/luts
     to: luts
     filter: ["**/*"]
+  - from: resources/fonts
+    to: fonts
+    filter: ["**/*"]
 
 # Publish to GitHub Releases (consumed by electron-updater).
 publish:

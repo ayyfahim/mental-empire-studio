@@ -29,7 +29,7 @@ function sizeLabel(filePath: string): string {
   }
 }
 
-async function runOne(video: ScrapedVideo, sourceId: string, channel: string, bitrate: number): Promise<DownloadedVideo> {
+async function runOne(video: ScrapedVideo, sourceId: string, channel: string, opts: DownloadOptions): Promise<DownloadedVideo> {
   const repos = getRepos()
   const settings = getSettings()
   const id = `dl-${video.id}`
@@ -57,8 +57,10 @@ async function runOne(video: ScrapedVideo, sourceId: string, channel: string, bi
       downloadId: id,
       channel,
       outDir: audioOut,
-      bitrate,
+      bitrate: opts.bitrate,
       settings,
+      delaySec: opts.delaySec,
+      supervised: opts.supervised,
       onProgress: (pct) => {
         repos.setDownloadProgress(id, { pct: `${Math.round(pct)}%` })
         emitProgress({ downloadId: id, title: video.title, pct, stage: 'Downloading', done: false })
@@ -91,7 +93,8 @@ async function runOne(video: ScrapedVideo, sourceId: string, channel: string, bi
     // Surface the reason in the in-app activity feed (not just a silent "Failed").
     pushActivity({ t: hhmm(), icon: '✕', color: '#ff5a6e', text: `Download failed: ${video.title.slice(0, 40)} — ${msg.slice(0, 80)}` })
     emitProgress({ downloadId: id, title: video.title, pct: 0, stage: 'Failed', done: true, error: msg })
-    return repos.download(id) as DownloadedVideo // don't reject the whole batch — keep going
+    if (opts.supervised) throw e
+    return repos.download(id) as DownloadedVideo // don't reject the whole interactive batch — keep going
   }
 }
 
@@ -102,7 +105,7 @@ async function startDownloads(videos: ScrapedVideo[], opts: DownloadOptions): Pr
   const channel = src?.handle ?? opts.sourceUrl
   const out: DownloadedVideo[] = []
   for (const v of videos) {
-    out.push(await runOne(v, sourceId, channel, opts.bitrate))
+    out.push(await runOne(v, sourceId, channel, opts))
   }
   return out
 }
@@ -123,7 +126,7 @@ async function resume(id: string): Promise<DownloadedVideo> {
     uploadDate: '',
     thumb: row.thumb && !row.thumb.startsWith('linear-gradient') ? row.thumb : youtubeThumbUrl(videoId, 'hq')
   }
-  return runOne(video, row.sourceId, row.channel, 192)
+  return runOne(video, row.sourceId, row.channel, { bitrate: 192, sourceUrl: row.channel })
 }
 
 function openFolder(id: string): void {
