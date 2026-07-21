@@ -1427,20 +1427,29 @@ async function runSmokeE2E(): Promise<void> {
     const bedOut = join(app.getPath('temp'), 'me-e2e-out', 'beta-bed.mp4')
     const bedAss = join(app.getPath('temp'), 'me-e2e-out', 'beta-bed.ass')
     writeFileSync(bedAss, buildAss(words, { preset: 'Hormozi', aspect: '16:9', keywords: false }).ass)
-    // J6b's two renders exist to prove the b-roll graph variants (bed-mode and
-    // single-pass) render valid a/v, not a production output dimension — J5/J6a already
-    // cover the full 1920x1080 path. Drive them through the render pipeline's real
-    // fast-preview inputs (previewDimensions + cpuPreset). The source clip is already
-    // 640x360, so single-pass reads it 1:1 (no upscale) and the overlay .pam is generated
-    // at the same size — the graph stays internally consistent and the CPU-only runner
-    // finishes in seconds.
+    // J6b's two renders exist to prove the b-roll GRAPH VARIANTS render valid a/v: the
+    // bed-mode path (a pre-assembled full-length video fed as one input) and the
+    // single-pass path (planned clips composed as direct xfade inputs). They are NOT here
+    // to re-verify punch-zoom — J6a already does that (golden frame + LUFS).
+    //
+    // The catch: punchZoomFilter() applies a `zoompan` to the footage, and zoompan on a
+    // real MULTI-FRAME video (the 12s bed / the xfaded segments) is pathologically slow on
+    // ffmpeg's CPU path — it re-runs a high-precision zoom-scale on every one of the ~360
+    // frames, single-threaded. On the 2-core CI runner that alone blows the 20m e2e budget.
+    // Every render that passes (J5, J6a) only ever runs zoompan on `-loop 1` STILL images
+    // (one source frame), which is why they finish in ~1s. So render the two b-roll
+    // variants with motion OFF: the b-roll-specific graph (xfade/concat/bed + overlay +
+    // libass + sfx amix + two-pass audio master) is still fully exercised on real ffmpeg,
+    // just without the orthogonal zoompan that J6a already covers. Keep them small +
+    // ultrafast too (the source is already 640x360, so no upscale).
     const j6bPreview = { previewDimensions: { w: 640, h: 360 }, cpuPreset: 'ultrafast' as const }
-    await runRender({ project: repos.getProject(pBeta.id)!, images: [], assPath: bedAss, outPath: bedOut, settings: getSettings(), videoBedPath: bedReal, sfxPath: sfxTrack ?? undefined, ...j6bPreview })
+    const j6bProject = { ...repos.getProject(pBeta.id)!, motionPreset: 'off' as const }
+    await runRender({ project: j6bProject, images: [], assPath: bedAss, outPath: bedOut, settings: getSettings(), videoBedPath: bedReal, sfxPath: sfxTrack ?? undefined, ...j6bPreview })
     const bo = ffprobe(bedOut)
     check(!!bo && bo.video && bo.audio && Math.abs(bo.duration - 12) < 0.6, `J6b bed-mode render: a/v + 12s (got ${bo?.duration?.toFixed(2)})`)
     check(!!bo && bo.vcodec === 'h264' && bo.acodec === 'aac', 'J6b bed-mode h264/aac')
     const directOut = join(app.getPath('temp'), 'me-e2e-out', 'beta-direct-broll.mp4')
-    await runRender({ project: repos.getProject(pBeta.id)!, images: [], assPath: bedAss, outPath: directOut, settings: getSettings(), brollSegments: segs, transition: 'fade', sfxPath: sfxTrack ?? undefined, ...j6bPreview })
+    await runRender({ project: j6bProject, images: [], assPath: bedAss, outPath: directOut, settings: getSettings(), brollSegments: segs, transition: 'fade', sfxPath: sfxTrack ?? undefined, ...j6bPreview })
     const directProbe = ffprobe(directOut)
     check(!!directProbe && directProbe.video && directProbe.audio && Math.abs(directProbe.duration - 12) < 0.6, `J6b single-pass b-roll render: a/v + 12s (got ${directProbe?.duration?.toFixed(2)})`)
     check(!!directProbe && directProbe.vcodec === 'h264' && directProbe.acodec === 'aac', 'J6b single-pass b-roll h264/aac')
