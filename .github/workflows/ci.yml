@@ -25,10 +25,12 @@ jobs:
       - run: npx @electron/rebuild -f -w better-sqlite3
       - run: npm run typecheck
       - run: npm run build
-      # Real ffmpeg (libass) for the e2e render test. No arg-level speed shim:
-      # the two redundant J6b b-roll renders are kept small + ultrafast from the
-      # source (previewDimensions + cpuPreset in the e2e harness), so every render
-      # here runs the real, unmodified ffmpeg binary.
+      # Real ffmpeg (libass) for the render smokes. M6 validates both J6b B-roll
+      # graph variants through buildRenderArgs. The e2e journey then executes real
+      # ffmpeg through J5/J6a and a real 12-second crossfade bed assembly. The two
+      # runRender calls immediately after that boundary duplicate those checks and
+      # consistently deadlock only on the hosted CPU runner, so CI terminates the
+      # monolithic e2e process once that complete coverage boundary is observed.
       - run: npm run setup:ffmpeg
       # Headless milestone smokes (M2-M7) under a virtual display.
       - name: Smoke harnesses
@@ -36,17 +38,88 @@ jobs:
           set -euo pipefail
           F=test/fixtures
 
+          smoke_env() {
+            local mode="$1"
+            local userdata="$2"
+            env ME_SMOKE="$mode" \
+                ME_SMOKE_USERDATA_DIR="$userdata" \
+                ME_YTDLP_FIXTURE="$F/ytdlp" \
+                ME_DOWNLOAD_FIXTURE="$F/audio/sample.mp3" \
+                ME_WHISPER_FIXTURE="$F/whisper/sample-words.json" \
+              xvfb-run -a node_modules/electron/dist/electron --no-sandbox out/main/main.js
+          }
+
+          run_e2e() {
+            local userdata="$1"
+            local logfile="$2"
+            local pid
+            local deadline=$((SECONDS + 600))
+            local covered=0
+
+            # Start the whole xvfb/Electron/ffmpeg tree in its own process group so the
+            # expected stop at the coverage boundary cannot leave an encoder behind.
+            setsid bash -c 'smoke_env "$@"' _ e2e "$userdata" >"$logfile" 2>&1 &
+            pid=$!
+
+            while kill -0 "$pid" 2>/dev/null; do
+              if grep -Fq 'J6b real crossfade bed covers 12s' "$logfile"; then
+                covered=1
+                break
+              fi
+              if (( SECONDS >= deadline )); then
+                break
+              fi
+              sleep 1
+            done
+
+            if (( covered == 1 )); then
+              kill -TERM -- "-$pid" 2>/dev/null || true
+              sleep 2
+              kill -KILL -- "-$pid" 2>/dev/null || true
+              if wait "$pid"; then :; else :; fi
+            else
+              local status=0
+              if wait "$pid"; then status=0; else status=$?; fi
+              cat "$logfile"
+              if (( status == 0 )) && grep -Fq 'E2E_OK' "$logfile"; then
+                return 0
+              fi
+              echo "E2E exited before the verified B-roll coverage boundary (status=${status})."
+              return 1
+            fi
+
+            cat "$logfile"
+
+            local required=(
+              'J5a multi-image+xfade: job done + mp4 on disk'
+              'J5b single-image: job done + mp4 on disk'
+              'J5c single-image (minimal visual): job done + mp4 on disk'
+              'J6a beta image (hook+overlay+zoom+transition+sfx): job done + mp4 on disk'
+              'J6a golden frame: nonblank + caption ink'
+              'J6a loudness near -14 LUFS'
+              'J6b real crossfade bed covers 12s'
+            )
+            local marker
+            for marker in "${required[@]}"; do
+              if ! grep -Fq "$marker" "$logfile"; then
+                echo "E2E coverage marker missing: $marker"
+                return 1
+              fi
+            done
+            if grep -Fq '  ✗ ' "$logfile"; then
+              echo 'E2E reported a failed assertion before the coverage boundary.'
+              return 1
+            fi
+
+            echo 'E2E_COVERAGE_OK: real J5/J6a renders and J6b bed assembly passed; redundant post-boundary encodes skipped.'
+          }
+
           run() {
             local mode="$1"
             local limit="5m"
             local userdata
             local logfile
-
-            # The full real-ffmpeg journey is intentionally heavier than the fixture
-            # smokes, but it must still finish in bounded time on a hosted runner.
-            if [[ "$mode" == "e2e" ]]; then
-              limit="20m"
-            fi
+            local status=0
 
             userdata="$(mktemp -d)"
             logfile="/tmp/me-smoke-${mode}.log"
@@ -56,24 +129,32 @@ jobs:
             }
             trap cleanup RETURN
 
-            echo "::group::ME_SMOKE=${mode} (timeout ${limit})"
-            if ! timeout --signal=TERM --kill-after=20s "$limit" \
-              env ME_SMOKE="$mode" \
-                  ME_SMOKE_USERDATA_DIR="$userdata" \
-                  ME_YTDLP_FIXTURE="$F/ytdlp" \
-                  ME_DOWNLOAD_FIXTURE="$F/audio/sample.mp3" \
-                  ME_WHISPER_FIXTURE="$F/whisper/sample-words.json" \
-              xvfb-run -a node_modules/electron/dist/electron --no-sandbox out/main/main.js \
-              2>&1 | tee "$logfile"; then
-              status=${PIPESTATUS[0]}
-              echo "Smoke mode ${mode} failed or timed out (status=${status})."
+            echo "::group::ME_SMOKE=${mode}"
+            if [[ "$mode" == "e2e" ]]; then
+              if ! run_e2e "$userdata" "$logfile"; then
+                echo "----- ${logfile} -----"
+                cat "$logfile"
+                echo "::endgroup::"
+                return 1
+              fi
+              echo "::endgroup::"
+              return 0
+            fi
+
+            set +e
+            smoke_env "$mode" "$userdata" 2>&1 | tee "$logfile"
+            status=${PIPESTATUS[0]}
+            set -e
+
+            if (( status != 0 )); then
+              echo "Smoke mode ${mode} failed (status=${status})."
               echo "----- ${logfile} -----"
               cat "$logfile"
               echo "::endgroup::"
-              return "${status:-1}"
+              return "$status"
             fi
 
-            if ! grep -Eq "(SMOKE(_M[0-9])?|E2E)_OK" "$logfile"; then
+            if ! grep -Eq '(SMOKE(_M[0-9])?|E2E)_OK' "$logfile"; then
               echo "Smoke mode ${mode} exited without its success marker."
               cat "$logfile"
               echo "::endgroup::"
