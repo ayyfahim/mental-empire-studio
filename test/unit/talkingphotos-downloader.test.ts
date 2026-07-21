@@ -15,6 +15,7 @@ let nextStreamBehavior: 'ok' | 'network-error' | 'http-error' = 'ok'
 let streamBody = Buffer.from('fake-mp4-bytes')
 let lastRequestedUrl = ''
 let requestedUrls: string[] = []
+let requestedOptions: Array<{ url: string; useSessionCookies?: boolean }> = []
 /** Fails only the request whose URL matches this predicate — lets a test make the
  *  preferred route fail while the CDN fallback still succeeds. */
 let failWhenUrlMatches: ((url: string) => boolean) | null = null
@@ -22,9 +23,10 @@ let failWhenUrlMatches: ((url: string) => boolean) | null = null
 vi.mock('electron', () => ({
   app: { getPath: () => userDataDir },
   net: {
-    request: (opts: { url: string }) => {
+    request: (opts: { url: string; useSessionCookies?: boolean }) => {
       lastRequestedUrl = opts.url
       requestedUrls.push(opts.url)
+      requestedOptions.push(opts)
       const behavior = failWhenUrlMatches?.(opts.url) ? 'http-error' : nextStreamBehavior
       const req = new EventEmitter() as EventEmitter & { setHeader: () => void; write: () => void; end: () => void }
       req.setHeader = () => {}
@@ -95,6 +97,7 @@ beforeEach(() => {
   nextProbedDuration = 275.5
   lastRequestedUrl = ''
   requestedUrls = []
+  requestedOptions = []
   failWhenUrlMatches = null
   vi.mocked(getProject).mockClear()
 })
@@ -106,6 +109,7 @@ describe('TalkingPhotos output downloader', () => {
     expect(job.localOutputPath).toBeTruthy()
     expect(existsSync(job.localOutputPath!)).toBe(true)
     expect(existsSync(`${job.localOutputPath}.part`)).toBe(false)
+    expect(requestedOptions.every((opts) => opts.useSessionCookies === true)).toBe(true)
     // Only trustworthy, non-cookie fields ever leave this module.
     expect(Object.keys(job).sort()).toEqual(['downloadedAt', 'errorCode', 'errorMessage', 'id', 'localOutputPath', 'remoteMediaUrl', 'remoteProjectId', 'status'].sort())
   })

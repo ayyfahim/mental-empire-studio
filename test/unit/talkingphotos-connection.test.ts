@@ -15,7 +15,7 @@ import type { ProviderConnection } from '../../shared/talkingphotos'
 const COOKIE_SENTINEL = 'super-secret-session-cookie-value-should-never-leak'
 
 interface FakeWindowHandle {
-  webContents: EventEmitter & { setWindowOpenHandler: () => void }
+  webContents: EventEmitter & { setWindowOpenHandler: () => void; getURL: () => string }
   focusCalls: number
   showCalls: number
   loadURLCalls: string[]
@@ -54,10 +54,12 @@ vi.mock('electron', () => {
     return target as unknown as EventEmitter
   }
 
-  function makeWebContents(): EventEmitter & { setWindowOpenHandler: () => void } {
+  function makeWebContents(): EventEmitter & { setWindowOpenHandler: () => void; getURL: () => string; currentUrl: string } {
     const emitter = makeEmitter() as unknown as Record<string, unknown>
     emitter.setWindowOpenHandler = () => {}
-    return emitter as unknown as EventEmitter & { setWindowOpenHandler: () => void }
+    emitter.currentUrl = ''
+    emitter.getURL = () => emitter.currentUrl as string
+    return emitter as unknown as EventEmitter & { setWindowOpenHandler: () => void; getURL: () => string; currentUrl: string }
   }
 
   function BrowserWindow(opts: unknown): FakeWindowHandle {
@@ -78,7 +80,10 @@ vi.mock('electron', () => {
         destroyed = true
         queueMicrotask(() => (win.emit as (e: string) => void)('closed'))
       },
-      loadURL(url: string): void { win.loadURLCalls.push(url) }
+      loadURL(url: string): void {
+        win.loadURLCalls.push(url)
+        ;(win.webContents as typeof win.webContents & { currentUrl: string }).currentUrl = url
+      }
     } as unknown as FakeWindowHandle
     instances.push(win)
     return win
@@ -88,8 +93,9 @@ vi.mock('electron', () => {
   return { BrowserWindow, __instances: instances }
 })
 
+const infoMock = vi.fn()
 const warnMock = vi.fn()
-vi.mock('../../electron/services/logger', () => ({ L: { info: vi.fn(), warn: warnMock, error: vi.fn() } }))
+vi.mock('../../electron/services/logger', () => ({ L: { info: infoMock, warn: warnMock, error: vi.fn() } }))
 
 const emitMock = vi.fn()
 vi.mock('../../electron/ipc/events', () => ({ emit: emitMock }))
@@ -134,7 +140,7 @@ function lastEmittedConnection(): ProviderConnection {
 /** Every argument ever passed to emit() or L.warn(), flattened to one blob any
  *  leaked cookie text would have to show up in. */
 function everyLoggedOrEmittedText(): string {
-  return JSON.stringify([...emitMock.mock.calls, ...warnMock.mock.calls])
+  return JSON.stringify([...emitMock.mock.calls, ...infoMock.mock.calls, ...warnMock.mock.calls])
 }
 
 beforeEach(() => {
@@ -150,6 +156,7 @@ beforeEach(() => {
     updatedAt: now
   })
   emitMock.mockClear()
+  infoMock.mockClear()
   warnMock.mockClear()
   clearProviderSessionStorageMock.mockClear()
   healthCheckMock.mockReset()
@@ -198,6 +205,18 @@ describe('TalkingPhotos connect() — status transitions', () => {
 
     expect(emittedStatuses()).toEqual(['connecting', 'waiting_for_login', 'verifying', 'connected'])
     expect(healthCheckMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('immediately verifies authenticated-looking Create Human Video navigation', async () => {
+    await connectTalkingPhotos()
+    const win = latestWindow()
+    healthCheckMock.mockResolvedValue({ ok: true, reauthRequired: false })
+
+    win.webContents.emit('did-navigate', {}, 'https://app.talkingphotos.ai/create-human-video')
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(healthCheckMock).toHaveBeenCalledTimes(1)
+    expect(lastEmittedConnection().status).toBe('connected')
   })
 
   it('emits verifying -> connected when a debounced cookie-change check succeeds, and never leaks the cookie payload', async () => {
@@ -251,13 +270,46 @@ describe('TalkingPhotos connect() — status transitions', () => {
 
     const statuses = emittedStatuses()
     expect(statuses[statuses.length - 1]).toBe('attention')
-    expect(lastEmittedConnection().lastError).toBeTruthy()
+    expect(lastEmittedConnection().lastError).toBe('TalkingPhotos appears open, but the authenticated API session could not be verified.')
     expect(latestWindow().isDestroyed()).toBe(true)
 
     // No dangling poll after the timeout has already settled the flow.
     healthCheckMock.mockClear()
     await vi.advanceTimersByTimeAsync(60_000)
     expect(healthCheckMock).not.toHaveBeenCalled()
+  })
+
+  it('clears the stuck connecting state 30 seconds after an authenticated app page cannot be verified', async () => {
+    await connectTalkingPhotos()
+    const win = latestWindow()
+    healthCheckMock.mockResolvedValue({ ok: false, reauthRequired: false, message: 'TalkingPhotos authenticated API session has not been verified yet.' })
+
+    win.webContents.emit('did-navigate', {}, 'https://app.talkingphotos.ai/create-human-video')
+    await vi.advanceTimersByTimeAsync(30_000)
+
+    expect(lastEmittedConnection()).toMatchObject({
+      status: 'attention',
+      lastError: 'TalkingPhotos appears open, but the authenticated API session could not be verified.'
+    })
+    expect(win.isDestroyed()).toBe(true)
+    healthCheckMock.mockClear()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(healthCheckMock).not.toHaveBeenCalled()
+  })
+
+  it('promotes waiting_for_login to a persisted connected row, clears errors, timestamps verification, and closes the window', async () => {
+    await connectTalkingPhotos()
+    const win = latestWindow()
+    healthCheckMock.mockResolvedValue({ ok: true, reauthRequired: false })
+
+    win.webContents.emit('did-navigate-in-page', {}, 'https://app.talkingphotos.ai/project/create')
+    await vi.advanceTimersByTimeAsync(0)
+
+    const persisted = connections.get(TALKINGPHOTOS_CONNECTION_ID)
+    expect(persisted).toMatchObject({ status: 'connected', lastError: undefined })
+    expect(persisted?.lastVerifiedAt).toBeTruthy()
+    expect(win.isDestroyed()).toBe(true)
+    expect(emittedStatuses().slice(-2)).toEqual(['verifying', 'connected'])
   })
 })
 

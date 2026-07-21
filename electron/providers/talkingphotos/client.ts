@@ -52,29 +52,103 @@ interface RawResponse {
   status: number
   contentType: string | null
   bodyText: string
+  finalUrl: string
+  redirected: boolean
 }
 
 function looksLikeHtml(body: string): boolean {
   return /^\s*<(!doctype html|html)/i.test(body.slice(0, 200))
 }
 
-/** Low-level session-bound request. Redirects are followed automatically (Electron
- *  default); reauth is instead detected from the FINAL response (401/403, or HTML
- *  where JSON was expected) — the HAR did not capture the exact login-redirect route
- *  (contract security.authentication), so we don't depend on intercepting it. */
+function isJsonContentType(contentType: string | null): boolean {
+  const mediaType = (contentType || '').split(';', 1)[0].trim().toLowerCase()
+  return mediaType === 'application/json' || mediaType.endsWith('+json')
+}
+
+function urlOriginPath(value: string): string {
+  try {
+    const url = new URL(value, TALKINGPHOTOS_BASE_URL)
+    return `${url.origin}${url.pathname}`
+  } catch {
+    return 'invalid-url'
+  }
+}
+
+function endpointPath(value: string): string {
+  try {
+    return new URL(value, TALKINGPHOTOS_BASE_URL).pathname
+  } catch {
+    return 'invalid-path'
+  }
+}
+
+function redirectedAwayFromEndpoint(raw: RawResponse, requestedPath: string): boolean {
+  return urlOriginPath(raw.finalUrl) !== urlOriginPath(requestedPath)
+}
+
+function safeTopLevelKeys(value: unknown): string[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+  return Object.keys(value as Record<string, unknown>)
+    .slice(0, 30)
+    .map((key) => key.replace(/[^A-Za-z0-9_.-]/g, '?').slice(0, 48))
+}
+
+interface AuthProbeDiagnostic {
+  endpoint: string
+  status: number | 'unavailable'
+  finalUrl: string
+  contentType: string
+  redirected: boolean
+  json: boolean
+  html: boolean
+  keys: string[]
+  validator: string
+}
+
+/** Temporary live-login diagnostic. Every value is metadata from a fixed allowlist:
+ * no headers, response bodies, account fields, cookies, tokens, or query strings. */
+function logAuthProbeDiagnostic(diagnostic: AuthProbeDiagnostic): void {
+  L.info(`talkingphotos auth diagnostic endpoint=${JSON.stringify(diagnostic.endpoint)} status=${diagnostic.status} final=${JSON.stringify(diagnostic.finalUrl)} contentType=${JSON.stringify(diagnostic.contentType)} redirected=${diagnostic.redirected} json=${diagnostic.json} html=${diagnostic.html} keys=${JSON.stringify(diagnostic.keys)} validator=${JSON.stringify(diagnostic.validator)}`)
+}
+
+/** Low-level session-bound request. Redirects are followed manually (`redirect:
+ *  'manual'` + `followRedirect()` on every `'redirect'` event) so the final URL can be
+ *  captured for reauth detection — calling `followRedirect()` while `redirect: 'follow'`
+ *  is set is a double-follow Chromium rejects with `net::ERR_INVALID_ARGUMENT` the
+ *  moment any request 3xx's, which took down every provider call sharing this
+ *  function. Reauth is detected from the FINAL response (401/403, or HTML where JSON
+ *  was expected, or a redirect away from the requested API route) — the HAR did not
+ *  capture the exact login-redirect route (contract security.authentication), so we
+ *  don't depend on intercepting it. */
 function rawRequest(path: string, opts: { method?: string; body?: string | Buffer; contentType?: string } = {}): Promise<RawResponse> {
   const method = opts.method ?? 'GET'
   const url = path.startsWith('http') ? path : `${TALKINGPHOTOS_BASE_URL}${path}`
   return new Promise((resolve, reject) => {
+    let redirected = false
+    let finalUrl = url
     let req: ReturnType<typeof net.request>
     try {
-      req = net.request({ method, url, session: getProviderSession(), redirect: 'follow' })
+      req = net.request({
+        method,
+        url,
+        session: getProviderSession(),
+        // Supplying a Session selects Chromium's network context, but Electron's
+        // ClientRequest still omits that session's cookies unless this is explicit.
+        // TalkingPhotos authenticates its same-origin API with a session cookie.
+        useSessionCookies: true,
+        redirect: 'manual'
+      })
     } catch (e) {
       reject(e as Error)
       return
     }
     req.setHeader('accept', 'application/json')
     req.setHeader('x-requested-with', 'XMLHttpRequest')
+    req.on('redirect', (_statusCode, _method, redirectUrl) => {
+      redirected = true
+      finalUrl = redirectUrl
+      req.followRedirect()
+    })
     if (opts.body) {
       req.setHeader('content-type', opts.contentType || 'application/json')
       req.setHeader('content-length', String(Buffer.byteLength(opts.body)))
@@ -87,7 +161,9 @@ function rawRequest(path: string, opts: { method?: string; body?: string | Buffe
         resolve({
           status: res.statusCode,
           contentType: Array.isArray(header) ? header[0] ?? null : (header as string | undefined) ?? null,
-          bodyText: Buffer.concat(chunks).toString('utf8')
+          bodyText: Buffer.concat(chunks).toString('utf8'),
+          finalUrl,
+          redirected
         })
       })
       res.on('error', (e: Error) => reject(e))
@@ -114,7 +190,8 @@ export async function fetchProviderJson<T>(path: string, opts: { method?: string
   const reauthRequired = detectReauthRequired({
     status: raw.status,
     contentType: raw.contentType,
-    bodyLooksHtml: looksLikeHtml(raw.bodyText)
+    bodyLooksHtml: looksLikeHtml(raw.bodyText),
+    redirectedAwayFromApi: redirectedAwayFromEndpoint(raw, path)
   })
   if (reauthRequired) {
     L.warn(`talkingphotos reauth required: ${path} (status=${raw.status})`)
@@ -142,7 +219,12 @@ async function fetchProviderBodyJson<T>(path: string, opts: { method: string; bo
     const message = redactProviderText((e as Error).message || 'network error')
     throw new ProviderRequestError(classifyProviderError({ networkError: true, message }))
   }
-  const reauthRequired = detectReauthRequired({ status: raw.status, contentType: raw.contentType, bodyLooksHtml: looksLikeHtml(raw.bodyText) })
+  const reauthRequired = detectReauthRequired({
+    status: raw.status,
+    contentType: raw.contentType,
+    bodyLooksHtml: looksLikeHtml(raw.bodyText),
+    redirectedAwayFromApi: redirectedAwayFromEndpoint(raw, path)
+  })
   if (reauthRequired) throw new ProviderRequestError(classifyProviderError({ reauthRequired: true, httpStatus: raw.status, message: 'TalkingPhotos session expired — reconnect required.' }))
   if (raw.status < 200 || raw.status >= 300) throw new ProviderRequestError(classifyProviderError({ httpStatus: raw.status, message: redactProviderText(raw.bodyText.slice(0, 300) || `HTTP ${raw.status}`) }))
   try { return JSON.parse(raw.bodyText) as T } catch {
@@ -247,16 +329,144 @@ export async function mergeProjects(input: { projectIds: string[]; title: string
   return project
 }
 
-/** Harmless authenticated read used both as the connect-flow probe and as the
- *  periodic health check. Reads video_daily_usage (contract-confirmed GET, no
- *  side effects). */
-export async function healthCheck(): Promise<{ ok: boolean; reauthRequired: boolean; message?: string }> {
+interface AuthShapeValidation {
+  ok: boolean
+  reason: string
+}
+
+interface AuthProbeResult extends AuthShapeValidation {
+  reauthRequired: boolean
+}
+
+type AuthShapeValidator = (body: unknown) => AuthShapeValidation
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function isFiniteCount(value: unknown): boolean {
+  return typeof value === 'number'
+    ? Number.isFinite(value)
+    : typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))
+}
+
+/** The usage endpoint has appeared both flat and inside data/usage/quota envelopes,
+ * and some accounts serialize counts as numeric strings. Those are all harmless,
+ * authenticated variants of the same response rather than reasons to reject login. */
+function validateUsageHealthShape(body: unknown): AuthShapeValidation {
+  const root = objectRecord(body)
+  if (!root) return { ok: false, reason: 'unsupported_usage_root' }
+  const candidates = [root, objectRecord(root.data), objectRecord(root.usage), objectRecord(root.quota)].filter((value): value is Record<string, unknown> => value != null)
+  const usageKeys = ['dailyLimit', 'dailyUsage', 'videoDailyLimit', 'videoDailyUsage', 'daily_limit', 'daily_usage', 'video_daily_limit', 'video_daily_usage']
+  if (candidates.some((candidate) => usageKeys.some((key) => isFiniteCount(candidate[key])))) {
+    return { ok: true, reason: 'approved_usage_shape' }
+  }
+  return { ok: false, reason: 'unsupported_usage_shape' }
+}
+
+/** GET /project can legitimately return an empty list. Accept the confirmed root
+ * array and common list envelopes, but never accept an arbitrary object or homepage. */
+function validateProjectListHealthShape(body: unknown): AuthShapeValidation {
+  if (Array.isArray(body)) return { ok: true, reason: 'approved_project_array' }
+  const root = objectRecord(body)
+  if (!root) return { ok: false, reason: 'unsupported_project_root' }
+  const data = objectRecord(root.data)
+  if (Array.isArray(root.items) || Array.isArray(root.projects) || Array.isArray(root.data) || (data && (Array.isArray(data.items) || Array.isArray(data.projects)))) {
+    return { ok: true, reason: 'approved_project_list_shape' }
+  }
+  return { ok: false, reason: 'unsupported_project_shape' }
+}
+
+async function probeAuthenticatedEndpoint(path: string, validate: AuthShapeValidator): Promise<AuthProbeResult> {
+  const requestedEndpoint = endpointPath(path)
+  let raw: RawResponse
   try {
-    const body = await fetchProviderJson<Record<string, unknown>>('/project/video_daily_usage')
-    return { ok: typeof body.dailyLimit === 'number' || typeof body.dailyUsage === 'number', reauthRequired: false }
-  } catch (e) {
-    if (e instanceof ProviderRequestError) return { ok: false, reauthRequired: e.normalized.kind === 'authentication', message: e.normalized.message }
-    return { ok: false, reauthRequired: false, message: (e as Error).message }
+    raw = await rawRequest(path)
+  } catch {
+    logAuthProbeDiagnostic({
+      endpoint: requestedEndpoint,
+      status: 'unavailable',
+      finalUrl: urlOriginPath(path),
+      contentType: 'unavailable',
+      redirected: false,
+      json: false,
+      html: false,
+      keys: [],
+      validator: 'failure:network_error'
+    })
+    return { ok: false, reauthRequired: false, reason: 'network_error' }
+  }
+
+  const html = (raw.contentType || '').toLowerCase().includes('text/html') || looksLikeHtml(raw.bodyText)
+  const json = isJsonContentType(raw.contentType)
+  const redirectedAway = redirectedAwayFromEndpoint(raw, path)
+  let parsed: unknown
+  let parsedJson = false
+  if (json && !html) {
+    try {
+      parsed = JSON.parse(raw.bodyText) as unknown
+      parsedJson = true
+    } catch {
+      parsedJson = false
+    }
+  }
+
+  let validation: AuthShapeValidation
+  let reauthRequired = false
+  if (raw.status === 401 || raw.status === 403) {
+    validation = { ok: false, reason: 'authentication_status' }
+    reauthRequired = true
+  } else if (redirectedAway) {
+    validation = { ok: false, reason: 'redirected_away_from_api' }
+    reauthRequired = true
+  } else if (raw.status < 200 || raw.status >= 300) {
+    validation = { ok: false, reason: 'non_success_status' }
+  } else if (html) {
+    validation = { ok: false, reason: 'html_response' }
+    reauthRequired = true
+  } else if (!json) {
+    validation = { ok: false, reason: 'non_json_content_type' }
+  } else if (!parsedJson) {
+    validation = { ok: false, reason: 'invalid_json' }
+  } else {
+    validation = validate(parsed)
+  }
+
+  logAuthProbeDiagnostic({
+    endpoint: requestedEndpoint,
+    status: raw.status,
+    finalUrl: urlOriginPath(raw.finalUrl),
+    contentType: (raw.contentType || 'missing').slice(0, 120),
+    redirected: raw.redirected,
+    json,
+    html,
+    keys: parsedJson ? safeTopLevelKeys(parsed) : [],
+    validator: `${validation.ok ? 'success' : 'failure'}:${validation.reason}`
+  })
+  return { ...validation, reauthRequired }
+}
+
+/** Harmless authenticated reads used by the connect flow and periodic health check.
+ * The capability/usage probe remains first; a validator mismatch or endpoint drift
+ * falls back to the confirmed read-only project list instead of trapping the UI in
+ * waiting_for_login on one account-specific schema. */
+export async function healthCheck(): Promise<{ ok: boolean; reauthRequired: boolean; message?: string }> {
+  const attempts: Array<{ path: string; validate: AuthShapeValidator }> = [
+    { path: '/project/video_daily_usage', validate: validateUsageHealthShape },
+    { path: '/project?page=1&limit=1', validate: validateProjectListHealthShape }
+  ]
+  let reauthRequired = false
+  for (const attempt of attempts) {
+    const result = await probeAuthenticatedEndpoint(attempt.path, attempt.validate)
+    if (result.ok) return { ok: true, reauthRequired: false }
+    reauthRequired ||= result.reauthRequired
+  }
+  return {
+    ok: false,
+    reauthRequired,
+    message: reauthRequired
+      ? 'TalkingPhotos returned a login response instead of an authenticated API response.'
+      : 'TalkingPhotos authenticated API session has not been verified yet.'
   }
 }
 

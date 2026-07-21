@@ -5,6 +5,7 @@ import { healthCheck } from './client'
 import { emit } from '../../ipc/events'
 import {
   TALKINGPHOTOS_BASE_URL,
+  TALKINGPHOTOS_APP_HOST,
   TALKINGPHOTOS_CONNECTION_ID,
   TALKINGPHOTOS_PARTITION,
   TALKINGPHOTOS_PROVIDER,
@@ -27,6 +28,9 @@ import { L } from '../../services/logger'
 const HEALTH_POLL_MS = 2_500
 // Logins can require CAPTCHA/MFA the user must complete by hand — generous, not silent.
 const CONNECT_TIMEOUT_MS = 15 * 60_000
+// Once the app itself is visible, API verification should either promote or return
+// control to the user quickly instead of consuming the full interactive-login timer.
+const AUTHENTICATED_PAGE_VERIFY_TIMEOUT_MS = 30_000
 // Coalesce a burst of navigation/cookie-change signals into a single health check.
 const HEALTH_DEBOUNCE_MS = 400
 
@@ -35,8 +39,10 @@ const CONNECTION_STATUS_EVENT = 'talkingphotos:connectionStatus'
 let loginWindow: BrowserWindow | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let timeoutTimer: ReturnType<typeof setTimeout> | null = null
+let verificationTimeoutTimer: ReturnType<typeof setTimeout> | null = null
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 let detachCookieListener: (() => void) | null = null
+let healthCheckInFlight: Promise<void> | null = null
 /** True whenever no login flow is currently in progress — guards every timer/listener
  *  callback so a stale one can never fire (or double-finish) after teardown. */
 let settled = true
@@ -64,7 +70,9 @@ function saveConnectionRow(patch: Partial<ProviderConnection>): ProviderConnecti
  *  and pushes it to every renderer window over CONNECTION_STATUS_EVENT so the UI
  *  never has to infer progress/failure from a long-pending IPC promise. */
 function setStatus(status: ProviderConnectionStatus, extra: Partial<ProviderConnection> = {}): ProviderConnection {
+  const previousStatus = loadConnectionRow().status
   const conn = saveConnectionRow({ status, ...extra })
+  if (previousStatus !== status) L.info(`talkingphotos auth diagnostic stateTransition=${previousStatus}->${status}`)
   emit(CONNECTION_STATUS_EVENT, conn)
   return conn
 }
@@ -84,9 +92,11 @@ export async function getConnectionStatus(refresh = false): Promise<ProviderConn
 function clearTimers(): void {
   if (pollTimer) clearInterval(pollTimer)
   if (timeoutTimer) clearTimeout(timeoutTimer)
+  if (verificationTimeoutTimer) clearTimeout(verificationTimeoutTimer)
   if (debounceTimer) clearTimeout(debounceTimer)
   pollTimer = null
   timeoutTimer = null
+  verificationTimeoutTimer = null
   debounceTimer = null
 }
 
@@ -111,35 +121,55 @@ function teardownLoginFlow(): void {
 
 /** Coalesce a burst of navigation/cookie-change signals into one health check, fired
  *  at most once per HEALTH_DEBOUNCE_MS — never runs once the flow has settled. */
-function scheduleHealthCheck(): void {
+function scheduleHealthCheck(immediate = false): void {
   if (settled) return
   if (debounceTimer) clearTimeout(debounceTimer)
   debounceTimer = setTimeout(() => {
     debounceTimer = null
     void runHealthCheckNow()
-  }, HEALTH_DEBOUNCE_MS)
+  }, immediate ? 0 : HEALTH_DEBOUNCE_MS)
 }
 
 async function runHealthCheckNow(): Promise<void> {
   if (settled) return
-  setStatus('verifying')
-  let ok = false
+  // Navigation, cookie, debounce, and interval signals can arrive together. Reuse
+  // the active probe so login never fires duplicate authenticated API requests.
+  if (healthCheckInFlight) return healthCheckInFlight
+  const pending = (async () => {
+    setStatus('verifying')
+    let health: Awaited<ReturnType<typeof healthCheck>> = {
+      ok: false,
+      reauthRequired: false,
+      message: 'TalkingPhotos authenticated API session has not been verified yet.'
+    }
+    try {
+      health = await healthCheck()
+    } catch {
+      // A controlled UI message below makes verifier failures visible. Detailed safe
+      // response metadata is emitted by client.ts; never echo an arbitrary exception.
+    }
+    if (settled) return
+    if (health.ok) {
+      finishSuccess()
+      return
+    }
+    setStatus('waiting_for_login', { lastError: health.message || 'TalkingPhotos authenticated API session has not been verified yet.' })
+  })()
+  healthCheckInFlight = pending
   try {
-    const health = await healthCheck()
-    ok = health.ok
-  } catch {
-    ok = false
+    await pending
+  } finally {
+    if (healthCheckInFlight === pending) healthCheckInFlight = null
   }
-  if (settled) return
-  if (ok) finishSuccess()
-  else setStatus('waiting_for_login')
 }
 
 function finishSuccess(): void {
   if (settled) return
   settled = true
-  teardownLoginFlow()
   setStatus('connected', { connectedAt: nowIso(), lastVerifiedAt: nowIso(), lastError: undefined })
+  // Emit/persist the connected state before closing the provider window. Renderer
+  // subscribers immediately refresh capabilities/quota and Settings updates live.
+  teardownLoginFlow()
 }
 
 function finishFailure(message: string): void {
@@ -148,6 +178,30 @@ function finishFailure(message: string): void {
   teardownLoginFlow()
   L.warn(`talkingphotos connect: ${message}`)
   setStatus('attention', { lastError: message })
+}
+
+/** Auth-looking navigation is only an immediate verification trigger, never proof.
+ * The health-check API chain remains authoritative. The public homepage and known
+ * login/account-recovery routes are intentionally excluded. */
+function isAuthenticatedLookingAppUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'https:' || url.hostname !== TALKINGPHOTOS_APP_HOST) return false
+    return !/^\/(?:$|login(?:\/|$)|sign-?in(?:\/|$)|register(?:\/|$)|forgot(?:\/|$)|reset(?:\/|$)|auth(?:\/|$))/i.test(url.pathname)
+  } catch {
+    return false
+  }
+}
+
+function scheduleNavigationHealthCheck(value: string): void {
+  const authenticatedLooking = isAuthenticatedLookingAppUrl(value)
+  if (authenticatedLooking && !verificationTimeoutTimer) {
+    verificationTimeoutTimer = setTimeout(
+      () => finishFailure('TalkingPhotos appears open, but the authenticated API session could not be verified.'),
+      AUTHENTICATED_PAGE_VERIFY_TIMEOUT_MS
+    )
+  }
+  scheduleHealthCheck(authenticatedLooking)
 }
 
 /** Opens the isolated TalkingPhotos login window, wires up every detection signal,
@@ -178,9 +232,9 @@ function openLoginWindow(): ProviderConnection {
   win.webContents.on('will-redirect', (e, url) => { if (!isAllowedProviderNavigation(url)) e.preventDefault() })
   // Faster-than-the-poll detection: any of these navigation signals can mean the user
   // just finished logging in, so check sooner than the next 2.5s tick (debounced).
-  win.webContents.on('did-finish-load', () => scheduleHealthCheck())
-  win.webContents.on('did-navigate', () => scheduleHealthCheck())
-  win.webContents.on('did-navigate-in-page', () => scheduleHealthCheck())
+  win.webContents.on('did-finish-load', () => scheduleNavigationHealthCheck(win.webContents.getURL()))
+  win.webContents.on('did-navigate', (_e, url) => scheduleNavigationHealthCheck(url))
+  win.webContents.on('did-navigate-in-page', (_e, url) => scheduleNavigationHealthCheck(url))
   win.webContents.on('did-fail-load', (_e, errorCode) => {
     if (errorCode !== -3) finishFailure('TalkingPhotos login page failed to load.') // -3 = ERR_ABORTED, a normal cancelled navigation
   })
@@ -196,7 +250,7 @@ function openLoginWindow(): ProviderConnection {
   detachCookieListener = () => getProviderSession().cookies.removeListener('changed', onCookieChanged)
 
   pollTimer = setInterval(() => { void runHealthCheckNow() }, HEALTH_POLL_MS)
-  timeoutTimer = setTimeout(() => finishFailure('TalkingPhotos login timed out after 15 minutes.'), CONNECT_TIMEOUT_MS)
+  timeoutTimer = setTimeout(() => finishFailure('TalkingPhotos appears open, but the authenticated API session could not be verified.'), CONNECT_TIMEOUT_MS)
 
   const waiting = setStatus('waiting_for_login')
   win.loadURL(TALKINGPHOTOS_BASE_URL)

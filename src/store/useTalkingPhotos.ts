@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ProviderCapabilities, ProviderConnection, ProviderConnectionStatus, ProviderJob, ProviderProjectSummary, TalkingPhotosAspectRatio, TalkingPhotosCreateInput, TalkingPhotosScriptCreateInput } from '@shared/talkingphotos'
+import type { ProviderCapabilities, ProviderConnection, ProviderConnectionStatus, ProviderJob, ProviderLanguage, ProviderMotion, ProviderMotionQuery, ProviderProjectSummary, ProviderVoice, TalkingPhotosAspectRatio, TalkingPhotosCreateInput, TalkingPhotosScriptCreateInput } from '@shared/talkingphotos'
 
 // TalkingPhotos live data — kept separate from useData.ts (the local-pipeline data
 // layer) since this is a distinct cloud-provider domain with its own connection
@@ -30,6 +30,16 @@ interface TalkingPhotosState {
   error: string
   subscribed: boolean
 
+  // Read-only catalogs backing the language/voice/motion pickers — fetched lazily
+  // and cached in-memory (voices per language, motions per query) since they only
+  // change on the provider's side, not per-render.
+  languages: ProviderLanguage[]
+  languagesLoading: boolean
+  voicesByLanguage: Record<string, ProviderVoice[]>
+  voicesLoading: boolean
+  motionsByQuery: Record<string, ProviderMotion[]>
+  motionsLoading: boolean
+
   init: () => Promise<void>
   refreshConnection: () => Promise<void>
   connect: () => Promise<void>
@@ -38,11 +48,20 @@ interface TalkingPhotosState {
   loadCapabilities: () => Promise<void>
   loadJobs: () => Promise<void>
   sync: () => Promise<void>
+  loadLanguages: () => Promise<void>
+  loadVoices: (languageCode: string) => Promise<void>
+  loadMotions: (query: ProviderMotionQuery) => Promise<void>
   createUploadedAudio: (input: TalkingPhotosCreateInput) => Promise<ProviderJob | undefined>
   createScript: (input: TalkingPhotosScriptCreateInput) => Promise<ProviderJob | undefined>
   downloadOutput: (providerJobId: string) => Promise<void>
   createProviderSubtitles: (sourceJobId: string, language?: string) => Promise<void>
   applyLocalCaptions: (providerJobId: string, aspect?: TalkingPhotosAspectRatio) => Promise<void>
+}
+
+/** Stable cache key for a motion query — order-independent field access, so callers
+ *  don't need to worry about key ordering when building the query object. */
+function motionQueryKey(query: ProviderMotionQuery): string {
+  return `${query.projectType}|${query.gender ?? ''}|${query.aspectRatio ?? ''}|${query.style ?? ''}`
 }
 
 export const useTalkingPhotos = create<TalkingPhotosState>((set, get) => ({
@@ -55,6 +74,13 @@ export const useTalkingPhotos = create<TalkingPhotosState>((set, get) => ({
   creating: false,
   error: '',
   subscribed: false,
+
+  languages: [],
+  languagesLoading: false,
+  voicesByLanguage: {},
+  voicesLoading: false,
+  motionsByQuery: {},
+  motionsLoading: false,
 
   init: async () => {
     if (!get().subscribed) {
@@ -148,6 +174,46 @@ export const useTalkingPhotos = create<TalkingPhotosState>((set, get) => ({
       set({ error: (e as Error).message })
     } finally {
       set({ syncing: false })
+    }
+  },
+
+  loadLanguages: async () => {
+    if (get().languages.length > 0 || get().languagesLoading) return
+    set({ languagesLoading: true })
+    try {
+      const languages = await api()?.talkingPhotos?.languages?.()
+      if (languages) set({ languages })
+    } catch (e) {
+      set({ error: (e as Error).message })
+    } finally {
+      set({ languagesLoading: false })
+    }
+  },
+
+  loadVoices: async (languageCode) => {
+    if (!languageCode || get().voicesByLanguage[languageCode] || get().voicesLoading) return
+    set({ voicesLoading: true })
+    try {
+      const voices = await api()?.talkingPhotos?.voices?.(languageCode)
+      if (voices) set((s) => ({ voicesByLanguage: { ...s.voicesByLanguage, [languageCode]: voices } }))
+    } catch (e) {
+      set({ error: (e as Error).message })
+    } finally {
+      set({ voicesLoading: false })
+    }
+  },
+
+  loadMotions: async (query) => {
+    const key = motionQueryKey(query)
+    if (get().motionsByQuery[key] || get().motionsLoading) return
+    set({ motionsLoading: true })
+    try {
+      const motions = await api()?.talkingPhotos?.motions?.(query)
+      if (motions) set((s) => ({ motionsByQuery: { ...s.motionsByQuery, [key]: motions } }))
+    } catch (e) {
+      set({ error: (e as Error).message })
+    } finally {
+      set({ motionsLoading: false })
     }
   },
 
