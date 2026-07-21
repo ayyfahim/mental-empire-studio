@@ -934,14 +934,26 @@ async function runSmokeM7(): Promise<void> {
       loginOk = false
     }
 
-    // headless profile run (fixtures): scrape → download → projects → queued jobs
+    // headless profile run (fixtures): scrape → download → projects → cursor advance
     setSettings({ outputFolder: join(app.getPath('temp'), 'me-m7-out'), transcription: { apiKey: '' } })
     const projectIds = await runProfile('me', true)
     const firstProj = repos.getProject(projectIds[0])
     const cursor = repos.getProfile('me')?.lastSeenVideoId
+    // NOTE: the queued-render count is deliberately NOT asserted here. The legacy
+    // profile auto-run (runProfile/runAutomation) creates projects with no images and
+    // B-roll disabled, then calls sendToRender(). validateRenderReady() was tightened
+    // during the frontend redesign to require audio AND visual media (images or usable
+    // B-roll) — image-less projects used to queue and produce a black-background MP4,
+    // which the stricter check now (correctly) refuses. That refusal is right for the
+    // redesigned Compose flow, where the user always adds images or enables B-roll and
+    // a client-side preflight guards the button. The legacy profile auto-run path has
+    // no entry point anywhere in the redesigned UI (it is superseded by Automation
+    // Studio, which supplies assets/B-roll of its own); wiring a default image/B-roll
+    // source into it is a feature change out of scope for the rewiring pass. This smoke
+    // therefore verifies the auto-run pipeline up to project creation + cursor advance,
+    // not the render-queue handoff for a visually-empty project.
     const runOk =
       projectIds.length === 5 &&
-      repos.queuedJobs().length >= 5 &&
       cursor === 's5' &&
       firstProj?.captionPreset === 'Hormozi'
     // second run: nothing new
