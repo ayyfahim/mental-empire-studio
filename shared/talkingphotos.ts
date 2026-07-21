@@ -441,6 +441,36 @@ export function normalizeCapabilities(input: { durationLimit?: unknown; concurre
   }
 }
 
+export interface TalkingPhotosCapabilitySummary {
+  uploadedAudioAvailable: boolean
+  ttsAvailable: boolean
+  statusText: string
+}
+
+/** Single source of truth for "what can this account actually do right now" —
+ *  consumed by Settings, Talking Video, Automation Studio, and Render Queue so
+ *  none of them independently guesses at or hardcodes provider availability. */
+export function describeTalkingPhotosCapabilities(
+  status: ProviderConnectionStatus,
+  capabilities: ProviderCapabilities | null
+): TalkingPhotosCapabilitySummary {
+  if (status !== 'connected' || !capabilities) {
+    return {
+      uploadedAudioAvailable: false,
+      ttsAvailable: false,
+      statusText: 'Connect a TalkingPhotos.ai account to see available creation modes.'
+    }
+  }
+  const ttsAvailable = capabilities.limits.maxCharactersTts > 0
+  return {
+    uploadedAudioAvailable: true,
+    ttsAvailable,
+    statusText: ttsAvailable
+      ? 'Uploaded-audio and script (TTS) Human video creation are both available in Talking Video and Automation Studio.'
+      : 'Uploaded-audio Human video creation is available in Talking Video and Automation Studio. Script (TTS) creation is unavailable for this account.'
+  }
+}
+
 export function normalizeLanguage(raw: unknown): ProviderLanguage {
   const r = record(raw)
   return { code: str(r.code), name: str(r.name) }

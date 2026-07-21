@@ -483,6 +483,8 @@ export const useData = create<DataState>((set, get) => ({
     const p = get().activeProject
     if (!a || !p) return
     const projectImages = await a.compose.setImages(p.id, paths)
+    // Guard against a late response landing after the user switched projects.
+    if (get().activeProject?.id !== p.id) return
     set({ projectImages })
     await get().loadPreviewSpec(p.id)
   },
@@ -491,6 +493,7 @@ export const useData = create<DataState>((set, get) => ({
     const p = get().activeProject
     if (!a || !p) return
     const projectImages = await a.compose.reorderImages(p.id, imageIds)
+    if (get().activeProject?.id !== p.id) return
     set({ projectImages })
     await get().loadPreviewSpec(p.id)
   },
@@ -499,6 +502,7 @@ export const useData = create<DataState>((set, get) => ({
     const p = get().activeProject
     if (!a || !p || ranges.length === 0) return
     const projectImages = await a.compose.setRanges(p.id, ranges)
+    if (get().activeProject?.id !== p.id) return
     set({ projectImages, previewError: '' })
     await get().loadPreviewSpec(p.id)
   },
@@ -507,6 +511,7 @@ export const useData = create<DataState>((set, get) => ({
     const p = get().activeProject
     if (!a || !p || updates.length === 0) return
     const projectImages = await a.compose.setImageMotion(p.id, updates)
+    if (get().activeProject?.id !== p.id) return
     set({ projectImages, previewError: '' })
     await get().loadPreviewSpec(p.id)
   },
@@ -515,7 +520,7 @@ export const useData = create<DataState>((set, get) => ({
     const p = get().activeProject
     if (!a || !p) return
     const project = await a.compose.setMedia(p.id, patch)
-    if (project) {
+    if (project && get().activeProject?.id === p.id) {
       set({ activeProject: project, previewError: '' })
       debouncedLoadPreviewSpec(project.id, get)
     }
@@ -525,7 +530,7 @@ export const useData = create<DataState>((set, get) => ({
     const p = get().activeProject
     if (!a || !p) return
     const project = await a.compose.updateCaptions(p.id, patch)
-    if (project) {
+    if (project && get().activeProject?.id === p.id) {
       set({ activeProject: project, previewError: '' })
       debouncedLoadPreviewSpec(project.id, get)
     }
@@ -535,7 +540,7 @@ export const useData = create<DataState>((set, get) => ({
     const p = get().activeProject
     if (!a || !p) return
     const project = await a.compose.updateLook(p.id, patch)
-    if (project) {
+    if (project && get().activeProject?.id === p.id) {
       set({ activeProject: project, previewError: '' })
       debouncedLoadPreviewSpec(project.id, get)
     }
@@ -545,7 +550,7 @@ export const useData = create<DataState>((set, get) => ({
     const p = get().activeProject
     if (!a || !p) return
     const project = await a.compose.updateMotion(p.id, { preset })
-    if (project) {
+    if (project && get().activeProject?.id === p.id) {
       set({ activeProject: project, previewError: '' })
       debouncedLoadPreviewSpec(project.id, get)
     }
@@ -572,17 +577,30 @@ export const useData = create<DataState>((set, get) => ({
     // Optimistic single-word patch — avoids refetching the whole transcript (expensive
     // for long videos) just to flip one boolean.
     set((s) => ({ transcript: s.transcript.map((w) => (w.id === wordId ? { ...w, emphasis: !w.emphasis } : w)) }))
-    await a.transcribe.toggleEmphasis(wordId)
-    debouncedLoadPreviewSpec(p.id, get)
+    try {
+      await a.transcribe.toggleEmphasis(wordId)
+      debouncedLoadPreviewSpec(p.id, get)
+    } catch (e) {
+      // Roll back the optimistic flip so the UI doesn't diverge from the DB.
+      set((s) => ({
+        transcript: s.transcript.map((w) => (w.id === wordId ? { ...w, emphasis: !w.emphasis } : w)),
+        transcribeError: (e as Error).message
+      }))
+    }
   },
   setWordsEmphasis: async (wordIds, emphasis) => {
     const a = api()
     const p = get().activeProject
     if (!a || !p || wordIds.length === 0) return
     const idSet = new Set(wordIds)
+    const previous = get().transcript
     set((s) => ({ transcript: s.transcript.map((w) => (idSet.has(w.id) ? { ...w, emphasis } : w)) }))
-    await a.transcribe.setEmphasis(wordIds, emphasis)
-    debouncedLoadPreviewSpec(p.id, get)
+    try {
+      await a.transcribe.setEmphasis(wordIds, emphasis)
+      debouncedLoadPreviewSpec(p.id, get)
+    } catch (e) {
+      set({ transcript: previous, transcribeError: (e as Error).message })
+    }
   },
   sendActiveToRender: async () => {
     const a = api()

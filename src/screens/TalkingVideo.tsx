@@ -3,6 +3,7 @@ import { ScreenPad, PrimaryButton } from '../components/primitives'
 import { useStore } from '../store/useStore'
 import { useTalkingPhotos } from '../store/useTalkingPhotos'
 import { useData } from '../store/useData'
+import { describeTalkingPhotosCapabilities } from '@shared/talkingphotos'
 import type { ProviderConnectionStatus, ProviderJob, TalkingPhotosAspectRatio, TalkingPhotosProjectStyle, TalkingPhotosSubtitleMode } from '@shared/talkingphotos'
 
 const STATUS_LABEL: Record<ProviderConnectionStatus, string> = {
@@ -107,6 +108,7 @@ export function TalkingVideo(): JSX.Element {
   useEffect(() => { void init(); void loadDownloads() }, [init, loadDownloads])
 
   const status = connection?.status ?? 'disconnected'
+  const capabilitySummary = describeTalkingPhotosCapabilities(status, capabilities ?? null)
   const selectLocalFile = (files: FileList | null, setPath: (p: string) => void): void => {
     const file = files?.[0]
     if (!file) return
@@ -128,6 +130,7 @@ export function TalkingVideo(): JSX.Element {
     }
   }
   const submitScript = async (): Promise<void> => {
+    if (!capabilitySummary.ttsAvailable) return
     const job = await createScript({
       title: scriptTitle,
       script,
@@ -214,20 +217,24 @@ export function TalkingVideo(): JSX.Element {
               <label className="me-btn" style={{ border: '1px solid #262b34', borderRadius: 7, padding: '7px 11px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}><input type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.flac,.ogg" hidden onChange={(event) => selectLocalFile(event.target.files, setAudioPath)} />Choose audio file</label>
               <label className="me-btn" style={{ border: '1px solid #262b34', borderRadius: 7, padding: '7px 11px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}><input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => selectLocalFile(event.target.files, setCharacterImagePath)} />Choose character image</label>
               <div style={{ flex: 1, minWidth: 0, color: '#5b616f', fontSize: 10 }} className="me-ellipsis" title={`${audioPath}\n${characterImagePath}`}>{audioPath ? `Audio: ${audioPath.split(/[\\/]/).pop()}` : 'No audio selected'} · {characterImagePath ? `Image: ${characterImagePath.split(/[\\/]/).pop()}` : 'No image selected'}</div>
-              <PrimaryButton onClick={() => void submit()}>{creating ? 'Submitting…' : 'Create video'}</PrimaryButton>
+              <PrimaryButton disabled={creating} onClick={() => void submit()}>{creating ? 'Submitting…' : 'Create video'}</PrimaryButton>
             </div>
           </Card>
 
           <Card label="CREATE WITH A SCRIPT (TTS)">
-            <div style={{ fontSize: 11, color: '#6a7180', lineHeight: 1.5, marginBottom: 14 }}>Type a script; TalkingPhotos generates speech and resolves the result over its WebSocket before the video is created. Long scripts are split at sentence boundaries and merged automatically.</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Title<input value={scriptTitle} onChange={(event) => setScriptTitle(event.target.value)} style={{ ...inputStyle, display: 'block', marginTop: 5 }} /></label>
-              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Character prompt<input value={scriptCharacterPrompt} onChange={(event) => setScriptCharacterPrompt(event.target.value)} placeholder="Describe the person to animate" style={{ ...inputStyle, display: 'block', marginTop: 5 }} /></label>
-              <label style={{ fontSize: 10.5, color: '#8a909c', gridColumn: '1 / -1' }}>Script<textarea value={script} onChange={(event) => setScript(event.target.value)} rows={4} placeholder="What should the character say?" style={{ ...inputStyle, display: 'block', marginTop: 5, resize: 'vertical', fontFamily: 'inherit' }} /></label>
-              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Language<input value={language} onChange={(event) => setLanguage(event.target.value)} style={{ ...inputStyle, display: 'block', marginTop: 5 }} /></label>
-              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Voice<input value={voice} onChange={(event) => setVoice(event.target.value)} style={{ ...inputStyle, display: 'block', marginTop: 5 }} /></label>
+            <div style={{ fontSize: 11, color: '#6a7180', lineHeight: 1.5, marginBottom: 14 }}>
+              {capabilitySummary.ttsAvailable
+                ? 'Type a script; TalkingPhotos generates speech and resolves the result over its WebSocket before the video is created. Long scripts are split at sentence boundaries and merged automatically.'
+                : 'Script (TTS) creation is unavailable for this account — the fields below are disabled.'}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, opacity: capabilitySummary.ttsAvailable ? 1 : 0.55 }}>
+              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Title<input disabled={!capabilitySummary.ttsAvailable} value={scriptTitle} onChange={(event) => setScriptTitle(event.target.value)} style={{ ...inputStyle, display: 'block', marginTop: 5 }} /></label>
+              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Character prompt<input disabled={!capabilitySummary.ttsAvailable} value={scriptCharacterPrompt} onChange={(event) => setScriptCharacterPrompt(event.target.value)} placeholder="Describe the person to animate" style={{ ...inputStyle, display: 'block', marginTop: 5 }} /></label>
+              <label style={{ fontSize: 10.5, color: '#8a909c', gridColumn: '1 / -1' }}>Script<textarea disabled={!capabilitySummary.ttsAvailable} value={script} onChange={(event) => setScript(event.target.value)} rows={4} placeholder="What should the character say?" style={{ ...inputStyle, display: 'block', marginTop: 5, resize: 'vertical', fontFamily: 'inherit' }} /></label>
+              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Language<input disabled={!capabilitySummary.ttsAvailable} value={language} onChange={(event) => setLanguage(event.target.value)} style={{ ...inputStyle, display: 'block', marginTop: 5 }} /></label>
+              <label style={{ fontSize: 10.5, color: '#8a909c' }}>Voice<input disabled={!capabilitySummary.ttsAvailable} value={voice} onChange={(event) => setVoice(event.target.value)} style={{ ...inputStyle, display: 'block', marginTop: 5 }} /></label>
               <label style={{ fontSize: 10.5, color: '#8a909c' }}>Subtitles
-                <select value={subtitleMode} onChange={(event) => setSubtitleMode(event.target.value as TalkingPhotosSubtitleMode)} style={{ ...inputStyle, display: 'block', marginTop: 5 }}>
+                <select disabled={!capabilitySummary.ttsAvailable} value={subtitleMode} onChange={(event) => setSubtitleMode(event.target.value as TalkingPhotosSubtitleMode)} style={{ ...inputStyle, display: 'block', marginTop: 5 }}>
                   <option value="none">None</option>
                   <option value="provider">TalkingPhotos subtitles</option>
                   <option value="local">Mental Empire local captions</option>
@@ -235,9 +242,9 @@ export function TalkingVideo(): JSX.Element {
               </label>
             </div>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 13 }}>
-              <label className="me-btn" style={{ border: '1px solid #262b34', borderRadius: 7, padding: '7px 11px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}><input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => selectLocalFile(event.target.files, setScriptImagePath)} />Choose character image</label>
+              <label className="me-btn" style={{ border: '1px solid #262b34', borderRadius: 7, padding: '7px 11px', fontSize: 11, color: '#c4cad3', cursor: capabilitySummary.ttsAvailable ? 'pointer' : 'not-allowed', opacity: capabilitySummary.ttsAvailable ? 1 : 0.55 }}><input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={!capabilitySummary.ttsAvailable} onChange={(event) => selectLocalFile(event.target.files, setScriptImagePath)} />Choose character image</label>
               <div style={{ flex: 1, minWidth: 0, color: '#5b616f', fontSize: 10 }} className="me-ellipsis">{scriptImagePath ? `Image: ${scriptImagePath.split(/[\\/]/).pop()}` : 'No image selected'}</div>
-              <PrimaryButton onClick={() => void submitScript()}>{creating ? 'Submitting…' : 'Create video'}</PrimaryButton>
+              <PrimaryButton disabled={creating || !capabilitySummary.ttsAvailable} onClick={() => void submitScript()}>{creating ? 'Submitting…' : 'Create video'}</PrimaryButton>
             </div>
           </Card>
 

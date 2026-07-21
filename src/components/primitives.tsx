@@ -34,9 +34,13 @@ export function ScreenPad({ children, style }: { children: ReactNode; style?: CS
   return <div className="me-screen" style={{ padding: '30px 34px 40px', ...style }}>{children}</div>
 }
 
-export function PrimaryButton({ children, style, onClick }: { children: ReactNode; style?: CSSProperties; onClick?: () => void }): JSX.Element {
+export function PrimaryButton({ children, style, onClick, disabled }: { children: ReactNode; style?: CSSProperties; onClick?: () => void; disabled?: boolean }): JSX.Element {
   return (
-    <div onClick={onClick} className="me-btn" style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'linear-gradient(180deg,var(--accent),var(--accent-deep))', color: 'var(--accent-ink)', fontWeight: 600, fontSize: 12.5, padding: '10px 16px', borderRadius: 10, cursor: 'pointer', boxShadow: '0 4px 16px -4px var(--accent-glow)', ...style }}>
+    <div
+      onClick={disabled ? undefined : onClick}
+      className="me-btn"
+      style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'linear-gradient(180deg,var(--accent),var(--accent-deep))', color: 'var(--accent-ink)', fontWeight: 600, fontSize: 12.5, padding: '10px 16px', borderRadius: 10, cursor: disabled ? 'not-allowed' : 'pointer', boxShadow: '0 4px 16px -4px var(--accent-glow)', opacity: disabled ? 0.55 : 1, ...style }}
+    >
       {children}
     </div>
   )

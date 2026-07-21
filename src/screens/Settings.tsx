@@ -3,6 +3,7 @@ import { ScreenPad, Toggle } from '../components/primitives'
 import { useData } from '../store/useData'
 import { useStore } from '../store/useStore'
 import { useTalkingPhotos } from '../store/useTalkingPhotos'
+import { describeTalkingPhotosCapabilities } from '@shared/talkingphotos'
 import type { AccentName, AppSettings, RenderCapabilities } from '@shared/types'
 
 const ACCENTS: AccentName[] = ['Amber', 'Violet', 'Emerald', 'Crimson']
@@ -59,6 +60,7 @@ function TalkingPhotosCard({ enabled, onToggle }: { enabled: boolean; onToggle: 
   useEffect(() => { if (enabled) void init() }, [enabled, init])
   const status = connection?.status ?? 'disconnected'
   const canRetryHeadlessly = status === 'reauth_required'
+  const capabilitySummary = describeTalkingPhotosCapabilities(status, capabilities ?? null)
 
   return (
     <Card label="TALKINGPHOTOS.AI">
@@ -90,7 +92,7 @@ function TalkingPhotosCard({ enabled, onToggle }: { enabled: boolean; onToggle: 
               <span>Daily <b style={{ color: '#aab0bb' }}>{capabilities.usage.dailyUsage}/{capabilities.usage.dailyLimit}</b></span>
             </div>
           )}
-          <div style={{ fontSize: 10.5, color: '#5b616f', marginTop: 8 }}>Uploaded-audio Human video creation is available in Talking Video and Automation Studio. TTS creation remains unavailable.</div>
+          <div style={{ fontSize: 10.5, color: '#5b616f', marginTop: 8 }}>{capabilitySummary.statusText}</div>
         </div>
       )}
     </Card>
@@ -353,8 +355,6 @@ export function Settings(): JSX.Element {
         </Card>
         <Card label="REDESIGN FLAGS">
           <Row on={settings.features.workflowP1} label="Workflow P1 source state" onClick={() => saved({ features: { workflowP1: !settings.features.workflowP1 } })} />
-          <Row on={settings.features.videoEditorV2} label="Video editor V2" onClick={() => saved({ features: { videoEditorV2: !settings.features.videoEditorV2 } })} />
-          <Row on={settings.features.thumbEditorV2} label="Thumbnail editor V2" onClick={() => saved({ features: { thumbEditorV2: !settings.features.thumbEditorV2 } })} />
         </Card>
       </div>
     ),

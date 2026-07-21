@@ -18,6 +18,7 @@ export function EffectsPanel(): JSX.Element {
   }
   const [status, setStatus] = useState('')
   const [statusKind, setStatusKind] = useState<'info' | 'success' | 'error'>('info')
+  const [generating, setGenerating] = useState(false)
 
   const copyPrompt = (): void => {
     void navigator.clipboard.writeText(buildMasterPrompt(transcript, o.style))
@@ -25,7 +26,8 @@ export function EffectsPanel(): JSX.Element {
     setStatus('Master prompt copied — paste into ChatGPT/Gemini, then paste the JSON back here.')
   }
   const genGroq = async (): Promise<void> => {
-    if (!project) return
+    if (!project || generating) return
+    setGenerating(true)
     setStatusKind('info')
     setStatus('Generating with Groq…')
     try {
@@ -36,6 +38,8 @@ export function EffectsPanel(): JSX.Element {
     } catch (e) {
       setStatusKind('error')
       setStatus(`Failed: ${(e as Error).message}`)
+    } finally {
+      setGenerating(false)
     }
   }
   const planSummary = ((): string => {
@@ -52,7 +56,7 @@ export function EffectsPanel(): JSX.Element {
       </div>
       <div style={{ display: 'flex', gap: 7 }}>
         <Btn size="sm" style={{ flex: 1 }} onClick={copyPrompt}>Copy master prompt</Btn>
-        <Btn size="sm" variant="soft" style={{ flex: 1 }} onClick={() => void genGroq()}>✦ Auto-generate (Groq)</Btn>
+        <Btn size="sm" variant="soft" style={{ flex: 1 }} disabled={generating} onClick={() => void genGroq()}>{generating ? 'Generating…' : '✦ Auto-generate (Groq)'}</Btn>
       </div>
       <div>
         <FieldLabel>Effect plan JSON</FieldLabel>
