@@ -1334,8 +1334,16 @@ async function runSmokeE2E(): Promise<void> {
     const pB = createProject(dls[1].id)
     setImages(pB.id, [imgs[0]])
     sendToRender(pB.id)
-    // (c) no images → lavfi fallback
+    // (c) minimal single-image render. This case used to queue an audio-only project and
+    //     exercise the render engine's solid-background (lavfi) fallback, but the redesign
+    //     tightened validateRenderReady() to require visual media (images or usable B-roll)
+    //     so users can't accidentally queue an all-black video — the behavior the Compose UI
+    //     (and its client-side preflight) now enforces. An audio-only project therefore no
+    //     longer passes the queue gate, so this branch supplies a still image. The engine's
+    //     solid-background fallback code still exists but is no longer reachable via the
+    //     render queue by design.
     const pC = createProject(dls[2].id)
+    setImages(pC.id, [imgs[1]])
     sendToRender(pC.id)
 
     // (d) BETA image-mode: hook (with ASS-escaping chars) + overlay (all edges) + auto-zoom
@@ -1379,7 +1387,7 @@ async function runSmokeE2E(): Promise<void> {
     }
     probeJob(pA.id, 'J5a multi-image+xfade')
     probeJob(pB.id, 'J5b single-image')
-    probeJob(pC.id, 'J5c no-image fallback')
+    probeJob(pC.id, 'J5c single-image (minimal visual)')
 
     // ---- J6: BETA features on REAL ffmpeg (duration drift is the key regression) ----
     console.log('J6 — beta features real render')
