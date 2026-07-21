@@ -3,7 +3,7 @@ import type { Project, TranscriptWord } from '@shared/types'
 import { CAPTION_FONTS, captionAnchorPct, captionPresetSpec, keywordColor, resolveCaptionStyle } from '@shared/captionStyle'
 import { useData } from '../../../store/useData'
 import { CAPTION_PRESETS, captionPresetPatch } from '../gallery/captionPresets'
-import { Banner, Btn, Chip, FieldLabel, SectionLabel, Seg, SliderRow } from '../../../components/ui/kit'
+import { Banner, Btn, Chip, ColorField, FieldLabel, SectionLabel, Seg, SliderRow } from '../../../components/ui/kit'
 
 /* Captions panel — preset, typography, layout, pacing, and the word-level
    transcript with karaoke emphasis. Preset cards render with the preset's REAL
@@ -253,11 +253,11 @@ export function CaptionsPanel(): JSX.Element {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <label style={{ fontSize: 10.5, color: 'var(--text-dim)', display: 'flex', flexDirection: 'column', gap: 5 }}>
               Box colour
-              <input type="color" className="ed-color" value={style.boxColor ?? '#ffd93d'} onChange={(e) => void setCaptions({ captionBoxColor: e.target.value })} />
+              <ColorField className="ed-color" value={style.boxColor ?? '#ffd93d'} onChange={(v) => void setCaptions({ captionBoxColor: v })} debounceMs={150} />
             </label>
             <label style={{ fontSize: 10.5, color: 'var(--text-dim)', display: 'flex', flexDirection: 'column', gap: 5 }}>
               Text colour
-              <input type="color" className="ed-color" value={style.activeColor} onChange={(e) => void setCaptions({ captionHighlightColor: e.target.value })} />
+              <ColorField className="ed-color" value={style.activeColor} onChange={(v) => void setCaptions({ captionHighlightColor: v })} debounceMs={150} />
             </label>
           </div>
         </div>
@@ -267,7 +267,7 @@ export function CaptionsPanel(): JSX.Element {
         <div>
           <FieldLabel>Active-word colour</FieldLabel>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <input type="color" className="ed-color" style={{ width: 72 }} value={style.activeColor} onChange={(e) => void setCaptions({ captionHighlightColor: e.target.value })} />
+            <ColorField className="ed-color" style={{ width: 72 }} value={style.activeColor} onChange={(v) => void setCaptions({ captionHighlightColor: v })} debounceMs={150} />
             {style.keywordColors.length > 0 && (
               <span style={{ fontSize: 10, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 5 }}>
                 Emphasized words rotate

@@ -424,6 +424,67 @@ export function SliderRow({
   )
 }
 
+/** A raw <input type="color">, same local-first/trailing-commit pattern as SliderRow —
+ *  the native color picker fires onChange continuously while a color is being dragged
+ *  within it, so a nonzero debounceMs keeps a persistent IPC-backed onChange (e.g. a
+ *  caption/highlight color) from round-tripping on every pick tick. 0 (default) is the
+ *  previous every-tick behavior, for callers whose onChange is local-only. */
+export function ColorField({
+  value,
+  onChange,
+  className,
+  style,
+  debounceMs = 0
+}: {
+  value: string
+  onChange: (v: string) => void
+  className?: string
+  style?: CSSProperties
+  debounceMs?: number
+}): JSX.Element {
+  const [local, setLocal] = useState(value)
+  const pendingRef = useRef(false)
+  const onChangeRef = useRef(onChange)
+  onChangeRef.current = onChange
+  const trailingRef = useRef<TrailingCommit<string> | null>(null)
+  if (debounceMs > 0 && !trailingRef.current) {
+    trailingRef.current = createTrailingCommit((v) => {
+      pendingRef.current = false
+      onChangeRef.current(v)
+    }, debounceMs)
+  }
+
+  useEffect(() => {
+    if (!pendingRef.current) setLocal(value)
+  }, [value])
+
+  useEffect(() => () => {
+    // Switching project/selection while a pick is uncommitted — drop it rather
+    // than fire it against whatever is active now.
+    trailingRef.current?.cancel()
+  }, [])
+
+  const flush = (): void => trailingRef.current?.flush()
+
+  const handleChange = (v: string): void => {
+    setLocal(v)
+    if (debounceMs <= 0) { onChange(v); return }
+    pendingRef.current = true
+    trailingRef.current?.update(v)
+  }
+
+  return (
+    <input
+      type="color"
+      className={className}
+      style={style}
+      value={local}
+      onChange={(e) => handleChange(e.target.value)}
+      onBlur={debounceMs > 0 ? flush : undefined}
+    />
+  )
+}
+
 export function Swatches({
   colors,
   value,

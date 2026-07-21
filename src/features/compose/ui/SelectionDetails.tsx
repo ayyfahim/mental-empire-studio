@@ -4,7 +4,7 @@ import { LOOKS } from '@shared/looks'
 import { useData } from '../../../store/useData'
 import { QUICK_CAPTION_PRESETS, captionPresetPatch } from '../gallery/captionPresets'
 import type { EditorSelection } from '../timeline/timelineModel'
-import { Chip, SectionLabel, SliderRow } from '../../../components/ui/kit'
+import { Chip, ColorField, SectionLabel, SliderRow } from '../../../components/ui/kit'
 import { fmt } from './util'
 
 /* Timeline selection details — a compact context editor for whatever block is
@@ -142,12 +142,12 @@ export function SelectionDetails({
           </Chip>
           <label style={{ fontSize: 10.5, color: 'var(--text-dim)', display: 'flex', flexDirection: 'column', gap: 5 }}>
             {project.captionPreset === 'Submagic' ? 'Text colour' : 'Highlight colour'}
-            <input type="color" className="ed-color" value={captionHighlightColor} onChange={(e) => void setCaptions({ captionHighlightColor: e.target.value })} />
+            <ColorField className="ed-color" value={captionHighlightColor} onChange={(v) => void setCaptions({ captionHighlightColor: v })} debounceMs={150} />
           </label>
           {project.captionPreset === 'Submagic' && (
             <label style={{ fontSize: 10.5, color: 'var(--text-dim)', display: 'flex', flexDirection: 'column', gap: 5 }}>
               Box colour
-              <input type="color" className="ed-color" value={captionBoxColor} onChange={(e) => void setCaptions({ captionBoxColor: e.target.value })} />
+              <ColorField className="ed-color" value={captionBoxColor} onChange={(v) => void setCaptions({ captionBoxColor: v })} debounceMs={150} />
             </label>
           )}
         </div>
