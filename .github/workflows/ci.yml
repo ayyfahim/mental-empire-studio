@@ -53,8 +53,17 @@ jobs:
             exec "$real" "$@"
           fi
 
+          # Cached inputs (e.g. the beta edge-overlay .pam, keyed by
+          # WIDTHxHEIGHT in its filename) are never resolution filter args, even
+          # when their path happens to contain "1920x1080" — rewriting the
+          # reference points ffmpeg at a variant that was never generated at
+          # that size. Only rewrite args that aren't an existing file on disk.
           args=()
           for arg in "$@"; do
+            if [[ -e "$arg" ]]; then
+              args+=("$arg")
+              continue
+            fi
             arg="${arg//1920:1080/320:180}"
             arg="${arg//1920x1080/320x180}"
             args+=("$arg")
