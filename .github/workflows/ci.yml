@@ -27,7 +27,13 @@ jobs:
           F=test/fixtures
           run() {
             local mode="$1"
-            ME_SMOKE="$mode" ME_YTDLP_FIXTURE=$F/ytdlp ME_DOWNLOAD_FIXTURE=$F/audio/sample.mp3 \
+            # Isolated, disposable profile dir per smoke run — required by
+            # electron/services/smokeSafety.ts, which refuses to start (and refuses any
+            # destructive resetAll()/seedDemoForSmoke()) without it, to guarantee a smoke
+            # run can never wipe a real local install's userData.
+            local userdata
+            userdata="$(mktemp -d)"
+            ME_SMOKE="$mode" ME_SMOKE_USERDATA_DIR="$userdata" ME_YTDLP_FIXTURE=$F/ytdlp ME_DOWNLOAD_FIXTURE=$F/audio/sample.mp3 \
               ME_WHISPER_FIXTURE=$F/whisper/sample-words.json \
               xvfb-run -a node_modules/electron/dist/electron --no-sandbox out/main/main.js \
               | tee /tmp/out.txt
