@@ -1,4 +1,7 @@
+import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
+import { createTrailingCommit } from '../../lib/trailingCommit'
+import type { TrailingCommit } from '../../lib/trailingCommit'
 
 /* Shared editor UI kit — the single source of look-and-feel for the Compose and
    Thumbnail studios. Everything reads the theme tokens (tokens.css) and the control
@@ -345,7 +348,8 @@ export function SliderRow({
   format,
   onChange,
   labelWidth = 62,
-  disabled
+  disabled,
+  debounceMs = 0
 }: {
   label: string
   value: number
@@ -356,12 +360,66 @@ export function SliderRow({
   onChange: (v: number) => void
   labelWidth?: number
   disabled?: boolean
+  /** When >0, the thumb/value stay instantly responsive locally while the
+   *  onChange commit (typically a persistent IPC mutation) is debounced during
+   *  a drag, then flushed immediately on release/blur so the final value is
+   *  always persisted. 0 (default) preserves the previous every-tick behavior —
+   *  used by callers (e.g. the Thumbnail inspector) whose onChange only updates
+   *  local/in-memory state that the live canvas reads every frame. */
+  debounceMs?: number
 }): JSX.Element {
+  const [local, setLocal] = useState(value)
+  const pendingRef = useRef(false)
+  const onChangeRef = useRef(onChange)
+  onChangeRef.current = onChange
+  // Lazily created once per mount — delayMs is static per call site (no caller
+  // varies debounceMs across renders), so recreating it isn't needed.
+  const trailingRef = useRef<TrailingCommit<number> | null>(null)
+  if (debounceMs > 0 && !trailingRef.current) {
+    trailingRef.current = createTrailingCommit((v) => {
+      pendingRef.current = false
+      onChangeRef.current(v)
+    }, debounceMs)
+  }
+
+  useEffect(() => {
+    // Only resync from the prop while nothing is pending commit locally —
+    // otherwise an external refresh could yank the thumb back mid-drag.
+    if (!pendingRef.current) setLocal(value)
+  }, [value])
+
+  useEffect(() => () => {
+    // Unmounting (e.g. the user switched projects/selection) — drop any
+    // not-yet-committed drag value instead of firing it, since onChange may
+    // now resolve against a different active project/selection.
+    trailingRef.current?.cancel()
+  }, [])
+
+  const flush = (): void => trailingRef.current?.flush()
+
+  const handleChange = (v: number): void => {
+    setLocal(v)
+    if (debounceMs <= 0) { onChange(v); return }
+    pendingRef.current = true
+    trailingRef.current?.update(v)
+  }
+
   return (
     <label style={{ display: 'grid', gridTemplateColumns: `${labelWidth}px minmax(0,1fr) 44px`, alignItems: 'center', gap: 9, fontSize: 11, color: 'var(--text-muted)' }}>
       <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
-      <input type="range" className="ed-range" min={min} max={max} step={step} value={value} disabled={disabled} onChange={(e) => onChange(Number(e.target.value))} />
-      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#cdd2da', textAlign: 'right' }}>{format ? format(value) : value}</span>
+      <input
+        type="range"
+        className="ed-range"
+        min={min}
+        max={max}
+        step={step}
+        value={local}
+        disabled={disabled}
+        onChange={(e) => handleChange(Number(e.target.value))}
+        onPointerUp={debounceMs > 0 ? flush : undefined}
+        onBlur={debounceMs > 0 ? flush : undefined}
+      />
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#cdd2da', textAlign: 'right' }}>{format ? format(local) : local}</span>
     </label>
   )
 }

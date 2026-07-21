@@ -6,6 +6,7 @@ import {
   buildTalkingPhotosHumanTtsPayload,
   classifyProviderError,
   computeSlotBudget,
+  describeTalkingPhotosCapabilities,
   detectReauthRequired,
   isAllowedProjectDownloadUrl,
   isAllowedProviderMediaUrl,
@@ -87,6 +88,41 @@ describe('TalkingPhotos capability normalization', () => {
   it('normalizes a language and a motion entry', () => {
     expect(normalizeLanguage({ code: 'en-US', name: 'English (US)' })).toEqual({ code: 'en-US', name: 'English (US)' })
     expect(normalizeMotion({ id: '7', title: 'Wave', tag: 'casual', thumbUrl: 'a', videoUrl: 'b', durationSeconds: 4, isPremium: true, isBonus: false })).toMatchObject({ id: 7, isPremium: true, isBonus: false })
+  })
+})
+
+describe('Shared TalkingPhotos capability interpretation (Settings/Talking Video/Automation/Render Queue)', () => {
+  const caps: ProviderCapabilities = {
+    limits: { maxDurationSeconds: 300, maxCharactersTts: 6000, maxDurationPremiumSeconds: 300, maxCharactersTtsPremium: 6000 },
+    usage: { concurrentCount: 0, concurrentLimit: 5, dailyUsage: 0, dailyLimit: 100 },
+    fetchedAt: '2026-01-01T00:00:00.000Z'
+  }
+  const capsNoTts: ProviderCapabilities = { ...caps, limits: { ...caps.limits, maxCharactersTts: 0 } }
+
+  it('reports both uploaded-audio and TTS available when connected with a nonzero TTS character limit', () => {
+    const summary = describeTalkingPhotosCapabilities('connected', caps)
+    expect(summary.uploadedAudioAvailable).toBe(true)
+    expect(summary.ttsAvailable).toBe(true)
+    expect(summary.statusText).toMatch(/script \(TTS\).*available/i)
+  })
+
+  it('reports TTS unavailable (but uploaded-audio still available) when connected with a zero TTS limit', () => {
+    const summary = describeTalkingPhotosCapabilities('connected', capsNoTts)
+    expect(summary.uploadedAudioAvailable).toBe(true)
+    expect(summary.ttsAvailable).toBe(false)
+    expect(summary.statusText).toMatch(/script \(tts\) creation is unavailable/i)
+  })
+
+  it('reports nothing available when not connected, even with cached capabilities from a prior session', () => {
+    const summary = describeTalkingPhotosCapabilities('disconnected', caps)
+    expect(summary.uploadedAudioAvailable).toBe(false)
+    expect(summary.ttsAvailable).toBe(false)
+  })
+
+  it('reports nothing available when connected but capabilities have not loaded yet', () => {
+    const summary = describeTalkingPhotosCapabilities('connected', null)
+    expect(summary.uploadedAudioAvailable).toBe(false)
+    expect(summary.ttsAvailable).toBe(false)
   })
 })
 

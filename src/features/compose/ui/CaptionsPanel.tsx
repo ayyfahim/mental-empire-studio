@@ -231,6 +231,7 @@ export function CaptionsPanel(): JSX.Element {
             max={96}
             format={(v) => `${v}% from top`}
             onChange={(v) => void setCaptions({ captionOffsetY: v })}
+            debounceMs={150}
           />
         </div>
         <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 4, lineHeight: 1.4 }}>

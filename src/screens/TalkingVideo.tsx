@@ -180,10 +180,18 @@ export function TalkingVideo(): JSX.Element {
           <div style={{ fontSize: 12, color: '#8a909c', marginBottom: 12 }}>
             {status === 'reauth_required'
               ? 'Your TalkingPhotos session expired. Reconnect to keep syncing existing projects.'
+              : status === 'attention'
+              ? 'The last connect attempt closed before finishing. Try again.'
+              : status === 'waiting_for_login'
+              ? 'Finish logging in in the window that opened — this will update automatically.'
+              : status === 'verifying'
+              ? 'Confirming your session with TalkingPhotos…'
               : 'Connect your TalkingPhotos.ai account to sync and download your existing projects.'}
           </div>
-          <PrimaryButton onClick={() => void (status === 'reauth_required' ? reconnect() : connect())}>
-            {connecting ? 'Connecting…' : status === 'reauth_required' ? 'Reconnect TalkingPhotos' : 'Connect TalkingPhotos'}
+          <PrimaryButton disabled={connecting} onClick={() => void (status === 'reauth_required' ? reconnect() : connect())}>
+            {/* Each in-flight sub-state gets its own label so login/verify/generic
+                connecting never look like the same stuck button. */}
+            {connecting ? STATUS_LABEL[status] : status === 'reauth_required' ? 'Reconnect TalkingPhotos' : status === 'attention' ? 'Retry TalkingPhotos' : 'Connect TalkingPhotos'}
           </PrimaryButton>
         </Card>
       )}

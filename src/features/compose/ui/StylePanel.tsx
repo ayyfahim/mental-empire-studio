@@ -162,20 +162,21 @@ export function StylePanel(): JSX.Element {
           max={100}
           format={(v) => `${v}%`}
           onChange={(v) => patch({ overlay: { ...o.overlay, intensity: v } })}
+          debounceMs={150}
         />
       </div>
 
       <Section label="Fine-tune colour" defaultOpen={false}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
-          <SliderRow label="Brightness" value={adjust.brightness ?? 0} min={-0.2} max={0.2} step={0.01} format={(v) => v.toFixed(2)} onChange={(v) => setAdjust({ brightness: v })} />
-          <SliderRow label="Contrast" value={adjust.contrast ?? 1} min={0.7} max={1.5} step={0.01} format={(v) => v.toFixed(2)} onChange={(v) => setAdjust({ contrast: v })} />
-          <SliderRow label="Saturation" value={adjust.saturation ?? 1} min={0} max={2} step={0.01} format={(v) => v.toFixed(2)} onChange={(v) => setAdjust({ saturation: v })} />
-          <SliderRow label="Red" value={color.r ?? 0} min={-0.2} max={0.2} step={0.01} format={(v) => v.toFixed(2)} onChange={(v) => setColor({ r: v })} />
-          <SliderRow label="Green" value={color.g ?? 0} min={-0.2} max={0.2} step={0.01} format={(v) => v.toFixed(2)} onChange={(v) => setColor({ g: v })} />
-          <SliderRow label="Blue" value={color.b ?? 0} min={-0.2} max={0.2} step={0.01} format={(v) => v.toFixed(2)} onChange={(v) => setColor({ b: v })} />
-          <SliderRow label="Vignette" value={adjust.vignette ?? 0} min={0} max={1} step={0.01} format={percent} onChange={(v) => setAdjust({ vignette: v })} />
-          <SliderRow label="Sharpen" value={adjust.sharpen ?? 0} min={0} max={1} step={0.01} format={percent} onChange={(v) => setAdjust({ sharpen: v })} />
-          <SliderRow label="Grain" value={adjust.grain ?? 0} min={0} max={0.12} step={0.005} format={percent} onChange={(v) => setAdjust({ grain: v })} />
+          <SliderRow label="Brightness" value={adjust.brightness ?? 0} min={-0.2} max={0.2} step={0.01} format={(v) => v.toFixed(2)} onChange={(v) => setAdjust({ brightness: v })} debounceMs={150} />
+          <SliderRow label="Contrast" value={adjust.contrast ?? 1} min={0.7} max={1.5} step={0.01} format={(v) => v.toFixed(2)} onChange={(v) => setAdjust({ contrast: v })} debounceMs={150} />
+          <SliderRow label="Saturation" value={adjust.saturation ?? 1} min={0} max={2} step={0.01} format={(v) => v.toFixed(2)} onChange={(v) => setAdjust({ saturation: v })} debounceMs={150} />
+          <SliderRow label="Red" value={color.r ?? 0} min={-0.2} max={0.2} step={0.01} format={(v) => v.toFixed(2)} onChange={(v) => setColor({ r: v })} debounceMs={150} />
+          <SliderRow label="Green" value={color.g ?? 0} min={-0.2} max={0.2} step={0.01} format={(v) => v.toFixed(2)} onChange={(v) => setColor({ g: v })} debounceMs={150} />
+          <SliderRow label="Blue" value={color.b ?? 0} min={-0.2} max={0.2} step={0.01} format={(v) => v.toFixed(2)} onChange={(v) => setColor({ b: v })} debounceMs={150} />
+          <SliderRow label="Vignette" value={adjust.vignette ?? 0} min={0} max={1} step={0.01} format={percent} onChange={(v) => setAdjust({ vignette: v })} debounceMs={150} />
+          <SliderRow label="Sharpen" value={adjust.sharpen ?? 0} min={0} max={1} step={0.01} format={percent} onChange={(v) => setAdjust({ sharpen: v })} debounceMs={150} />
+          <SliderRow label="Grain" value={adjust.grain ?? 0} min={0} max={0.12} step={0.005} format={percent} onChange={(v) => setAdjust({ grain: v })} debounceMs={150} />
           <Btn size="sm" style={{ alignSelf: 'flex-start' }} onClick={() => void setLook({ adjust: {} })}>Reset adjustments</Btn>
         </div>
       </Section>

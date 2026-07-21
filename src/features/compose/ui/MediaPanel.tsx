@@ -180,6 +180,7 @@ export function MediaPanel({ fileInputRef }: { fileInputRef: React.RefObject<HTM
         step={0.1}
         format={(v) => `${v.toFixed(1)}s`}
         onChange={(v) => void setMedia({ crossfade: v })}
+        debounceMs={150}
       />
 
       <div>

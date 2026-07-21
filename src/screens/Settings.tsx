@@ -76,7 +76,11 @@ function TalkingPhotosCard({ enabled, onToggle }: { enabled: boolean; onToggle: 
             {status === 'connected' ? (
               <div className="me-btn" onClick={() => void disconnect()} style={{ border: '1px solid #262b34', borderRadius: 7, padding: '6px 12px', fontSize: 11, color: '#c4cad3', cursor: 'pointer' }}>Disconnect</div>
             ) : (
-              <div className="me-btn" onClick={() => void (canRetryHeadlessly ? reconnect() : connect())} style={{ border: '1px solid var(--accent)', color: 'var(--accent)', borderRadius: 7, padding: '6px 12px', fontSize: 11, cursor: 'pointer' }}>
+              <div
+                className="me-btn"
+                onClick={connecting ? undefined : () => void (canRetryHeadlessly ? reconnect() : connect())}
+                style={{ border: '1px solid var(--accent)', color: 'var(--accent)', borderRadius: 7, padding: '6px 12px', fontSize: 11, cursor: connecting ? 'not-allowed' : 'pointer', opacity: connecting ? 0.6 : 1 }}
+              >
                 {connecting ? (CONNECTION_STATUS_LABEL[status] ?? 'Connecting…') : status === 'reauth_required' ? 'Reconnect' : status === 'attention' ? 'Retry' : 'Connect'}
               </div>
             )}

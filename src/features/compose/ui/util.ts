@@ -1,6 +1,27 @@
+import { asBetaOpts } from '@shared/types'
 import type { BetaVideoOpts, Project, ProjectImage, TranscriptWord } from '@shared/types'
 import type { GpuBrollSegment } from '@shared/renderSpec'
 import type { EditorSelection } from '../timeline/timelineModel'
+
+export interface ComposeRenderPreflight {
+  ready: boolean
+  missing: string[]
+}
+
+/** Best-effort mirror of the server-side validateRenderReady check (electron/ipc/compose.ts's
+ *  sendToRender guard) so "Send to render" can be disabled with an actionable reason instead of
+ *  only failing after a full IPC round trip. B-roll/library availability is DB- and
+ *  settings-backed, so a project with B-roll enabled but an empty cache still passes this
+ *  client-side check — the server's own error message remains authoritative for that case. */
+export function composeRenderPreflight(project: Project | null | undefined, images: ProjectImage[]): ComposeRenderPreflight {
+  if (!project) return { ready: false, missing: ['project'] }
+  const missing: string[] = []
+  if (!project.mp3Path) missing.push('audio')
+  if (!project.durationSec || project.durationSec <= 0) missing.push('audio duration')
+  const brollEnabled = asBetaOpts(project.betaOpts).broll.enabled
+  if (images.length === 0 && !brollEnabled) missing.push('images or Auto B-roll')
+  return { ready: missing.length === 0, missing }
+}
 
 export function fmt(sec: number): string {
   const s = Math.max(0, Math.floor(sec || 0))

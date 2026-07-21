@@ -129,7 +129,7 @@ export function SelectionDetails({
                   <Chip key={d.id ?? 'auto'} title={d.title} on={d.id === imageMotionDirection} onClick={() => void setImageMotion([{ id: image.id, motionDirection: d.id }])}>{d.label}</Chip>
                 ))}
               </div>
-              <SliderRow label="Amount" value={Math.round(imageMotionAmount)} min={0} max={100} labelWidth={50} onChange={(v) => void setImageMotion([{ id: image.id, motionAmount: v }])} />
+              <SliderRow label="Amount" value={Math.round(imageMotionAmount)} min={0} max={100} labelWidth={50} onChange={(v) => void setImageMotion([{ id: image.id, motionAmount: v }])} debounceMs={150} />
             </>
           )}
         </div>
@@ -169,6 +169,7 @@ export function SelectionDetails({
             labelWidth={50}
             format={(v) => `${v}%`}
             onChange={(v) => void setLook({ lut: selectedLook.id === 'off' ? 'clean' : selectedLook.id, strength: clampValue(v, 0, 100) / 100 })}
+            debounceMs={150}
           />
           <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
             {LOOKS.slice(0, 5).map((look) => (

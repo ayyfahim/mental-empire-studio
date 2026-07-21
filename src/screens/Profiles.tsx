@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from 'react'
 import { useStore } from '../store/useStore'
 import { useData } from '../store/useData'
+import { useTalkingPhotos } from '../store/useTalkingPhotos'
 import { ScreenPad } from '../components/primitives'
 import { Banner, Btn, EmptyState, Panel, Section, SectionLabel, ToggleRow } from '../components/ui/kit'
 import { AUTOMATION_GOALS, buildAutomationWorkflow, formatGoal } from '@shared/automation'
@@ -98,7 +99,7 @@ function WorkflowPreview({ draft }: { draft: AutomationJobDraft }): JSX.Element 
   </div>
 }
 
-function JobDetails({ detail }: { detail: AutomationJobDetail }): JSX.Element {
+function JobDetails({ detail, onOpenProject }: { detail: AutomationJobDetail; onOpenProject: (projectId: string) => void }): JSX.Element {
   const style = detail.config.styleConfig
   return <div style={{ borderTop: '1px solid var(--border)', padding: 15, background: 'var(--bg-inset)' }}>
     <SectionLabel>Effective configuration</SectionLabel>
@@ -127,6 +128,7 @@ function JobDetails({ detail }: { detail: AutomationJobDetail }): JSX.Element {
           {item.selectionDecision && <span style={{ gridColumn: '1 / -1', color: item.selectionDecision.matchType === 'ambiguous-title' ? 'var(--warn)' : 'var(--text-faint)' }}>Upload decision: {item.selectionDecision.matchType} · confidence {item.selectionDecision.score.toFixed(2)} · {item.selectionDecision.action}</span>}
           {(item.brollSeed !== undefined || item.brollClipIds?.length) && <span style={{ gridColumn: '1 / -1', color: 'var(--text-faint)' }}>B-roll seed {item.brollSeed ?? '—'} · {item.brollClipIds?.length ?? 0} recorded clips</span>}
           {item.outputPath && <span className="me-ellipsis" title={item.outputPath} style={{ gridColumn: '1 / -1', color: 'var(--ok-2)' }}>Output: {item.outputPath}</span>}
+          {item.projectId && <span style={{ gridColumn: '1 / -1' }}><Btn size="sm" onClick={() => onOpenProject(item.projectId!)}>Open resulting project</Btn></span>}
           {(item.error || item.warning) && <span style={{ gridColumn: '1 / -1', color: item.error ? 'var(--err-2)' : 'var(--warn)' }}>{item.error || item.warning}</span>}
         </div>)}
       </div>
@@ -150,8 +152,19 @@ export function Profiles(): JSX.Element {
   const resumeJob = useData((state) => state.resumeAutomationJob)
   const cancelJob = useData((state) => state.cancelAutomationJob)
   const retryJob = useData((state) => state.retryAutomationJob)
+  const openProjectById = useData((state) => state.openProjectById)
   const setActive = useStore((state) => state.setActive)
   const settings = useStore((state) => state.settings)
+  const talkingPhotosEnabled = settings.integrations.talkingPhotos.enabled
+  const talkingPhotosStatus = useTalkingPhotos((state) => state.connection?.status ?? 'disconnected')
+  // The shared goal catalog can't know about live provider state — patch the one
+  // goal that depends on it instead of hardcoding a second copy of AUTOMATION_GOALS.
+  const automationGoals = useMemo(() => AUTOMATION_GOALS.map((definition) => {
+    if (definition.id !== 'talkingphotos-video' || !definition.available) return definition
+    if (!talkingPhotosEnabled) return { ...definition, available: false, availabilityNote: 'Enable TalkingPhotos in Settings → Integrations first.' }
+    if (talkingPhotosStatus !== 'connected') return { ...definition, available: false, availabilityNote: 'Connect your TalkingPhotos account in Settings or Talking Video first.' }
+    return definition
+  }), [talkingPhotosEnabled, talkingPhotosStatus])
 
   const [view, setView] = useState<'setup' | 'jobs'>('setup')
   const [stage, setStage] = useState(0)
@@ -167,6 +180,7 @@ export function Profiles(): JSX.Element {
   const [sourceModalOpen, setSourceModalOpen] = useState(false)
   const [assetModalOpen, setAssetModalOpen] = useState(false)
   const [sourceLoadError, setSourceLoadError] = useState('')
+  const [jobActionPending, setJobActionPending] = useState<Record<string, boolean>>({})
   const sourceBrowseRef = useRef<HTMLButtonElement>(null)
   const assetBrowseRef = useRef<HTMLButtonElement>(null)
   const activeDraftId = useRef(draftState.id)
@@ -277,7 +291,7 @@ export function Profiles(): JSX.Element {
   }), [config, sourceLabel, goal, sourceKind, source, sourceUrl, sourceCount, localMediaPaths, selectedVideoIds])
 
   const chooseGoal = (next: AutomationGoal): void => {
-    const definition = AUTOMATION_GOALS.find((candidate) => candidate.id === next)
+    const definition = automationGoals.find((candidate) => candidate.id === next)
     if (!definition?.available) return
     setGoal(next)
     if (next === 'transcribe-subtitle') setCaptions(true)
@@ -328,6 +342,28 @@ export function Profiles(): JSX.Element {
     dispatchDraft({ type: 'duplicate', job })
     setAvailableVideos([]); setSourceModalOpen(false); setAssetModalOpen(false); setStage(0); setPreflight(null); setSetupError(''); setView('setup')
   }
+  // Shared pause/resume/retry/cancel guard: prevents a double-click from firing
+  // the same job action twice before the refreshed job list re-renders the row.
+  const runJobAction = async (jobId: string, action: (id: string) => Promise<void>): Promise<void> => {
+    if (jobActionPending[jobId]) return
+    setJobActionPending((prev) => ({ ...prev, [jobId]: true }))
+    setSetupError('')
+    try {
+      await action(jobId)
+    } catch (error) {
+      setSetupError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setJobActionPending((prev) => { const next = { ...prev }; delete next[jobId]; return next })
+    }
+  }
+  const openAutomationProject = async (projectId: string): Promise<void> => {
+    try {
+      await openProjectById(projectId)
+      setActive('compose')
+    } catch (error) {
+      setSetupError(error instanceof Error ? error.message : String(error))
+    }
+  }
   const newAutomation = (): void => {
     dispatchDraft({ type: 'new', settings })
     setAvailableVideos([]); setPreflight(null); setExpanded(null); setStarting(false); setSourceModalOpen(false); setAssetModalOpen(false); setSourceLoadError(''); setSetupError(''); setStage(0); setView('setup')
@@ -345,7 +381,7 @@ export function Profiles(): JSX.Element {
     {view === 'setup' ? <>
       <nav aria-label="Automation setup progress" className="automation-setup-steps">{SETUP_STEPS.map((label, index) => <button type="button" key={label} aria-current={index === stage ? 'step' : undefined} onClick={() => { if (index <= stage) { setStage(index); setSetupError('') } }} disabled={index > stage}><div className={index < stage ? 'done' : index === stage ? 'current' : ''} /><span>{index + 1}. {label}</span></button>)}</nav>
 
-      {stage === 0 && <Panel><SectionLabel>What do you want to finish?</SectionLabel><div className="automation-goal-grid">{AUTOMATION_GOALS.map((definition) => { const selected = goal === definition.id; return <button type="button" key={definition.id} onClick={() => chooseGoal(definition.id)} disabled={!definition.available} aria-pressed={selected} className="automation-goal-card" style={{ borderColor: selected ? 'var(--accent)' : undefined, background: selected ? 'var(--accent-soft)' : undefined }}><div><strong style={{ color: selected ? 'var(--accent)' : 'var(--text-bright)' }}>{definition.title}</strong><span>{definition.available ? 'READY' : 'LATER'}</span></div><p>{definition.description}</p>{definition.availabilityNote && <small>{definition.availabilityNote}</small>}</button> })}</div></Panel>}
+      {stage === 0 && <Panel><SectionLabel>What do you want to finish?</SectionLabel><div className="automation-goal-grid">{automationGoals.map((definition) => { const selected = goal === definition.id; return <button type="button" key={definition.id} onClick={() => chooseGoal(definition.id)} disabled={!definition.available} aria-pressed={selected} className="automation-goal-card" style={{ borderColor: selected ? 'var(--accent)' : undefined, background: selected ? 'var(--accent-soft)' : undefined }}><div><strong style={{ color: selected ? 'var(--accent)' : 'var(--text-bright)' }}>{definition.title}</strong><span>{definition.available ? 'READY' : 'LATER'}</span></div><p>{definition.description}</p>{definition.availabilityNote && <small>{definition.availabilityNote}</small>}</button> })}</div></Panel>}
 
       {stage === 1 && <>
         <Panel><SectionLabel>Choose source and content</SectionLabel>
@@ -373,14 +409,14 @@ export function Profiles(): JSX.Element {
       {stage === 4 && <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}><Panel><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><SectionLabel style={{ flex: 1 }}>Generated workflow</SectionLabel><span style={{ fontSize: 9.5, color: 'var(--ok-2)', fontFamily: 'var(--font-mono)' }}>EFFECTIVE CONTRACT</span></div><div style={{ marginTop: 12 }}><WorkflowPreview draft={draft} /></div></Panel><div className="automation-review-grid"><Panel><SectionLabel>Ready-to-run summary</SectionLabel><div className="automation-summary"><span>Final goal</span><b>{formatGoal(goal)}</b><span>Source & items</span><b>{sourceLabel} · {sourceKind === 'local-files' ? localMediaPaths.length : selectedVideoIds.length || sourceCount} item(s)</b><span>Caption</span><b>{captions ? `${config.styleConfig.captionPreset} · ${config.styleConfig.captionFont} · ${config.styleConfig.captionAnimation} · ${config.styleConfig.captionPosition}${config.styleConfig.captionOffsetY == null ? '' : ` @ ${config.styleConfig.captionOffsetY}%`} · ${config.styleConfig.captionLines} line(s) · ${config.styleConfig.captionPace} · ${config.styleConfig.wordsPerCaption} words · ${config.styleConfig.highlightColor}/${config.styleConfig.boxColor}` : 'Disabled'}</b><span>Gradient</span><b>{config.styleConfig.gradientEdge} · {config.styleConfig.gradientIntensity}%</b><span>Images</span><b>{config.styleConfig.imageMode} · {config.styleConfig.crossfadeSec}s crossfade · {config.styleConfig.motionPreset} motion · {assets.length} assets</b><span>B-roll</span><b>{autoBroll ? `${config.styleConfig.brollMode} · ${config.styleConfig.brollDensity} · ${config.styleConfig.brollPoolSize} clips · ${config.styleConfig.brollPoolKey || 'resolved source/global pool'} · ${config.styleConfig.brollFallbackPolicy} · ${config.styleConfig.brollShufflePolicy}` : 'Disabled'}</b><span>Aspect / style</span><b>{config.styleConfig.aspectRatio} · {config.styleConfig.videoStyle}</b><span>Retry / pacing</span><b>{retries} additional attempts · {config.rules.downloadDelaySec}s download delay · {continueOnError ? 'continue other items' : 'pause the batch'}</b><span>Upload data</span><b>{preflight?.uploadDataState || 'checking'} · {config.rules.skipUploaded ? 'skip exact/high matches' : 'skip disabled'}</b><span>Execution</span><b>Local · {settings.encoder === 'cpu' ? 'CPU' : settings.encoder.toUpperCase()} · {settings.quality}</b><span>Notifications</span><b>{[desktopNotify && 'desktop', webhookNotify && 'webhook'].filter(Boolean).join(' + ') || 'in-app only'}</b></div></Panel><Panel><SectionLabel>Preflight</SectionLabel>{!preflight ? <div aria-live="polite" style={{ color: 'var(--text-dim)', fontSize: 11, marginTop: 12 }}>Checking configuration…</div> : <><div style={{ marginTop: 11, color: preflight.ok ? 'var(--ok-2)' : 'var(--err-2)', fontWeight: 700, fontSize: 12 }}>{preflight.ok ? '✓ Ready to run unattended' : 'Action required before start'}</div><div style={{ marginTop: 10, color: 'var(--text-dim)', fontSize: 10.5, lineHeight: 1.55 }}>~{preflight.estimatedStorageGb.toFixed(1)} GB · ~{preflight.estimatedMinutes} min<br />Upload data: {preflight.uploadDataState || 'not linked'}<br />{preflight.appMessage}<br />{preflight.powerMessage}</div>{preflight.blockers.map((message) => <div key={message} style={{ color: 'var(--err-2)', fontSize: 10.5, marginTop: 7 }}>• {message}</div>)}{preflight.warnings.map((message) => <div key={message} style={{ color: 'var(--warn)', fontSize: 10.5, marginTop: 7 }}>• {message}</div>)}</>}</Panel></div></div>}
 
       {setupError && <div role="alert" style={{ marginTop: 12 }}><Banner kind="error"><b>Couldn’t continue:</b> {setupError}</Banner></div>}
-      <div className="automation-footer-actions"><Btn disabled={stage === 0} onClick={() => { setStage(Math.max(0, stage - 1)); setSetupError('') }}>Back</Btn><div style={{ flex: 1 }} />{stage < 3 && <Btn variant="primary" disabled={(stage === 0 && !AUTOMATION_GOALS.find((definition) => definition.id === goal)?.available) || (stage === 1 && !sourceReady)} onClick={() => { setStage(stage + 1); setSetupError('') }}>Continue</Btn>}{stage === 3 && <Btn variant="primary" disabled={!sourceReady || (!assets.length && !autoBroll)} onClick={() => void goReview()}>Review workflow</Btn>}{stage === 4 && <Btn variant="primary" disabled={!preflight?.ok || starting} onClick={() => void start()} style={{ padding: '11px 20px' }}>{starting ? 'Starting…' : '▶ Start automation and run until complete'}</Btn>}</div>
+      <div className="automation-footer-actions"><Btn disabled={stage === 0} onClick={() => { setStage(Math.max(0, stage - 1)); setSetupError('') }}>Back</Btn><div style={{ flex: 1 }} />{stage < 3 && <Btn variant="primary" disabled={(stage === 0 && !automationGoals.find((definition) => definition.id === goal)?.available) || (stage === 1 && !sourceReady)} onClick={() => { setStage(stage + 1); setSetupError('') }}>Continue</Btn>}{stage === 3 && <Btn variant="primary" disabled={!sourceReady || (!assets.length && !autoBroll)} onClick={() => void goReview()}>Review workflow</Btn>}{stage === 4 && <Btn variant="primary" disabled={!preflight?.ok || starting} onClick={() => void start()} style={{ padding: '11px 20px' }}>{starting ? 'Starting…' : '▶ Start automation and run until complete'}</Btn>}</div>
     </> : <>
       <div className="automation-jobs-heading"><div><h2>Automation jobs</h2><p>Durable production goals loaded from SQLite—not browser memory.</p></div><Btn variant="soft" onClick={newAutomation}>＋ New automation</Btn></div>
       {activeJob && <div className="automation-live-strip" aria-live="polite"><span><b>LIVE</b> · {activeJob.currentStep}</span><span>ETA {jobEta(activeJob)}</span><span>Started {activeJob.startedAt ? new Date(activeJob.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'now'}</span><span>{settings.encoder === 'cpu' ? 'CPU' : settings.encoder.toUpperCase()} · {settings.quality}</span></div>}
       {automationJobs.length === 0 ? <EmptyState title="No automation jobs yet" body="Choose a goal to build your first unattended workflow. It will appear here before processing starts." action={<Btn variant="primary" onClick={newAutomation}>Create automation</Btn>} /> : <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>{automationJobs.map((job) => {
         const active = job.status === 'running' || job.status === 'queued' || job.status === 'pausing'
         const needsAttention = job.status === 'attention' || job.status === 'failed'
-        return <article key={job.id} className="automation-job-card" style={{ borderColor: needsAttention ? '#4a2530' : job.status === 'completed' ? '#1f382f' : undefined }}><div className="automation-job-body"><div className="automation-job-title"><div aria-hidden="true" className={`automation-job-icon ${active ? 'active' : ''}`}>{active ? '▶' : job.status === 'completed' ? '✓' : needsAttention ? '!' : '■'}</div><div style={{ flex: 1, minWidth: 0 }}><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><strong className="me-ellipsis">{job.name}</strong><JobStatus status={job.status} /></div><div style={{ color: 'var(--text-dim)', fontSize: 10.5, marginTop: 4 }}>{formatGoal(job.goal)} · {job.config.sourceName} · {job.totalItems || job.config.sourceCount} items</div></div><div style={{ textAlign: 'right' }}><b style={{ fontFamily: 'var(--font-mono)', color: job.status === 'completed' ? 'var(--ok-2)' : 'var(--accent)', fontSize: 15 }}>{job.progress}%</b><small>overall</small></div></div><div role="progressbar" aria-label={`${job.name} progress`} aria-valuenow={job.progress} aria-valuemin={0} aria-valuemax={100} className="automation-job-progress"><div style={{ width: `${job.progress}%`, background: needsAttention ? 'var(--err)' : job.status === 'completed' ? 'var(--ok)' : undefined }} /></div><div className="automation-job-metrics"><div><span>CURRENT STEP</span><b>{job.currentStep || 'Waiting'}</b></div><div><span>ITEMS</span><b>{job.completedCount} done · {job.failedCount} failed</b></div><div><span>CHECKPOINT</span><b>{job.lastCheckpointAt ? new Date(job.lastCheckpointAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'not started'}</b></div><div><span>OUTPUT</span><b className="me-ellipsis">{job.result?.outputPaths[0] || settings.libraryFolder || settings.outputFolder || 'Mental Empire Studio library'}</b></div></div>{job.error && <div role="alert" className="automation-job-error"><b>What happened:</b> {job.error}<br /><span>Other items may continue when safe. Completed checkpoints remain available for resume or retry.</span></div>}<div className="automation-job-actions">{(job.status === 'running' || job.status === 'queued') && <Btn size="sm" onClick={() => void pauseJob(job.id)}>Pause</Btn>}{(job.status === 'paused' || job.status === 'attention' || job.status === 'failed') && <Btn size="sm" variant="soft" onClick={() => void resumeJob(job.id)}>Resume</Btn>}{job.failedCount > 0 && ['failed','completed_with_warnings','attention'].includes(job.status) && <Btn size="sm" variant="soft" onClick={() => void retryJob(job.id)}>Retry failed items</Btn>}{(active || job.status === 'paused' || job.status === 'attention' || job.status === 'failed') && <Btn size="sm" variant="danger" onClick={() => void cancelJob(job.id)}>Cancel</Btn>}<Btn size="sm" onClick={() => void showDetails(job)}>{expanded?.id === job.id ? 'Hide details' : 'View details'}</Btn>{job.result?.outputPaths[0] && <Btn size="sm" onClick={() => void window.api.publish.reveal(job.result!.outputPaths[0])}>Open output</Btn>}<Btn size="sm" onClick={() => duplicate(job)}>Duplicate workflow</Btn><Btn size="sm" onClick={() => window.api.openLogs()}>Technical logs</Btn></div></div>{expanded?.id === job.id && <JobDetails detail={expanded} />}</article>
+        return <article key={job.id} className="automation-job-card" style={{ borderColor: needsAttention ? '#4a2530' : job.status === 'completed' ? '#1f382f' : undefined }}><div className="automation-job-body"><div className="automation-job-title"><div aria-hidden="true" className={`automation-job-icon ${active ? 'active' : ''}`}>{active ? '▶' : job.status === 'completed' ? '✓' : needsAttention ? '!' : '■'}</div><div style={{ flex: 1, minWidth: 0 }}><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><strong className="me-ellipsis">{job.name}</strong><JobStatus status={job.status} /></div><div style={{ color: 'var(--text-dim)', fontSize: 10.5, marginTop: 4 }}>{formatGoal(job.goal)} · {job.config.sourceName} · {job.totalItems || job.config.sourceCount} items</div></div><div style={{ textAlign: 'right' }}><b style={{ fontFamily: 'var(--font-mono)', color: job.status === 'completed' ? 'var(--ok-2)' : 'var(--accent)', fontSize: 15 }}>{job.progress}%</b><small>overall</small></div></div><div role="progressbar" aria-label={`${job.name} progress`} aria-valuenow={job.progress} aria-valuemin={0} aria-valuemax={100} className="automation-job-progress"><div style={{ width: `${job.progress}%`, background: needsAttention ? 'var(--err)' : job.status === 'completed' ? 'var(--ok)' : undefined }} /></div><div className="automation-job-metrics"><div><span>CURRENT STEP</span><b>{job.currentStep || 'Waiting'}</b></div><div><span>ITEMS</span><b>{job.completedCount} done · {job.failedCount} failed</b></div><div><span>CHECKPOINT</span><b>{job.lastCheckpointAt ? new Date(job.lastCheckpointAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'not started'}</b></div><div><span>OUTPUT</span><b className="me-ellipsis">{job.result?.outputPaths[0] || settings.libraryFolder || settings.outputFolder || 'Mental Empire Studio library'}</b></div></div>{job.error && <div role="alert" className="automation-job-error"><b>What happened:</b> {job.error}<br /><span>Other items may continue when safe. Completed checkpoints remain available for resume or retry.</span></div>}<div className="automation-job-actions">{(job.status === 'running' || job.status === 'queued') && <Btn size="sm" disabled={!!jobActionPending[job.id]} onClick={() => void runJobAction(job.id, pauseJob)}>Pause</Btn>}{(job.status === 'paused' || job.status === 'attention' || job.status === 'failed') && <Btn size="sm" variant="soft" disabled={!!jobActionPending[job.id]} onClick={() => void runJobAction(job.id, resumeJob)}>Resume</Btn>}{job.failedCount > 0 && ['failed','completed_with_warnings','attention'].includes(job.status) && <Btn size="sm" variant="soft" disabled={!!jobActionPending[job.id]} onClick={() => void runJobAction(job.id, retryJob)}>Retry failed items</Btn>}{(active || job.status === 'paused' || job.status === 'attention' || job.status === 'failed') && <Btn size="sm" variant="danger" disabled={!!jobActionPending[job.id]} onClick={() => void runJobAction(job.id, cancelJob)}>Cancel</Btn>}<Btn size="sm" onClick={() => void showDetails(job)}>{expanded?.id === job.id ? 'Hide details' : 'View details'}</Btn>{job.result?.outputPaths[0] && <Btn size="sm" onClick={() => void window.api.publish.reveal(job.result!.outputPaths[0])}>Open output</Btn>}<Btn size="sm" onClick={() => duplicate(job)}>Duplicate workflow</Btn><Btn size="sm" onClick={() => window.api.openLogs()}>Technical logs</Btn></div></div>{expanded?.id === job.id && <JobDetails detail={expanded} onOpenProject={(projectId) => void openAutomationProject(projectId)} />}</article>
       })}</div>}
       {setupError && <div role="alert" style={{ marginTop: 12 }}><Banner kind="error">{setupError}</Banner></div>}
     </>}

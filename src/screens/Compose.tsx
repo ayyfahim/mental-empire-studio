@@ -11,7 +11,7 @@ import { CaptionsPanel } from '../features/compose/ui/CaptionsPanel'
 import { StylePanel } from '../features/compose/ui/StylePanel'
 import { EffectsPanel } from '../features/compose/ui/EffectsPanel'
 import { GpuChip } from '../features/compose/ui/GpuChip'
-import { editorSelectionLabel, fmt } from '../features/compose/ui/util'
+import { composeRenderPreflight, editorSelectionLabel, fmt } from '../features/compose/ui/util'
 
 /* Compose — the video editor. Layout: header (project switcher + render CTA),
    live preview stage beside a tabbed inspector, and the multi-track timeline
@@ -62,6 +62,7 @@ export function Compose(): JSX.Element {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const previewBroll = previewSpec?.broll ?? []
+  const preflight = useMemo(() => composeRenderPreflight(project, images), [project, images])
   const selectedLabel = useMemo(
     () => editorSelectionLabel(selection, images, transcript, previewBroll, project),
     [selection, images, transcript, previewBroll, project]
@@ -97,6 +98,10 @@ export function Compose(): JSX.Element {
 
   const sendToRender = async (): Promise<void> => {
     if (sending) return
+    if (!preflight.ready) {
+      setError(`Project is not render-ready. Missing: ${preflight.missing.join(', ')}.`)
+      return
+    }
     setSending(true)
     setError('')
     try {
@@ -137,7 +142,12 @@ export function Compose(): JSX.Element {
           </select>
         )}
         {project && (
-          <Btn variant={queued ? 'soft' : 'primary'} disabled={sending} onClick={() => void sendToRender()}>
+          <Btn
+            variant={queued ? 'soft' : 'primary'}
+            disabled={sending || (!queued && !preflight.ready)}
+            title={!queued && !preflight.ready ? `Missing: ${preflight.missing.join(', ')}` : undefined}
+            onClick={() => void sendToRender()}
+          >
             {queued ? '✓ Queued for render' : sending ? 'Queueing…' : 'Send to render'}
             {!queued && !sending && (
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
