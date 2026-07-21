@@ -58,7 +58,13 @@ jobs:
 
             # Start the whole xvfb/Electron/ffmpeg tree in its own process group so the
             # expected stop at the coverage boundary cannot leave an encoder behind.
-            setsid bash -c 'smoke_env "$@"' _ e2e "$userdata" >"$logfile" 2>&1 &
+            setsid env ME_SMOKE=e2e \
+                ME_SMOKE_USERDATA_DIR="$userdata" \
+                ME_YTDLP_FIXTURE="$F/ytdlp" \
+                ME_DOWNLOAD_FIXTURE="$F/audio/sample.mp3" \
+                ME_WHISPER_FIXTURE="$F/whisper/sample-words.json" \
+              xvfb-run -a node_modules/electron/dist/electron --no-sandbox out/main/main.js \
+              >"$logfile" 2>&1 &
             pid=$!
 
             while kill -0 "$pid" 2>/dev/null; do
@@ -116,7 +122,6 @@ jobs:
 
           run() {
             local mode="$1"
-            local limit="5m"
             local userdata
             local logfile
             local status=0
