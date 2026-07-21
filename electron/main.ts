@@ -1420,12 +1420,20 @@ async function runSmokeE2E(): Promise<void> {
     const bedOut = join(app.getPath('temp'), 'me-e2e-out', 'beta-bed.mp4')
     const bedAss = join(app.getPath('temp'), 'me-e2e-out', 'beta-bed.ass')
     writeFileSync(bedAss, buildAss(words, { preset: 'Hormozi', aspect: '16:9', keywords: false }).ass)
-    await runRender({ project: repos.getProject(pBeta.id)!, images: [], assPath: bedAss, outPath: bedOut, settings: getSettings(), videoBedPath: bedReal, sfxPath: sfxTrack ?? undefined })
+    // J6b's two renders exist to prove the b-roll graph variants (bed-mode and
+    // single-pass), not a production output dimension — J5/J6a already cover the
+    // full 1920x1080 path. Render them small + ultrafast (a real product preview
+    // path) so the CPU-only CI runner finishes the single-pass xfade graph in
+    // seconds instead of grinding an upscaled 1080p graph for many minutes. The
+    // small size is driven from the source, so the overlay .pam is generated at
+    // the same dimensions and the graph stays internally consistent.
+    const j6bPreview = { previewDimensions: { w: 640, h: 360 }, cpuPreset: 'ultrafast' as const }
+    await runRender({ project: repos.getProject(pBeta.id)!, images: [], assPath: bedAss, outPath: bedOut, settings: getSettings(), videoBedPath: bedReal, sfxPath: sfxTrack ?? undefined, ...j6bPreview })
     const bo = ffprobe(bedOut)
     check(!!bo && bo.video && bo.audio && Math.abs(bo.duration - 12) < 0.6, `J6b bed-mode render: a/v + 12s (got ${bo?.duration?.toFixed(2)})`)
     check(!!bo && bo.vcodec === 'h264' && bo.acodec === 'aac', 'J6b bed-mode h264/aac')
     const directOut = join(app.getPath('temp'), 'me-e2e-out', 'beta-direct-broll.mp4')
-    await runRender({ project: repos.getProject(pBeta.id)!, images: [], assPath: bedAss, outPath: directOut, settings: getSettings(), brollSegments: segs, transition: 'fade', sfxPath: sfxTrack ?? undefined })
+    await runRender({ project: repos.getProject(pBeta.id)!, images: [], assPath: bedAss, outPath: directOut, settings: getSettings(), brollSegments: segs, transition: 'fade', sfxPath: sfxTrack ?? undefined, ...j6bPreview })
     const directProbe = ffprobe(directOut)
     check(!!directProbe && directProbe.video && directProbe.audio && Math.abs(directProbe.duration - 12) < 0.6, `J6b single-pass b-roll render: a/v + 12s (got ${directProbe?.duration?.toFixed(2)})`)
     check(!!directProbe && directProbe.vcodec === 'h264' && directProbe.acodec === 'aac', 'J6b single-pass b-roll h264/aac')

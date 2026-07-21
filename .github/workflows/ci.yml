@@ -25,48 +25,11 @@ jobs:
       - run: npx @electron/rebuild -f -w better-sqlite3
       - run: npm run typecheck
       - run: npm run build
-      # Real ffmpeg (libass) for the e2e render test.
+      # Real ffmpeg (libass) for the e2e render test. No arg-level speed shim:
+      # the two redundant J6b b-roll renders are kept small + ultrafast from the
+      # source (previewDimensions + cpuPreset in the e2e harness), so every render
+      # here runs the real, unmodified ffmpeg binary.
       - run: npm run setup:ffmpeg
-      - name: Install CI ffmpeg speed shim
-        run: |
-          set -euo pipefail
-          ffmpeg="resources/bin/ffmpeg"
-          mv "$ffmpeg" "${ffmpeg}.real"
-          cat > "$ffmpeg" <<'SHIM'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          real="$(dirname "$0")/ffmpeg.real"
-
-          # J5/J6a already prove the production 1920x1080 render path. J6b exists to
-          # verify the two b-roll graph variants, SFX mixing, codecs, and duration.
-          # Keep those two renders real and full-resolution, but force the fastest
-          # x264 preset with capped threads on the hosted 2-core runner. Product
-          # code and normal renders are untouched.
-          target=0
-          for arg in "$@"; do
-            case "$arg" in
-              *beta-bed.mp4|*beta-direct-broll.mp4) target=1 ;;
-            esac
-          done
-
-          if [[ "$target" -eq 0 ]]; then
-            exec "$real" "$@"
-          fi
-
-          # Do NOT rewrite resolution. Downscaling the graph's dimension tokens
-          # while the real b-roll input clips stay at native size yields a
-          # dimensionally-inconsistent filter graph that hangs ffmpeg — the
-          # beta-direct-broll variant burned the entire 20m e2e budget that way.
-          # Full 1920x1080 renders each finish in ~7s here, so just force the
-          # fastest preset and cap threads; leave the arguments otherwise intact.
-          args=("$@")
-          last=$((${#args[@]} - 1))
-          out="${args[$last]}"
-          unset 'args[$last]'
-          echo "[ci-ffmpeg-shim] fast J6b render (ultrafast, capped threads) -> $out" >&2
-          exec "$real" "${args[@]}" -threads 2 -filter_threads 1 -preset ultrafast "$out"
-          SHIM
-          chmod +x "$ffmpeg"
       # Headless milestone smokes (M2-M7) under a virtual display.
       - name: Smoke harnesses
         run: |
