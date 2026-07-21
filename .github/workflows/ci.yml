@@ -39,9 +39,9 @@ jobs:
 
           # J5/J6a already prove the production 1920x1080 render path. J6b exists to
           # verify the two b-roll graph variants, SFX mixing, codecs, and duration.
-          # Keep those two renders real, but make only those redundant cases small and
-          # ultrafast on the hosted 2-core runner. Product code and normal renders are
-          # untouched, and J6b does not assert a production output dimension.
+          # Keep those two renders real and full-resolution, but force the fastest
+          # x264 preset with capped threads on the hosted 2-core runner. Product
+          # code and normal renders are untouched.
           target=0
           for arg in "$@"; do
             case "$arg" in
@@ -53,26 +53,17 @@ jobs:
             exec "$real" "$@"
           fi
 
-          # Cached inputs (e.g. the beta edge-overlay .pam, keyed by
-          # WIDTHxHEIGHT in its filename) are never resolution filter args, even
-          # when their path happens to contain "1920x1080" — rewriting the
-          # reference points ffmpeg at a variant that was never generated at
-          # that size. Only rewrite args that aren't an existing file on disk.
-          args=()
-          for arg in "$@"; do
-            if [[ -e "$arg" ]]; then
-              args+=("$arg")
-              continue
-            fi
-            arg="${arg//1920:1080/320:180}"
-            arg="${arg//1920x1080/320x180}"
-            args+=("$arg")
-          done
-
+          # Do NOT rewrite resolution. Downscaling the graph's dimension tokens
+          # while the real b-roll input clips stay at native size yields a
+          # dimensionally-inconsistent filter graph that hangs ffmpeg — the
+          # beta-direct-broll variant burned the entire 20m e2e budget that way.
+          # Full 1920x1080 renders each finish in ~7s here, so just force the
+          # fastest preset and cap threads; leave the arguments otherwise intact.
+          args=("$@")
           last=$((${#args[@]} - 1))
           out="${args[$last]}"
           unset 'args[$last]'
-          echo "[ci-ffmpeg-shim] fast J6b render 320x180 ultrafast -> $out" >&2
+          echo "[ci-ffmpeg-shim] fast J6b render (ultrafast, capped threads) -> $out" >&2
           exec "$real" "${args[@]}" -threads 2 -filter_threads 1 -preset ultrafast "$out"
           SHIM
           chmod +x "$ffmpeg"
