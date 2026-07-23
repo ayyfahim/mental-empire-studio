@@ -167,8 +167,29 @@ The trunk exists so fan-out worktrees fork a branch that already compiles with t
 | 9 | Compose OM preview (4D) | `electron/ipc/compose.ts`; `PreviewStage.tsx`; `usePreviewCompositor.ts` | Play a bounded OM sample render (or last OM output) in Compose preview. |
 | 10 | Smokes / fixtures / tests / docs | `electron/main.ts` `runSmokeMontage`; `test/fixtures/montage/*`; shim unit test | `ME_SMOKE=montage` drives bridge against `ME_MONTAGE_FIXTURE`; CI wire-up; finalize this doc. |
 
-Dependencies point only at the committed trunk, never sibling PRs. Units 2 & 3 share `montage-compose.ts`
-dispatch but fill disjoint runtime branches. Unit 1 also feeds 4B mitigation.
+Dependencies point only at the committed trunk, never sibling PRs. Unit 1 also feeds 4B mitigation.
+
+### Execution note (fan-out wave 1)
+Remotion + HyperFrames were **merged into a single composition unit** to avoid two worktrees editing
+`montage-compose.ts::buildBriefForProject`. Final spawned unit numbering (worktrees off commit with
+F1–F5):
+- W1 Footage & stock sourcing (`montage/footage.ts` + broll source option + Niches UI)
+- W2 Composition — Remotion + HyperFrames (`montage/edit-remotion.ts`, `edit-hyperframes.ts`,
+  `buildBriefForProject`, `queue.ts` dispatch)
+- W3 Compose StylePanel UI
+- W4 Automations wizard UI
+- W5 Settings / Capabilities UI
+- W6 Caption styling overhaul (4C)
+- W7 B-roll loop fix (4B)
+- W8 Compose OM preview (4D)
+- W9 Smokes / fixtures / tests / docs
+
+Worker verification is **typecheck + build + fixture/shim checks** (worktrees have no real OM and no
+node_modules → `npm install` first; no headful Electron). W9 owns the `ME_MONTAGE_FIXTURE`-backed
+`ME_SMOKE=montage` smoke and verifies it itself. Shared-file conflict hotspots the coordinator
+resolves on merge-back: `broll.ts` (W1+W7 — disjoint regions), `compose.ts` (W6+W8), `shared/types.ts`
+(W3 betaOpts). git push is blocked → workers commit locally; coordinator merges branches into
+`feat/openmontage-bridge` and pushes via the GitHub Data API.
 
 ## 7. Verification (e2e recipe)
 
