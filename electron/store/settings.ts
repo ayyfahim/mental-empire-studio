@@ -15,7 +15,11 @@ type Schema = { settings: AppSettings }
 let store: Store<Schema> | null = null
 
 // Field names (anywhere in the settings tree) whose string values are secrets.
-const SECRET_FIELDS = new Set(['apiKey', 'pexelsKey', 'pixabayKey', 'coverrKey'])
+const SECRET_FIELDS = new Set([
+  'apiKey', 'pexelsKey', 'pixabayKey', 'coverrKey',
+  // OpenMontage bridge provider keys (settings.montage.*) — passed to the Python subprocess via env
+  'falKey', 'unsplashKey', 'elevenLabsKey', 'openaiKey', 'googleKey'
+])
 const ENC_PREFIX = 'enc:v1:'
 
 function canEncrypt(): boolean {

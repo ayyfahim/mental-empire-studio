@@ -1044,6 +1044,20 @@ function installMock(): void {
         textEffects: [{ scope: 'hook', preset: 'cinematic-pop' }, { word: 'discipline', preset: 'intense-zoom' }]
       }, null, 2)
     }),
+    montage: ns({
+      // OpenMontage bridge is a main-process subprocess; unavailable in the browser mock.
+      capabilities: async () => ({
+        available: false,
+        renderEngines: { ffmpeg: false, remotion: false, hyperframes: false },
+        capabilities: [],
+        setupOffers: [],
+        runtimeWarnings: [],
+        error: 'OpenMontage bridge unavailable in browser mock'
+      }),
+      retrieveFootage: async () => [],
+      produce: async () => ({ ok: false, error: 'OpenMontage bridge unavailable in browser mock' }),
+      cancel: async () => {}
+    }),
     looks: ns({
       list: async () => LOOKS
     }),
@@ -1136,6 +1150,7 @@ function installMock(): void {
     onTranscribeProgress: () => noop,
     onRenderProgress: (cb: (p: RenderProgress) => void) => { renderCbs.push(cb); return noop },
     onAutomation: (cb: (p: AutomationEvent) => void) => { automationCbs.push(cb); return noop },
+    onMontageProgress: () => noop,
     onAutomationJob: (cb: (p: AutomationJob) => void) => { automationJobCbs.push(cb); return noop }
   }
 

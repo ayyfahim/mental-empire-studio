@@ -1068,6 +1068,21 @@ export interface AppSettings {
   dedup: { allowReupload: boolean }
   /** third-party cloud provider connections, gated off by default until each is ready */
   integrations: { talkingPhotos: { enabled: boolean } }
+  /** OpenMontage bridge: drive the external OpenMontage app for footage/stock/composition.
+   *  Gated off by default. `openMontageRoot` points at the user's OpenMontage checkout (not
+   *  bundled). Provider keys are passed to the Python subprocess via env (encrypted at rest);
+   *  pexels/pixabay reuse the `beta.*` keys. */
+  montage: {
+    enabled: boolean
+    openMontageRoot: string
+    /** python interpreter; '' = auto (OpenMontage venv → PATH) */
+    pythonPath: string
+    falKey: string
+    unsplashKey: string
+    elevenLabsKey: string
+    openaiKey: string
+    googleKey: string
+  }
   /** global Sentry kill switch — crash reports, perf traces, and resource sampling.
    *  Flipping this off fully disables telemetry app-wide, live, no restart needed. */
   telemetryEnabled: boolean
@@ -1111,6 +1126,16 @@ export const DEFAULT_SETTINGS: AppSettings = {
   detection: { auto: true, confirmBand: [0.6, 0.82] },
   dedup: { allowReupload: false },
   integrations: { talkingPhotos: { enabled: false } },
+  montage: {
+    enabled: false,
+    openMontageRoot: '',
+    pythonPath: '',
+    falKey: '',
+    unsplashKey: '',
+    elevenLabsKey: '',
+    openaiKey: '',
+    googleKey: ''
+  },
   telemetryEnabled: true
 }
 
@@ -1173,6 +1198,83 @@ export interface WorkItem {
   archived: boolean
 }
 
+// ---- OpenMontage bridge ----
+/** Composition runtime OpenMontage will render with. */
+export type MontageRuntime = 'remotion' | 'hyperframes' | 'ffmpeg'
+
+/** Result of probing the external OpenMontage install via the bridge shim. */
+export interface MontageCapabilities {
+  /** true when the shim ran and the OpenMontage root is valid */
+  available: boolean
+  omRoot?: string
+  pythonPath?: string
+  /** python version reported by the shim (e.g. "3.11.9") */
+  python?: string
+  renderEngines: { ffmpeg: boolean; remotion: boolean; hyperframes: boolean }
+  capabilities: {
+    capability: string
+    configured: number
+    total: number
+    availableProviders: string[]
+    unavailableProviders: string[]
+  }[]
+  /** 1-minute env-var fixes surfaced by OpenMontage */
+  setupOffers: { capability: string; tool: string; provider?: string; envVars: string[]; installInstructions?: string }[]
+  /** silent-availability warnings to show verbatim (e.g. "hyperframes: npm package not resolvable") */
+  runtimeWarnings: string[]
+  /** populated when detection failed (missing python / OM root / import error) */
+  error?: string
+}
+
+/** One footage/stock clip returned by OpenMontage DirectClipSearch. */
+export interface MontageFootageClip {
+  clipId: string
+  source: string
+  kind: string
+  path: string
+  thumbnail?: string
+  duration?: number
+  width?: number
+  height?: number
+  license?: string
+  sourceUrl?: string
+  query?: string
+  slotId?: string
+}
+
+export interface MontageFootageRequest {
+  /** where DirectClipSearch writes clips/ + thumbnails/ */
+  outputDir: string
+  queries: { query: string; slotId?: string; kind?: 'video' | 'image' | 'any' }[]
+  /** adapter names (archive_org, nasa, wikimedia, pexels, …); omit = all available */
+  sources?: string[]
+  clipsPerQuery?: number
+  filters?: { minDuration?: number; maxDuration?: number; orientation?: string; minWidth?: number }
+}
+
+export interface MontageProduceOptions {
+  runtime?: MontageRuntime
+  /** bounded short sample render, for the Compose preview */
+  sample?: boolean
+}
+
+/** Streamed stage event from a montage run. */
+export interface MontageProgress {
+  id: string
+  stage: string
+  status: 'start' | 'done' | 'skip' | 'error' | 'log'
+  message?: string
+  data?: Record<string, unknown>
+}
+
+export interface MontageProduceResult {
+  ok: boolean
+  /** final rendered mp4 path when composition ran */
+  output?: string
+  data?: Record<string, unknown>
+  error?: string
+}
+
 export interface NativeApi {
   platform: NodeJS.Platform | 'web'
   /** the running app version (from package.json / app.getVersion()) */
@@ -1208,6 +1310,18 @@ export interface NativeApi {
   effects: {
     /** beta: generate a validated effect-plan JSON for a project via Groq */
     generate(projectId: string, style: VideoStyle): Promise<string>
+  }
+  /** OpenMontage bridge: footage/stock retrieval + Remotion/HyperFrames composition driven
+   *  through the external OpenMontage app (subprocess). Gated by settings.montage.enabled. */
+  montage: {
+    /** probe OpenMontage availability + capability menu (cached; force=true re-probes) */
+    capabilities(force?: boolean): Promise<MontageCapabilities>
+    /** retrieve footage/stock clips via OpenMontage DirectClipSearch */
+    retrieveFootage(req: MontageFootageRequest): Promise<MontageFootageClip[]>
+    /** run a full footage→compose→review production for a project; streams onMontageProgress */
+    produce(projectId: string, opts?: MontageProduceOptions): Promise<MontageProduceResult>
+    /** cancel an in-flight montage run by its id (projectId) */
+    cancel(id: string): Promise<void>
   }
   looks: {
     list(): Promise<import('./looks').LookPreset[]>
@@ -1455,6 +1569,8 @@ export interface NativeApi {
   onRenderProgress(cb: (p: RenderProgress) => void): () => void
   /** subscribe to profile-run events; returns an unsubscribe fn */
   onAutomation(cb: (e: AutomationEvent) => void): () => void
+  /** subscribe to OpenMontage production stage events; returns an unsubscribe fn */
+  onMontageProgress(cb: (p: MontageProgress) => void): () => void
   /** subscribe to durable automation job changes; SQLite remains source of truth */
   onAutomationJob(cb: (job: AutomationJob) => void): () => void
   /** subscribe to TalkingPhotos provider-job changes; provider_jobs remains source of truth */

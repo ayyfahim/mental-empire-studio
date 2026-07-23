@@ -207,9 +207,9 @@ Coordinator-only REAL e2e (not required of workers): on the OM-installed machine
 |------|--------|-------|
 | F1 branch + design doc + memory | ✅ done | branch `feat/openmontage-bridge`; this doc + 3 memory files |
 | F2 Python shim | ✅ done | `resources/montage/mes_bridge.py`; capabilities verified vs real OM |
-| F3 bridge service skeleton | todo | |
-| F4 IPC + settings scaffold | todo | |
-| F5 render dispatch stub + packaging | todo | |
+| F3 bridge service skeleton | ✅ done | `electron/services/montage/{bridge,capabilities,montage-compose}.ts`; spawn/NDJSON/cancel/watchdog/fixture seam; capabilities+retrieveFootage functional, produce plumbed |
+| F4 IPC + settings scaffold | ✅ done | `montage:*` IPC (`electron/ipc/montage.ts` + register), `NativeApi.montage` + `onMontageProgress`, `AppSettings.montage` + defaults + SECRET_FIELDS, preload + mockApi stubs. typecheck + build green |
+| F5 render dispatch stub + packaging | ✅ done | `montage-compose.ts` `composeViaMontage` (buildBrief stub for units 2/3); `electron-builder.yml` extraResources `resources/montage`. Note: `queue.ts::resolveEngine` NOT modified — unit 2 wires the compose call. |
 | Unit 1 Footage & stock | todo | |
 | Unit 2 Remotion compose | todo | |
 | Unit 3 HyperFrames compose | todo | |
@@ -221,6 +221,14 @@ Coordinator-only REAL e2e (not required of workers): on the OM-installed machine
 | Unit 9 Compose OM preview | todo | |
 | Unit 10 Smokes/fixtures/tests | todo | |
 
-**Next action:** build F3–F5 (Electron bridge service skeleton + `montage:*` IPC + settings scaffold +
-`resolveEngine` dispatch stub + `extraResources`), `npm run typecheck` + `npm run build`, commit the
-trunk, then spawn fan-out workers for units 1–10.
+**Next action:** Foundation (F1–F5) is committed and green (typecheck + build). Fan out workers for
+units 1–10 (worktrees off this branch). Each unit forks the committed trunk, adds its own files +
+minimal disjoint edits, verifies per §7, and reports a PR. Coordinator consolidates branches back
+into `feat/openmontage-bridge` (git push proxy blocked → GitHub Data API).
+
+**Trunk API surface available to units:** `window.api.montage.{capabilities,retrieveFootage,produce,
+cancel}` + `onMontageProgress`; main-process `electron/services/montage/{bridge,capabilities,
+montage-compose}.ts` (`detectCapabilities`, `getMontageCapabilities`, `retrieveFootage`,
+`produceFromBrief`, `cancelMontage`, `composeViaMontage`, `buildBriefForProject` STUB); settings
+`settings.montage.{enabled,openMontageRoot,pythonPath,falKey,unsplashKey,elevenLabsKey,openaiKey,
+googleKey}`; fixture seam `ME_MONTAGE_FIXTURE` (dir with `<command>.ndjson`).

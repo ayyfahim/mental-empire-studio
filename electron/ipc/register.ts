@@ -19,6 +19,7 @@ import { probeGpuEngine } from '../services/engine/gpu/host'
 import { runUploadDetection } from '../services/uploads-detect'
 import { setSentryEnabled, telemetryForcedOff } from '../services/sentry'
 import { registerTalkingPhotosIpc } from './talkingphotos'
+import { registerMontageIpc } from './montage'
 import { clearProviderSessionStorage } from '../providers/talkingphotos/partition'
 
 // All native capability the renderer can reach is registered here as invoke
@@ -140,6 +141,9 @@ export function registerIpc(): void {
 
   // ---- TalkingPhotos cloud provider: session, sync, and uploaded-audio Human creation ----
   registerTalkingPhotosIpc()
+
+  // ---- OpenMontage bridge: footage/stock + Remotion/HyperFrames composition (subprocess) ----
+  registerMontageIpc()
 
   // ---- beta: effect-plan generation via Groq (reuses the transcription key) ----
   ipcMain.handle('effects:generate', async (_e, projectId: string, style: import('../../shared/types').VideoStyle) => {
