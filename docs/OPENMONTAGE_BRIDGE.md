@@ -231,16 +231,22 @@ Coordinator-only REAL e2e (not required of workers): on the OM-installed machine
 | F3 bridge service skeleton | ✅ done | `electron/services/montage/{bridge,capabilities,montage-compose}.ts`; spawn/NDJSON/cancel/watchdog/fixture seam; capabilities+retrieveFootage functional, produce plumbed |
 | F4 IPC + settings scaffold | ✅ done | `montage:*` IPC (`electron/ipc/montage.ts` + register), `NativeApi.montage` + `onMontageProgress`, `AppSettings.montage` + defaults + SECRET_FIELDS, preload + mockApi stubs. typecheck + build green |
 | F5 render dispatch stub + packaging | ✅ done | `montage-compose.ts` `composeViaMontage` (buildBrief stub for units 2/3); `electron-builder.yml` extraResources `resources/montage`. Note: `queue.ts::resolveEngine` NOT modified — unit 2 wires the compose call. |
-| Unit 1 Footage & stock | todo | |
-| Unit 2 Remotion compose | todo | |
-| Unit 3 HyperFrames compose | todo | |
-| Unit 4 Compose StylePanel UI | todo | |
-| Unit 5 Automations wizard UI | todo | |
-| Unit 6 Settings/Capabilities UI | todo | |
-| Unit 7 Caption styling overhaul | todo | |
-| Unit 8 B-roll loop fix | todo | |
-| Unit 9 Compose OM preview | todo | |
-| Unit 10 Smokes/fixtures/tests | todo | |
+| W1 Footage & stock sourcing | running | worktree; `montage/footage.ts` + broll source + Niches UI |
+| W2 Composition (Remotion+HyperFrames) | running | worktree; implements `buildBriefForProject` + queue dispatch |
+| W3 Compose StylePanel UI | running | worktree; footage-source + runtime selectors (betaOpts) |
+| W4 Automations wizard UI | running | worktree; Assets & style step |
+| W5 Settings/Capabilities UI | running | worktree; OpenMontage settings + status panel |
+| W6 Caption styling overhaul (4C) | running | worktree; default off multi-color, active-word-pop |
+| W7 B-roll loop fix (4B) | running | worktree; planCoverage + libraryCandidates |
+| W8 Compose OM preview (4D) | running | worktree; sample-render preview in PreviewStage |
+| W9 Smokes/fixtures/tests/docs | running | worktree; ME_SMOKE=montage + fixtures + shim test |
+
+**Merge-back order (coordinator):** W6, W7 (MES-native, low-risk) → W1 → W2 → W3, W4, W5, W8 (UI) → W9.
+Resolve shared-file conflicts: `broll.ts` (W1 fetchPool region vs W7 planCoverage/libraryCandidates),
+`compose.ts` (W6 defaultProject vs W8 new region), `shared/types.ts` betaOpts (W2 vs W3 — field names
+`montageRuntime`/`montageFootageSource`), `montage-compose.ts` (W2 only). Re-run typecheck+build after
+each merge. Workers commit locally (push blocked); coordinator pushes the consolidated branch via the
+GitHub Data API.
 
 **Next action:** Foundation (F1–F5) is committed and green (typecheck + build). Fan out workers for
 units 1–10 (worktrees off this branch). Each unit forks the committed trunk, adds its own files +
