@@ -1,0 +1,4 @@
+{"event":"log","level":"info","msg":"executing tool=direct_clip_search status=ready"}
+{"event":"stage","stage":"footage","status":"start","queries":1}
+{"event":"stage","stage":"footage","status":"done","total_clips":1}
+{"event":"result","ok":true,"data":{"total_clips":1,"per_source_counts":{"archive_org":1},"clips":[{"clip_id":"city-archive-001","source":"archive_org","kind":"video","path":"test/fixtures/montage/stub.mp4","thumbnail":null,"duration":8.0,"width":1920,"height":1080,"license":"public-domain","source_url":"https://archive.org/details/city-archive-001","query":"city","slot_id":null}]}}
