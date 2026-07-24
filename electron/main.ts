@@ -1544,6 +1544,8 @@ async function runDemoRender(): Promise<void> {
       overlay: { ...DEFAULT_BETA_OPTS.overlay, bottom: true },
       autoZoom: { atStart: true, atKeyPhrases: true },
       broll: { enabled: !!process.env['ME_BROLL_LOCAL'], density: 'full', poolSize: 6, mode: 'full' },
+      montageRuntime: 'native',
+      montageFootageSource: 'native',
       style: 'Cinematic',
       effectPlanJson: JSON.stringify({
         transitions: [
