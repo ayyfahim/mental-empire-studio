@@ -53,7 +53,26 @@ export interface CaptionPresetSpec {
 
 // Palette notes: #FFD93D is the classic "CapCut yellow"; the Hormozi keyword
 // rotation (green/yellow/red) mirrors the Submagic "Hormozi 1" template.
+// `Clean` is deliberately FIRST: it is the DEFAULT for new projects (a single-colour
+// active-word pop with NO keyword rotation) and the safety fallback for unknown ids, so
+// nothing gets the multi-colour look by accident (see docs/OPENMONTAGE_BRIDGE.md §4C).
+// The multi-colour presets (Hormozi, Beast, …) stay available — just no longer default.
 export const CAPTION_PRESET_SPECS: CaptionPresetSpec[] = [
+  {
+    id: 'Clean',
+    label: 'Clean',
+    blurb: 'Bold caps — the active word pops in one highlight colour',
+    fontFamily: 'Anton',
+    fontWeight: 400,
+    uppercase: true,
+    baseColor: '#FFFFFF',
+    active: { kind: 'color', color: '#FFD93D', scale: 1.12 },
+    keywordColors: [],
+    outlinePct: 0.11,
+    outlineColor: '#000000',
+    shadowPct: 0.05,
+    sizeFactor: 1
+  },
   {
     id: 'Hormozi',
     label: 'Hormozi',
