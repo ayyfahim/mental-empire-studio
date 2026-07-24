@@ -234,6 +234,12 @@ export function planCoverage(
     seenPaths.add(clip.path)
     distinct.push(clip)
   }
+  // A one-clip pool can't avoid repeating — round-robin has nothing to rotate to, so
+  // every slot is the same footage (the visible "loop"). Surface it loudly: the real
+  // fix is a bigger pool (more niche keywords / higher poolSize / successful downloads).
+  if (distinct.length === 1) {
+    BROLL_LOG.warn('single-clip pool: footage will repeat — pool too small')
+  }
   const maxSeg = Math.max(1, opts.maxSegments ?? DEFAULT_MAX_SEGMENTS)
   const slot = Math.max(durationSec / maxSeg, slotLenFor(opts.density))
   // When the bed will crossfade, reserve a little tail of each clip so there is
@@ -540,7 +546,14 @@ export function hasConfiguredBrollSource(settings: AppSettings): boolean {
 export function readNichePoolHealth(nicheId: string): NichePoolHealth {
   const index = readLibraryIndex(poolKeyForNiche(nicheId))
   const clips = index.keywords.reduce((sum, k) => sum + k.clips.filter((c) => existsSync(c.path)).length, 0)
-  return { nicheId, clips, keywords: index.keywords.map((k) => k.keyword), updatedAt: clips > 0 ? index.updatedAt : undefined }
+  // `clips` counts a clip once per keyword group it's cached under; the distinct-by-path
+  // count is what actually drives coverage variety (planCoverage round-robins distinct
+  // paths), so surface it so the UI can warn when a pool is too small to avoid looping.
+  const distinctPaths = new Set<string>()
+  for (const k of index.keywords) {
+    for (const c of k.clips) if (c.path && existsSync(c.path)) distinctPaths.add(c.path)
+  }
+  return { nicheId, clips, distinctClips: distinctPaths.size, keywords: index.keywords.map((k) => k.keyword), updatedAt: clips > 0 ? index.updatedAt : undefined }
 }
 
 /** When a niche pool was last warmed (drives periodic refresh). */
@@ -590,10 +603,32 @@ function themeTokens(themes: string[]): string[] {
     .filter((t) => t.length >= 3 && !STOPWORDS.has(t))
 }
 
+// How long a used clip stays de-prioritized, and by how much. The max penalty is kept
+// well below a single theme-token match (+6 exact / +3 partial) so theme relevance stays
+// dominant — recency only reorders near-equal candidates (a tiebreaker), never overrides
+// a genuinely more on-theme clip.
+const RECENCY_DECAY_MS = 7 * 24 * 60 * 60 * 1000
+const RECENCY_MAX_PENALTY = 2
+
+/** Score penalty for a clip used recently, decaying linearly to 0 over a week. Never-used
+ *  clips (no lastUsedAt) get no penalty, so they are naturally preferred. Keeps successive
+ *  renders of the same pool from re-picking the same top clip (`recordClipUsage` stamps
+ *  lastUsedAt after each render). */
+function recencyPenalty(lastUsedAt: string | undefined, nowMs: number): number {
+  if (!lastUsedAt) return 0
+  const usedMs = Date.parse(lastUsedAt)
+  if (!Number.isFinite(usedMs)) return 0
+  const age = nowMs - usedMs
+  if (age <= 0) return RECENCY_MAX_PENALTY
+  if (age >= RECENCY_DECAY_MS) return 0
+  return RECENCY_MAX_PENALTY * (1 - age / RECENCY_DECAY_MS)
+}
+
 function libraryCandidates(themes: string[], target: { w: number; h: number }, poolSize: number, logPath?: string, poolKey?: string, seed?: number, shuffle = false): BrollCandidate[] {
   const tokens = themeTokens(themes)
   const wanted = new Set(tokens)
   const landscape = target.w >= target.h
+  const nowMs = Date.now()
   const scored: Array<{ score: number; candidate: BrollCandidate }> = []
   const fallback: Array<{ score: number; candidate: BrollCandidate }> = []
   // Scope to a single niche pool when a poolKey is given (prevents cross-niche bleed);
@@ -614,6 +649,8 @@ function libraryCandidates(themes: string[], target: { w: number; h: number }, p
         if ((clip.width >= clip.height) === landscape) score += 3
         if (clip.width >= target.w && clip.height >= target.h) score += 2
         if (clip.durationSec >= 4) score += 1
+        // De-prioritize recently-used footage so repeated renders of the same pool vary.
+        score -= recencyPenalty(clip.lastUsedAt, nowMs)
         const item = {
           score,
           candidate: {

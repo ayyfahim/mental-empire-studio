@@ -541,7 +541,7 @@ function installMock(): void {
       save: async () => [],
       remove: async () => [],
       assignChannel: async () => [],
-      warm: async () => ({ nicheId: '', clips: 0, keywords: [] })
+      warm: async () => ({ nicheId: '', clips: 0, distinctClips: 0, keywords: [] })
     }),
     talkingPhotos: ns({
       connectionStatus: async () => tpConnection,

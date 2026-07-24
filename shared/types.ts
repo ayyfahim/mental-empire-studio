@@ -127,6 +127,9 @@ export interface Niche {
 export interface NichePoolHealth {
   nicheId: string
   clips: number
+  /** distinct clip files by path — the count that actually drives B-roll coverage variety
+   *  (planCoverage round-robins distinct paths). A value of 1 means footage will loop. */
+  distinctClips: number
   keywords: string[]
   updatedAt?: string
 }
