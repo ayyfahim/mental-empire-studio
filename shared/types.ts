@@ -388,6 +388,10 @@ export interface AutomationRules {
 export type AutomationBrollFallbackPolicy = 'selected-only' | 'prefer-selected' | 'all-sources'
 export type AutomationBrollShufflePolicy = 'per-video' | 'ranked'
 export type AutomationGradientEdge = 'none' | 'top' | 'bottom' | 'left' | 'right'
+/** Batch composition runtime. 'native' = MES compositor; others route through the OpenMontage bridge. */
+export type AutomationMontageRuntime = 'native' | 'remotion' | 'hyperframes'
+/** Batch footage/stock source. 'native' = MES B-roll pool; others route through OpenMontage DirectClipSearch. */
+export type AutomationMontageFootageSource = 'native' | 'archives' | 'stock'
 
 /** One shared style contract from setup through project, preview, and final render. */
 export interface AutomationStyleConfig {
@@ -414,6 +418,10 @@ export interface AutomationStyleConfig {
   brollPoolKey?: string
   brollFallbackPolicy: AutomationBrollFallbackPolicy
   brollShufflePolicy: AutomationBrollShufflePolicy
+  /** OpenMontage footage/stock source for batch renders. Defaults to 'native' (MES B-roll pool). */
+  montageFootageSource: AutomationMontageFootageSource
+  /** OpenMontage composition runtime for batch renders. Defaults to 'native' (MES compositor). */
+  montageRuntime: AutomationMontageRuntime
 }
 
 export type AutomationUploadMatchType = 'exact-id' | 'high-title' | 'ambiguous-title' | 'manual' | 'none'

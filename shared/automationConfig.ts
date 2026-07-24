@@ -1,5 +1,7 @@
 import type {
   AutomationJobConfig,
+  AutomationMontageFootageSource,
+  AutomationMontageRuntime,
   AutomationRules,
   AutomationStyleConfig,
   BrollDensity,
@@ -29,7 +31,9 @@ export const DEFAULT_AUTOMATION_STYLE: AutomationStyleConfig = {
   brollDensity: 'sparse',
   brollPoolSize: 18,
   brollFallbackPolicy: 'prefer-selected',
-  brollShufflePolicy: 'per-video'
+  brollShufflePolicy: 'per-video',
+  montageFootageSource: 'native',
+  montageRuntime: 'native'
 }
 
 export const DEFAULT_AUTOMATION_RULES: AutomationRules = {
@@ -126,7 +130,9 @@ export function normalizeAutomationStyle(value: unknown, legacy: Partial<Automat
     brollPoolSize: Math.round(finiteNumber(raw.brollPoolSize, DEFAULT_AUTOMATION_STYLE.brollPoolSize, 1, 200)),
     ...(typeof raw.brollPoolKey === 'string' && raw.brollPoolKey.trim() ? { brollPoolKey: raw.brollPoolKey.trim().slice(0, 160) } : {}),
     brollFallbackPolicy: oneOf(raw.brollFallbackPolicy, ['selected-only', 'prefer-selected', 'all-sources'], DEFAULT_AUTOMATION_STYLE.brollFallbackPolicy),
-    brollShufflePolicy: oneOf(raw.brollShufflePolicy, ['per-video', 'ranked'], DEFAULT_AUTOMATION_STYLE.brollShufflePolicy)
+    brollShufflePolicy: oneOf(raw.brollShufflePolicy, ['per-video', 'ranked'], DEFAULT_AUTOMATION_STYLE.brollShufflePolicy),
+    montageFootageSource: oneOf<AutomationMontageFootageSource>(raw.montageFootageSource, ['native', 'archives', 'stock'], DEFAULT_AUTOMATION_STYLE.montageFootageSource),
+    montageRuntime: oneOf<AutomationMontageRuntime>(raw.montageRuntime, ['native', 'remotion', 'hyperframes'], DEFAULT_AUTOMATION_STYLE.montageRuntime)
   }
 }
 

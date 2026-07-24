@@ -232,7 +232,8 @@ describe('automation supervisor: talkingphotos step', () => {
         videoStyle: 'Clean', captionPreset: 'Hormozi', captionFont: 'Montserrat', captionAnimation: 'Pop-in', captionPosition: 'bottom',
         captionLines: 1, captionPace: 'auto', wordsPerCaption: 2, highlightColor: '#f5b323', boxColor: '#111111', imageMode: 'sequence',
         crossfadeSec: 0.8, motionPreset: 'subtle', gradientEdge: 'none', gradientIntensity: 50, aspectRatio: '16:9', brollMode: 'off',
-        brollDensity: 'sparse', brollPoolSize: 18, brollFallbackPolicy: 'prefer-selected', brollShufflePolicy: 'per-video'
+        brollDensity: 'sparse', brollPoolSize: 18, brollFallbackPolicy: 'prefer-selected', brollShufflePolicy: 'per-video',
+        montageFootageSource: 'native', montageRuntime: 'native'
       },
       rules: {
         minDurationSec: 0, skipDownloaded: true, continueOnError: true, maxRetries: 2, minimumFreeSpaceGb: 1,
