@@ -231,20 +231,39 @@ Coordinator-only REAL e2e (not required of workers): on the OM-installed machine
 | F3 bridge service skeleton | ✅ done | `electron/services/montage/{bridge,capabilities,montage-compose}.ts`; spawn/NDJSON/cancel/watchdog/fixture seam; capabilities+retrieveFootage functional, produce plumbed |
 | F4 IPC + settings scaffold | ✅ done | `montage:*` IPC (`electron/ipc/montage.ts` + register), `NativeApi.montage` + `onMontageProgress`, `AppSettings.montage` + defaults + SECRET_FIELDS, preload + mockApi stubs. typecheck + build green |
 | F5 render dispatch stub + packaging | ✅ done | `montage-compose.ts` `composeViaMontage` (buildBrief stub for units 2/3); `electron-builder.yml` extraResources `resources/montage`. Note: `queue.ts::resolveEngine` NOT modified — unit 2 wires the compose call. |
-| W6 Caption styling overhaul (4C) | ✅ done | commit 2a13127 — 'Clean' preset default, keywords:false; typecheck+build green |
-| W7 B-roll loop fix (4B) | ✅ done | commit 15a1982 — single-clip warn + recency penalty + distinctClips; green |
-| W1 Footage & stock sourcing | re-running | worktree; `montage/footage.ts` + broll source + Niches UI |
-| W2 Composition (Remotion+HyperFrames) | re-running | worktree; implements `buildBriefForProject` + queue dispatch |
-| W3 Compose StylePanel UI | re-running | worktree; footage-source + runtime selectors (betaOpts) |
-| W4 Automations wizard UI | re-running | worktree; Assets & style step |
-| W5 Settings/Capabilities UI | re-running | worktree; OpenMontage settings + status panel |
-| W8 Compose OM preview (4D) | re-running | worktree; sample-render preview in PreviewStage |
-| W9 Smokes/fixtures/tests/docs | re-running | worktree; ME_SMOKE=montage + fixtures + shim test |
+| W1 Footage & stock sourcing | ✅ done | 2a4ff57 — `montage/footage.ts`; footage block in produce brief |
+| W2 Composition (Remotion+HyperFrames) | ✅ done | 379f4a8 — `buildBriefForProject` + edit-remotion/hyperframes |
+| W3 Compose StylePanel UI | ✅ done | c99a7d1 — footage-source + runtime selectors (betaOpts) |
+| W4 Automations wizard UI | ✅ done | 065c9b4 — Assets & style step; automation render reads runtime |
+| W5 Settings/Capabilities UI | ✅ done | 9ff3f12 — settings + capability probe panel (+caption test fix) |
+| W6 Caption styling overhaul (4C) | ✅ done | 2a13127 — 'Clean' preset default, keywords:false |
+| W7 B-roll loop fix (4B) | ✅ done | 15a1982 — single-clip warn + recency penalty + distinctClips |
+| W8 Compose OM preview (4D) | ✅ done | 623c3e7 — sample-render preview in PreviewStage |
+| W9 Smokes/fixtures/tests/docs | ✅ done | e15f852 — ME_SMOKE=montage + fixtures + shim test |
 
-> **First fan-out wave (all 9) died on a global account session limit mid-edit; no worker committed.**
-> Coordinator completed W6 + W7 directly on the trunk (self-contained, MES-native). Re-spawning the
-> remaining 7 off the updated trunk (2a13127). W7 already added `NichePoolHealth.distinctClips` — the
-> footage/pool-health units should build on it, not redefine it.
+**ALL FOUNDATION + 9 UNITS LANDED on `feat/openmontage-bridge`.** Verified: `npm run typecheck` +
+`npm run build` green; full `vitest run` = 489 passed / 0 failed; `ME_SMOKE=montage` prints
+`SMOKE_MONTAGE_OK`; Python shim test `SHIM_TEST_OK`; shim `capabilities` verified against the real
+OpenMontage on the dev machine.
+
+> **How it landed:** the parallel fan-out (two waves) repeatedly hit the account usage limit and
+> died mid-edit. The coordinator salvaged each worker's worktree work (cherry-picked the committed
+> ones W3/W5; applied/adapted the uncommitted ones W2/W4/W8/W9; completed W1/W6/W7 directly) onto the
+> trunk, verifying each. W2 forked a stale base — its `types.ts` was discarded (W3's betaOpts is
+> authoritative) and its builder files were adapted.
+
+### Remaining follow-ups (not blockers; the produce path works today)
+1. **Render-queue auto-dispatch.** `queue.ts::runJob` does not yet route a project whose
+   `betaOpts.montageRuntime !== 'native'` to `composeViaMontageWithEvents()`. The helper +
+   capability gate (`montageRuntimeBlocker`) already exist in `montage-compose.ts`; wiring is a small
+   addition to `runJob`. Until then, OpenMontage composition runs via `montage.produce` (the Compose
+   "Preview final (OpenMontage)" button + IPC), not the batch render queue.
+2. **Native B-roll pool injection.** OpenMontage footage currently flows through the OpenMontage
+   compose path (footage block in the produce brief). Injecting DirectClipSearch clips into MES's
+   native ffmpeg/GPU B-roll library (`broll.ts` index) needs a new "register pre-downloaded files"
+   helper (the legacy pipeline downloads from provider URLs). Deferred.
+3. **Push.** Branch is committed locally; the env git proxy blocks `git push` — push via the GitHub
+   Data API (`scratchpad/push_*.py`) or from an unproxied clone.
 
 **Merge-back order (coordinator):** W6, W7 (MES-native, low-risk) → W1 → W2 → W3, W4, W5, W8 (UI) → W9.
 Resolve shared-file conflicts: `broll.ts` (W1 fetchPool region vs W7 planCoverage/libraryCandidates),
@@ -253,10 +272,11 @@ Resolve shared-file conflicts: `broll.ts` (W1 fetchPool region vs W7 planCoverag
 each merge. Workers commit locally (push blocked); coordinator pushes the consolidated branch via the
 GitHub Data API.
 
-**Next action:** Foundation (F1–F5) is committed and green (typecheck + build). Fan out workers for
-units 1–10 (worktrees off this branch). Each unit forks the committed trunk, adds its own files +
-minimal disjoint edits, verifies per §7, and reports a PR. Coordinator consolidates branches back
-into `feat/openmontage-bridge` (git push proxy blocked → GitHub Data API).
+**Next action:** Feature is functionally complete on `feat/openmontage-bridge` (foundation + 9 units,
+all green). Remaining: push the branch (proxy-blocked → GitHub Data API), then optionally the two
+follow-ups above (render-queue auto-dispatch; native-pool footage injection). To exercise the real
+end-to-end (not fixtures): in Settings → OpenMontage set the root + enable, pick a Remotion/HyperFrames
+runtime on a project in Compose, and hit "Preview final (OpenMontage)".
 
 **Trunk API surface available to units:** `window.api.montage.{capabilities,retrieveFootage,produce,
 cancel}` + `onMontageProgress`; main-process `electron/services/montage/{bridge,capabilities,
