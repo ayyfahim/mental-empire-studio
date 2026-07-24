@@ -757,8 +757,14 @@ export type VideoStyle = 'None' | 'Cinematic' | 'Intense' | 'Heartfelt' | 'Clean
 export type BrollDensity = 'full' | 'sparse' | 'keywords'
 export type MotionPreset = 'off' | 'subtle' | 'cinematic'
 export type MotionDirection = 'auto' | 'push' | 'pull' | 'left' | 'right' | 'up' | 'down'
+/** Per-project composition runtime: MES native encoder, or an OpenMontage bridge runtime. */
+export type MontageComposeRuntime = 'native' | 'remotion' | 'hyperframes'
+/** Per-project footage/stock source: MES native B-roll, or via the OpenMontage bridge. */
+export type MontageFootageSource = 'native' | 'archives' | 'stock'
 const VIDEO_STYLES: VideoStyle[] = ['None', 'Cinematic', 'Intense', 'Heartfelt', 'Clean']
 const BROLL_DENSITIES: BrollDensity[] = ['full', 'sparse', 'keywords']
+const MONTAGE_COMPOSE_RUNTIMES: MontageComposeRuntime[] = ['native', 'remotion', 'hyperframes']
+const MONTAGE_FOOTAGE_SOURCES: MontageFootageSource[] = ['native', 'archives', 'stock']
 
 export interface BetaVideoOpts {
   /** intro text card shown for the first few seconds ('' text → auto from transcript) */
@@ -784,6 +790,11 @@ export interface BetaVideoOpts {
   style: VideoStyle
   /** optional manual/LLM-generated effect plan JSON (overrides the style's rule engine) */
   effectPlanJson: string
+  // ---- OpenMontage bridge (per-project routing) ----
+  /** composition runtime: MES native encoder, or an OpenMontage runtime (Remotion/HyperFrames) */
+  montageRuntime: MontageComposeRuntime
+  /** footage/stock source: MES native B-roll, or OpenMontage open-footage archives / paid stock */
+  montageFootageSource: MontageFootageSource
 }
 
 export interface LookAdjust {
@@ -803,7 +814,9 @@ export const DEFAULT_BETA_OPTS: BetaVideoOpts = {
   autoZoom: { atStart: false, atKeyPhrases: false },
   broll: { enabled: false, density: 'sparse', poolSize: 18, mode: 'full', fallbackPolicy: 'prefer-selected', shufflePolicy: 'per-video' },
   style: 'None',
-  effectPlanJson: ''
+  effectPlanJson: '',
+  montageRuntime: 'native',
+  montageFootageSource: 'native'
 }
 
 function finiteNumber(v: unknown, fallback: number): number {
@@ -866,7 +879,13 @@ export function asBetaOpts(v: unknown): BetaVideoOpts {
       seed: broll.seed == null ? undefined : Math.round(clampNumber(broll.seed, 0, 0, 2_147_483_647))
     },
     style,
-    effectPlanJson: stringValue(o.effectPlanJson, DEFAULT_BETA_OPTS.effectPlanJson)
+    effectPlanJson: stringValue(o.effectPlanJson, DEFAULT_BETA_OPTS.effectPlanJson),
+    montageRuntime: MONTAGE_COMPOSE_RUNTIMES.includes(o.montageRuntime as MontageComposeRuntime)
+      ? o.montageRuntime as MontageComposeRuntime
+      : DEFAULT_BETA_OPTS.montageRuntime,
+    montageFootageSource: MONTAGE_FOOTAGE_SOURCES.includes(o.montageFootageSource as MontageFootageSource)
+      ? o.montageFootageSource as MontageFootageSource
+      : DEFAULT_BETA_OPTS.montageFootageSource
   }
 }
 
