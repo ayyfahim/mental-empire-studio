@@ -25,6 +25,7 @@ import {
   type MontageComposeContext
 } from './edit-remotion'
 import { buildHyperframesEditDecisions } from './edit-hyperframes'
+import { buildFootageBlock, type MontageFootageSource } from './footage'
 
 // Bridge a MES project into an OpenMontage `produce` brief and run it. `buildBriefForProject` maps
 // the project's images / transcript / caption style / VideoStyle into footage-free composition
@@ -124,13 +125,21 @@ export function buildBriefForProject(projectId: string, opts?: MontageProduceOpt
   const outputDir = itemOutputDir(itemDirForProject(project))
   const outputPath = join(outputDir, 'renders', sample ? 'sample.mp4' : 'final.mp4')
 
+  // W1: when the user picked an OpenMontage footage source, attach a `footage` block so the shim's
+  // `produce` retrieves real motion footage (DirectClipSearch: archives / stock) into the workspace
+  // before composing — the "agentic" retrieve→compose flow. 'native' omits it (project stills only).
+  const footageSource = ((project.betaOpts as { montageFootageSource?: string } | undefined)?.montageFootageSource
+    ?? 'native') as MontageFootageSource
+  const footageBlock = buildFootageBlock(ctx, footageSource)
+
   LOG.info(
-    `built brief project=${project.id} runtime=${runtime} images=${images.length} words=${words.length} sample=${sample}`
+    `built brief project=${project.id} runtime=${runtime} footage=${footageSource} images=${images.length} words=${words.length} sample=${sample}`
   )
 
   return {
     project_id: project.id,
     output_dir: outputDir,
+    ...(footageBlock ? { footage: footageBlock } : {}),
     compose: {
       render_runtime: runtime,
       edit_decisions: editDecisions,
