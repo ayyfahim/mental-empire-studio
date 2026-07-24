@@ -5,7 +5,7 @@ import { useData } from '../store/useData'
 import { useStore } from '../store/useStore'
 import { useTalkingPhotos } from '../store/useTalkingPhotos'
 import { describeTalkingPhotosCapabilities } from '@shared/talkingphotos'
-import type { AccentName, AppSettings, RenderCapabilities } from '@shared/types'
+import type { AccentName, AppSettings, DeepPartial, MontageCapabilities, RenderCapabilities } from '@shared/types'
 
 const ACCENTS: AccentName[] = ['Amber', 'Violet', 'Emerald', 'Crimson']
 const ACCENT_SWATCH: Record<AccentName, string> = { Amber: '#f5b323', Violet: '#8b7cff', Emerald: '#36c98e', Crimson: '#ff5a6e' }
@@ -16,12 +16,13 @@ const RENDER_ENGINES: Array<{ value: NonNullable<AppSettings['renderEngine']>; l
   { value: 'auto', label: 'Auto', note: 'Use the GPU engine when hardware H.264 encode is available, otherwise ffmpeg.' },
 ]
 
-type Section = 'looks' | 'output' | 'scraping' | 'integrations' | 'beta' | 'advanced' | 'danger'
+type Section = 'looks' | 'output' | 'scraping' | 'integrations' | 'openmontage' | 'beta' | 'advanced' | 'danger'
 const NAV: Array<{ id: Section; label: string }> = [
   { id: 'looks', label: 'Looks' },
   { id: 'output', label: 'Output & Quality' },
   { id: 'scraping', label: 'Scraping' },
   { id: 'integrations', label: 'Integrations' },
+  { id: 'openmontage', label: 'OpenMontage' },
   { id: 'beta', label: 'Video effects' },
   { id: 'advanced', label: 'Advanced' },
   { id: 'danger', label: 'Danger zone' },
@@ -93,6 +94,159 @@ function TalkingPhotosCard({ enabled, onToggle }: { enabled: boolean; onToggle: 
         </div>
       )}
     </Card>
+  )
+}
+
+const MONTAGE_KEYS: Array<{ key: 'falKey' | 'unsplashKey' | 'elevenLabsKey' | 'openaiKey' | 'googleKey'; label: string; placeholder: string }> = [
+  { key: 'falKey', label: 'fal.ai', placeholder: 'fal key (footage/gen)' },
+  { key: 'unsplashKey', label: 'Unsplash', placeholder: 'Unsplash access key' },
+  { key: 'elevenLabsKey', label: 'ElevenLabs', placeholder: 'ElevenLabs API key' },
+  { key: 'openaiKey', label: 'OpenAI', placeholder: 'sk-…' },
+  { key: 'googleKey', label: 'Google', placeholder: 'Google API key' },
+]
+
+function EngineBadge({ label, on }: { label: string; on: boolean }): JSX.Element {
+  return <StatusPill tone={on ? 'ok' : 'neutral'} title={on ? `${label} available` : `${label} not available`}>{label} {on ? '✓' : '—'}</StatusPill>
+}
+
+function OpenMontageSection({ montage, saved }: { montage: AppSettings['montage']; saved: (patch: DeepPartial<AppSettings>) => void }): JSX.Element {
+  const [caps, setCaps] = useState<MontageCapabilities | null>(null)
+  const [probing, setProbing] = useState(false)
+  const [probed, setProbed] = useState(false)
+
+  const probe = useCallback(async (force = false): Promise<void> => {
+    setProbing(true)
+    try { setCaps((await window.api?.montage?.capabilities?.(force)) ?? null) }
+    catch { setCaps(null) }
+    finally { setProbing(false); setProbed(true) }
+  }, [])
+
+  // Auto-probe once when the section opens and the bridge is enabled (cached in main; cheap).
+  useEffect(() => { if (montage.enabled && !probed) void probe(false) }, [montage.enabled, probed, probe])
+
+  const browseRoot = async (): Promise<void> => {
+    const dir = await window.api?.chooseFolder?.()
+    if (dir) saved({ montage: { openMontageRoot: dir } })
+  }
+
+  const available = caps?.available === true
+  const labelCol = { color: 'var(--text-bright)', flex: 'none', width: 82 } as const
+
+  return (
+    <div>
+      <Card label="OPENMONTAGE BRIDGE">
+        <ToggleRow
+          on={montage.enabled}
+          label="Enable OpenMontage bridge"
+          hint="Drive an external OpenMontage install (subprocess) for open-footage/stock retrieval and Remotion/HyperFrames composition. Requires a local OpenMontage checkout."
+          onToggle={() => saved({ montage: { enabled: !montage.enabled } })}
+        />
+      </Card>
+
+      <Card label="INSTALL LOCATION">
+        <div style={keyRowStyle}>
+          <span style={labelCol}>Root folder</span>
+          <input value={montage.openMontageRoot} onChange={(e) => saved({ montage: { openMontageRoot: e.target.value } })} placeholder="/path/to/OpenMontage" aria-label="OpenMontage root folder" className="ed-input" style={{ flex: 1, fontFamily: 'var(--font-mono)' }} />
+          <Btn variant="ghost" onClick={() => void browseRoot()}>Browse…</Btn>
+        </div>
+        <div style={keyRowStyle}>
+          <span style={labelCol}>Python</span>
+          <input value={montage.pythonPath} onChange={(e) => saved({ montage: { pythonPath: e.target.value } })} placeholder="auto — OpenMontage venv → PATH (optional)" aria-label="Python interpreter path" className="ed-input" style={{ flex: 1, fontFamily: 'var(--font-mono)' }} />
+        </div>
+        <div style={{ fontSize: 'var(--fs-caption)', color: 'var(--text-dim)', marginTop: 4 }}>Point at your OpenMontage checkout. Leave Python blank to auto-detect the venv, then the PATH interpreter.</div>
+      </Card>
+
+      <Card label="PROVIDER KEYS">
+        <div style={{ fontSize: 'var(--fs-caption)', color: 'var(--text-dim)', marginBottom: 11 }}>Optional — passed to the OpenMontage subprocess via env (encrypted at rest). Pexels &amp; Pixabay keys live under Video effects / Integrations and are reused automatically.</div>
+        {MONTAGE_KEYS.map(({ key, label, placeholder }) => (
+          <div key={key} style={keyRowStyle}>
+            <span style={{ color: 'var(--text-bright)', flex: 'none', width: 82 }}>{label}</span>
+            <input type="password" value={montage[key]} onChange={(e) => saved({ montage: { [key]: e.target.value } })} placeholder={placeholder} aria-label={`${label} API key`} className="ed-input" style={{ flex: 1, fontFamily: 'var(--font-mono)' }} />
+          </div>
+        ))}
+      </Card>
+
+      <Card label="CAPABILITIES">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+          <Btn variant="soft" disabled={probing} onClick={() => void probe(true)}>{probing ? 'Detecting…' : 'Detect / Refresh'}</Btn>
+          {probed && !probing && (
+            <StatusPill tone={available ? 'ok' : 'error'}>{available ? 'Detected' : 'Not available'}</StatusPill>
+          )}
+          {caps?.omRoot && <span style={{ fontSize: 'var(--fs-caption)', color: 'var(--text-faint)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{caps.omRoot}</span>}
+        </div>
+
+        {!probed && !probing && (
+          <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>Run Detect to probe the OpenMontage install for render engines and capability providers.</div>
+        )}
+
+        {probed && !probing && !available && (
+          <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '11px 13px', background: 'var(--bg-inset)' }}>
+            <div style={{ fontSize: 12, color: 'var(--err-2)', marginBottom: 6 }}>{caps?.error || 'OpenMontage was not detected.'}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.45 }}>Set the OpenMontage root folder above (a checkout with <span style={{ fontFamily: 'var(--font-mono)' }}>tools/</span>), optionally set the Python interpreter, then click Detect / Refresh.</div>
+          </div>
+        )}
+
+        {caps && available && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 'var(--fs-caption)', color: 'var(--text-dim)' }}>
+              {caps.python && <span>Python <b style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{caps.python}</b></span>}
+              {caps.pythonPath && <span>Interpreter <b style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{caps.pythonPath}</b></span>}
+            </div>
+
+            <div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.6px', color: 'var(--text-faint)', marginBottom: 8 }}>RENDER ENGINES</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <EngineBadge label="ffmpeg" on={caps.renderEngines.ffmpeg} />
+                <EngineBadge label="remotion" on={caps.renderEngines.remotion} />
+                <EngineBadge label="hyperframes" on={caps.renderEngines.hyperframes} />
+              </div>
+            </div>
+
+            {caps.capabilities.length > 0 && (
+              <div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.6px', color: 'var(--text-faint)', marginBottom: 8 }}>CAPABILITIES</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                  {caps.capabilities.map((c) => (
+                    <div key={c.capability} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      <StatusPill tone={c.configured > 0 ? 'ok' : c.total > 0 ? 'warn' : 'neutral'}>{c.configured}/{c.total}</StatusPill>
+                      <span style={{ fontSize: 12, color: 'var(--text-bright)', fontFamily: 'var(--font-mono)' }}>{c.capability}</span>
+                      {c.availableProviders.length > 0 && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{c.availableProviders.join(', ')}</span>}
+                      {c.unavailableProviders.length > 0 && <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>· needs: {c.unavailableProviders.join(', ')}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {caps.runtimeWarnings.length > 0 && (
+              <div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.6px', color: 'var(--warn)', marginBottom: 8 }}>RUNTIME WARNINGS</div>
+                <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {caps.runtimeWarnings.map((w, i) => (
+                    <li key={i} style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.45 }}>{w}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {caps.setupOffers.length > 0 && (
+              <div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.6px', color: 'var(--text-faint)', marginBottom: 8 }}>SETUP OFFERS</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+                  {caps.setupOffers.map((o, i) => (
+                    <div key={`${o.capability}-${o.tool}-${i}`} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '9px 12px', background: 'var(--bg-inset)' }}>
+                      <div style={{ fontSize: 12, color: 'var(--text-bright)' }}>{o.capability} · {o.tool}{o.provider ? ` · ${o.provider}` : ''}</div>
+                      {o.envVars.length > 0 && <div style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', marginTop: 3 }}>env: {o.envVars.join(', ')}</div>}
+                      {o.installInstructions && <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3, lineHeight: 1.45 }}>{o.installInstructions}</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
+    </div>
   )
 }
 
@@ -287,6 +441,7 @@ export function Settings(): JSX.Element {
         </Card>
       </div>
     ),
+    openmontage: <OpenMontageSection montage={settings.montage} saved={saved} />,
     beta: (
       <Card label="VIDEO EFFECTS">
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 10 }}>

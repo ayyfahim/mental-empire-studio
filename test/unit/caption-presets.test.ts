@@ -32,7 +32,7 @@ describe('captionPresetSpec', () => {
     expect(captionPresetSpec('Submagic').id).toBe('Boxed')
     expect(captionPresetSpec('Pop').id).toBe('Karaoke')
     expect(captionPresetSpec('Bold').id).toBe('Beast')
-    expect(captionPresetSpec('nonsense').id).toBe('Hormozi')
+    expect(captionPresetSpec('nonsense').id).toBe('Clean')
   })
 
   it('gives every preset a genuinely distinct look (font or colours differ)', () => {
