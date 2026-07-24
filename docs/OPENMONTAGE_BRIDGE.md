@@ -231,15 +231,20 @@ Coordinator-only REAL e2e (not required of workers): on the OM-installed machine
 | F3 bridge service skeleton | ✅ done | `electron/services/montage/{bridge,capabilities,montage-compose}.ts`; spawn/NDJSON/cancel/watchdog/fixture seam; capabilities+retrieveFootage functional, produce plumbed |
 | F4 IPC + settings scaffold | ✅ done | `montage:*` IPC (`electron/ipc/montage.ts` + register), `NativeApi.montage` + `onMontageProgress`, `AppSettings.montage` + defaults + SECRET_FIELDS, preload + mockApi stubs. typecheck + build green |
 | F5 render dispatch stub + packaging | ✅ done | `montage-compose.ts` `composeViaMontage` (buildBrief stub for units 2/3); `electron-builder.yml` extraResources `resources/montage`. Note: `queue.ts::resolveEngine` NOT modified — unit 2 wires the compose call. |
-| W1 Footage & stock sourcing | running | worktree; `montage/footage.ts` + broll source + Niches UI |
-| W2 Composition (Remotion+HyperFrames) | running | worktree; implements `buildBriefForProject` + queue dispatch |
-| W3 Compose StylePanel UI | running | worktree; footage-source + runtime selectors (betaOpts) |
-| W4 Automations wizard UI | running | worktree; Assets & style step |
-| W5 Settings/Capabilities UI | running | worktree; OpenMontage settings + status panel |
-| W6 Caption styling overhaul (4C) | running | worktree; default off multi-color, active-word-pop |
-| W7 B-roll loop fix (4B) | running | worktree; planCoverage + libraryCandidates |
-| W8 Compose OM preview (4D) | running | worktree; sample-render preview in PreviewStage |
-| W9 Smokes/fixtures/tests/docs | running | worktree; ME_SMOKE=montage + fixtures + shim test |
+| W6 Caption styling overhaul (4C) | ✅ done | commit 2a13127 — 'Clean' preset default, keywords:false; typecheck+build green |
+| W7 B-roll loop fix (4B) | ✅ done | commit 15a1982 — single-clip warn + recency penalty + distinctClips; green |
+| W1 Footage & stock sourcing | re-running | worktree; `montage/footage.ts` + broll source + Niches UI |
+| W2 Composition (Remotion+HyperFrames) | re-running | worktree; implements `buildBriefForProject` + queue dispatch |
+| W3 Compose StylePanel UI | re-running | worktree; footage-source + runtime selectors (betaOpts) |
+| W4 Automations wizard UI | re-running | worktree; Assets & style step |
+| W5 Settings/Capabilities UI | re-running | worktree; OpenMontage settings + status panel |
+| W8 Compose OM preview (4D) | re-running | worktree; sample-render preview in PreviewStage |
+| W9 Smokes/fixtures/tests/docs | re-running | worktree; ME_SMOKE=montage + fixtures + shim test |
+
+> **First fan-out wave (all 9) died on a global account session limit mid-edit; no worker committed.**
+> Coordinator completed W6 + W7 directly on the trunk (self-contained, MES-native). Re-spawning the
+> remaining 7 off the updated trunk (2a13127). W7 already added `NichePoolHealth.distinctClips` — the
+> footage/pool-health units should build on it, not redefine it.
 
 **Merge-back order (coordinator):** W6, W7 (MES-native, low-risk) → W1 → W2 → W3, W4, W5, W8 (UI) → W9.
 Resolve shared-file conflicts: `broll.ts` (W1 fetchPool region vs W7 planCoverage/libraryCandidates),
