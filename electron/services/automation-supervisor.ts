@@ -34,6 +34,7 @@ import { notifyMessage } from './notify'
 import { postWebhook } from './webhook'
 import { logger } from './logger'
 import { cachedBrollClipCount, hasConfiguredBrollSource, readBrollManifestClipIds } from './broll'
+import { composeViaMontage } from './montage/montage-compose'
 import { probeDuration } from './audio'
 import { createScriptVideo, createUploadedAudioVideo } from '../providers/talkingphotos/creation'
 import { reconcileNonTerminalProviderJobs } from '../providers/talkingphotos/poller'
@@ -627,6 +628,19 @@ async function runStep(job: AutomationJob, step: AutomationWorkflowStep): Promis
   if (step.key === 'render') {
     await eachItem(job, step, async (item) => {
       if (!item.projectId) throw new Error('Project checkpoint is missing; resume from Build projects.')
+      // OpenMontage composition path (W4). Only taken when the wizard picked a non-native runtime
+      // AND the bridge is enabled; the default 'native' path below is otherwise untouched. When the
+      // brief-builder isn't implemented yet (foundation stub), composeViaMontage returns
+      // {ok:false}, surfaced here as a clean step error rather than a silent native fallback.
+      const montageRuntime = config.styleConfig.montageRuntime
+      if (montageRuntime !== 'native' && getSettings().montage.enabled) {
+        const result = await composeViaMontage(item.projectId, { runtime: montageRuntime })
+        if (!result.ok || !result.output || !existsSync(result.output)) {
+          throw new Error(result.error || 'OpenMontage composition did not produce an output file.')
+        }
+        log(job.id, `${item.title}: composed via OpenMontage (${montageRuntime}).`, 'info', item)
+        return saveItem(item, { outputPath: result.output, status: 'completed', currentStep: step.label, progress: 100 })
+      }
       const renderId = `job-${item.projectId}`
       let render = repos.renderJob(renderId)
       if (render?.status === 'done' && render.outputPath && existsSync(render.outputPath)) {

@@ -1,0 +1,11 @@
+{"event":"stage","stage":"preflight","status":"start"}
+{"event":"log","level":"info","msg":"OpenMontage registry ready"}
+{"event":"stage","stage":"preflight","status":"done"}
+{"event":"stage","stage":"footage","status":"start","queries":1,"sources":["archive_org"]}
+{"event":"stage","stage":"footage","status":"done","total_clips":1,"per_source":{"archive_org":1}}
+{"event":"stage","stage":"compose","status":"start","runtime":"remotion","tool":"video_compose","output":"test/fixtures/montage/stub.mp4"}
+{"event":"log","level":"info","msg":"rendering remotion composition Explainer"}
+{"event":"stage","stage":"compose","status":"done","output":"test/fixtures/montage/stub.mp4","review":"pass"}
+{"event":"stage","stage":"review","status":"done","status_detail":"pass"}
+{"event":"stage","stage":"done","status":"done","output":"test/fixtures/montage/stub.mp4"}
+{"event":"result","ok":true,"data":{"project_id":"smoke","output_dir":"test/fixtures/montage","output":"test/fixtures/montage/stub.mp4","footage":{"total_clips":1,"per_source_counts":{"archive_org":1}},"compose":{"output":"test/fixtures/montage/stub.mp4","final_review_status":"pass","render_runtime":"remotion"}}}

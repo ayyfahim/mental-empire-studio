@@ -1,4 +1,13 @@
-import type { BetaVideoOpts, LookAdjust, MotionPreset, VideoStyle } from '@shared/types'
+import { useEffect, useState } from 'react'
+import type {
+  BetaVideoOpts,
+  LookAdjust,
+  MontageCapabilities,
+  MontageComposeRuntime,
+  MontageFootageSource,
+  MotionPreset,
+  VideoStyle
+} from '@shared/types'
 import { asBetaOpts } from '@shared/types'
 import { useData } from '../../../store/useData'
 import { Chip, FieldLabel, Section, Seg, SliderRow, ToggleRow, Btn } from '../../../components/ui/kit'
@@ -16,6 +25,73 @@ const STYLES: Array<{ id: VideoStyle; tip: string; bg: string }> = [
 
 function percent(n: number): string {
   return `${Math.round(n * 100)}%`
+}
+
+/* --- OpenMontage bridge controls (per-project footage source + composition runtime) ---
+   Mirrors the kit <Seg> look but supports per-option disable + reason tooltips, since the
+   availability of each OpenMontage option depends on the live capability probe. */
+
+interface OmOption<T extends string> {
+  value: T
+  label: string
+  disabled: boolean
+  reason?: string
+}
+
+function OmSeg<T extends string>({
+  value,
+  options,
+  onChange
+}: {
+  value: T
+  options: Array<OmOption<T>>
+  onChange: (v: T) => void
+}): JSX.Element {
+  return (
+    <div style={{ display: 'inline-flex', width: '100%', border: '1px solid var(--border-2)', borderRadius: 9, background: 'var(--bg-inset)', padding: 2, gap: 2 }}>
+      {options.map((o) => {
+        const on = o.value === value
+        return (
+          <button
+            key={o.value}
+            type="button"
+            title={o.disabled ? o.reason : undefined}
+            disabled={o.disabled && !on}
+            aria-disabled={o.disabled}
+            onClick={() => { if (!o.disabled) onChange(o.value) }}
+            className="ed-focus"
+            style={{
+              flex: 1,
+              border: 'none',
+              borderRadius: 7,
+              padding: '6px 8px',
+              fontSize: 11,
+              fontWeight: 700,
+              fontFamily: 'var(--font-body)',
+              background: on ? '#232833' : 'transparent',
+              color: on ? 'var(--text-bright)' : 'var(--text-muted)',
+              boxShadow: on ? 'inset 0 0 0 1px var(--border-3), 0 1px 4px rgba(0,0,0,.35)' : 'none',
+              cursor: o.disabled ? 'not-allowed' : 'pointer',
+              opacity: o.disabled ? 0.45 : 1,
+              transition: 'background .15s, color .15s',
+              whiteSpace: 'nowrap'
+            }}
+          >
+            {o.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+const SETTINGS_HINT = 'Enable it in Settings → OpenMontage.'
+
+/** Find a runtime warning that mentions a runtime/engine name (case-insensitive). */
+function warningFor(caps: MontageCapabilities | null, needle: string): string | undefined {
+  if (!caps) return undefined
+  const n = needle.toLowerCase()
+  return caps.runtimeWarnings.find((w) => w.toLowerCase().includes(n))
 }
 
 export function StylePanel(): JSX.Element {
@@ -51,6 +127,54 @@ export function StylePanel(): JSX.Element {
     if (on) armMotion()
   }
   const broll = o.broll.enabled
+
+  // Live OpenMontage capability probe — decides which footage/runtime options are selectable.
+  const [caps, setCaps] = useState<MontageCapabilities | null>(null)
+  const [capsChecked, setCapsChecked] = useState(false)
+  useEffect(() => {
+    let alive = true
+    window.api?.montage
+      ?.capabilities()
+      .then((c) => { if (alive) setCaps(c) })
+      .catch(() => { if (alive) setCaps(null) })
+      .finally(() => { if (alive) setCapsChecked(true) })
+    return () => { alive = false }
+  }, [])
+
+  const montageAvailable = caps?.available === true
+  const montageOff = capsChecked && !montageAvailable
+  const omBlockedReason = !capsChecked
+    ? 'Checking OpenMontage availability…'
+    : caps?.error
+      ? `OpenMontage unavailable: ${caps.error}`
+      : `OpenMontage is off. ${SETTINGS_HINT}`
+
+  const footageOptions: Array<OmOption<MontageFootageSource>> = [
+    { value: 'native', label: 'Native B-roll', disabled: false },
+    { value: 'archives', label: 'OM archives', disabled: !montageAvailable, reason: omBlockedReason },
+    { value: 'stock', label: 'OM stock', disabled: !montageAvailable, reason: omBlockedReason }
+  ]
+
+  const remotionOk = montageAvailable && caps?.renderEngines.remotion === true
+  const hyperframesOk = montageAvailable && caps?.renderEngines.hyperframes === true
+  const runtimeOptions: Array<OmOption<MontageComposeRuntime>> = [
+    { value: 'native', label: 'Native', disabled: false },
+    {
+      value: 'remotion',
+      label: 'Remotion',
+      disabled: !remotionOk,
+      reason: montageAvailable ? (warningFor(caps, 'remotion') ?? 'Remotion is not set up in OpenMontage.') : omBlockedReason
+    },
+    {
+      value: 'hyperframes',
+      label: 'HyperFrames',
+      disabled: !hyperframesOk,
+      reason: montageAvailable ? (warningFor(caps, 'hyperframes') ?? 'HyperFrames is not set up in OpenMontage.') : omBlockedReason
+    }
+  ]
+
+  const selFootage = footageOptions.find((x) => x.value === o.montageFootageSource)
+  const selRuntime = runtimeOptions.find((x) => x.value === o.montageRuntime)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -107,6 +231,35 @@ export function StylePanel(): JSX.Element {
                 {d[0].toUpperCase() + d.slice(1)}
               </Chip>
             ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <FieldLabel>Footage source</FieldLabel>
+        <OmSeg
+          value={o.montageFootageSource}
+          options={footageOptions}
+          onChange={(v) => patch({ montageFootageSource: v })}
+        />
+        {selFootage?.disabled && selFootage.reason && (
+          <div style={{ fontSize: 10.5, lineHeight: 1.35, color: 'var(--text-muted)', marginTop: 6 }}>{selFootage.reason}</div>
+        )}
+      </div>
+
+      <div>
+        <FieldLabel>Composition runtime</FieldLabel>
+        <OmSeg
+          value={o.montageRuntime}
+          options={runtimeOptions}
+          onChange={(v) => patch({ montageRuntime: v })}
+        />
+        {selRuntime?.disabled && selRuntime.reason && (
+          <div style={{ fontSize: 10.5, lineHeight: 1.35, color: 'var(--text-muted)', marginTop: 6 }}>{selRuntime.reason}</div>
+        )}
+        {montageOff && (
+          <div style={{ fontSize: 10.5, lineHeight: 1.35, color: 'var(--text-dim)', marginTop: 6 }}>
+            OpenMontage is off — {SETTINGS_HINT} Native options work without it.
           </div>
         )}
       </div>

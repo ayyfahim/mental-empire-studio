@@ -23,7 +23,8 @@
     "dev:browser": "vite --config vite.renderer.config.ts --host localhost --port 5173",
     "preview:browser": "vite preview --config vite.renderer.config.ts --outDir out/renderer --port 4173",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:montage-shim": "python test/montage/test_shim.py"
   },
   "dependencies": {
     "@fontsource/anton": "^5.2.7",

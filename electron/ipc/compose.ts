@@ -46,7 +46,10 @@ function defaultProject(downloadId: string, title: string, channel: string, mp3P
     motionPreset: 'subtle',
     seed: Math.floor(Math.random() * 9000) + 1000,
     crossfade: 0.8,
-    captionPreset: 'Hormozi',
+    // Default to the single-colour active-word-pop look (no green/yellow/red keyword
+    // rotation). Multi-colour presets (Hormozi, Beast, …) stay available in CaptionsPanel;
+    // they are just no longer the default. See docs/OPENMONTAGE_BRIDGE.md §4C.
+    captionPreset: 'Clean',
     captionFont: 'Anton',
     captionAnim: 'Pop-in',
     captionAspect: '16:9',
@@ -57,7 +60,9 @@ function defaultProject(downloadId: string, title: string, channel: string, mp3P
     captionBoxColor: '#ffd93d',
     captionWordsPerPage: 1,
     emphasis: true,
-    keywords: true,
+    // Auto-keyword colouring OFF by default — this is what produced the "every word a
+    // different colour" look. Users can re-enable it per project in CaptionsPanel.
+    keywords: false,
     punchZoom: true,
     stage: 'composing',
     createdAt: new Date().toISOString()

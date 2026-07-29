@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage } from 'electron'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { copyFileSync, existsSync, mkdirSync, statSync, writeFileSync, readFileSync, rmSync, unlinkSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { applyLoginItem, trayIconPath } from './services/background'
@@ -39,6 +39,8 @@ import { postWebhook } from './services/webhook'
 import { reconcileNonTerminalProviderJobs, startTalkingPhotosPoller, stopTalkingPhotosPoller } from './providers/talkingphotos/poller'
 import { reconcileInterruptedConnectionOnStartup } from './providers/talkingphotos/session'
 import { assertDisposableSmokeProfile, prepareSmokeUserDataDir } from './services/smokeSafety'
+import { getMontageCapabilities } from './services/montage/capabilities'
+import { retrieveFootage, produceFromBrief, type BridgeEvent } from './services/montage/bridge'
 import { createServer } from 'node:http'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -1544,6 +1546,8 @@ async function runDemoRender(): Promise<void> {
       overlay: { ...DEFAULT_BETA_OPTS.overlay, bottom: true },
       autoZoom: { atStart: true, atKeyPhrases: true },
       broll: { enabled: !!process.env['ME_BROLL_LOCAL'], density: 'full', poolSize: 6, mode: 'full' },
+      montageRuntime: 'native',
+      montageFootageSource: 'native',
       style: 'Cinematic',
       effectPlanJson: JSON.stringify({
         transitions: [
@@ -1591,7 +1595,7 @@ async function runSmokeAutomation(): Promise<void> {
         sourceKind: 'local-files', sourceId: '', sourceUrl: '', sourceName: 'sample.mp3', sourceOrder: 'Latest', sourceCount: 1,
         selectedVideoIds: [], localMediaPaths: [fixture('audio/sample.mp3')], assetPaths: [fixture('images/img1.png')],
         style: 'Clean', captionPreset: 'Hormozi', aspectRatios: ['16:9'], execution: 'local',
-        styleConfig: { videoStyle: 'Clean', captionPreset: 'Hormozi', captionFont: 'Montserrat', captionAnimation: 'Pop-in', captionPosition: 'bottom', captionLines: 1, captionPace: 'auto', wordsPerCaption: 2, highlightColor: '#f5b323', boxColor: '#111111', imageMode: 'sequence', crossfadeSec: 0.8, motionPreset: 'subtle', gradientEdge: 'none', gradientIntensity: 50, aspectRatio: '16:9', brollMode: 'off', brollDensity: 'sparse', brollPoolSize: 18, brollFallbackPolicy: 'prefer-selected', brollShufflePolicy: 'per-video' },
+        styleConfig: { videoStyle: 'Clean', captionPreset: 'Hormozi', captionFont: 'Montserrat', captionAnimation: 'Pop-in', captionPosition: 'bottom', captionLines: 1, captionPace: 'auto', wordsPerCaption: 2, highlightColor: '#f5b323', boxColor: '#111111', imageMode: 'sequence', crossfadeSec: 0.8, motionPreset: 'subtle', gradientEdge: 'none', gradientIntensity: 50, aspectRatio: '16:9', brollMode: 'off', brollDensity: 'sparse', brollPoolSize: 18, brollFallbackPolicy: 'prefer-selected', brollShufflePolicy: 'per-video', montageFootageSource: 'native', montageRuntime: 'native' },
         rules: { minDurationSec: 0, skipDownloaded: true, continueOnError: true, maxRetries: 1, minimumFreeSpaceGb: 1, captions: false, autoBroll: false, removeSilence: false, reduceFillerWords: false, keepAwake: false, skipUploaded: true, fillSkippedSelections: false, allowStaleUploadCache: true, uploadFreshnessMinutes: 360, downloadDelaySec: 0, retryBaseDelaySec: 1, retryMaxDelaySec: 2 },
         notify: { desktop: false, webhook: false, sound: false, email: false }
       }
@@ -1683,6 +1687,75 @@ async function runSmokeAutomation(): Promise<void> {
   }
 }
 
+/**
+ * Headless OpenMontage-bridge self-check (ME_SMOKE=montage, with ME_MONTAGE_FIXTURE pointing at
+ * test/fixtures/montage). The fixture seam in bridge.ts short-circuits the Python spawn and replays
+ * <fixture>/<command>.ndjson, so this drives the REAL bridge code (capabilities mapping, footage
+ * normalization, produce stage streaming) end-to-end without a local OpenMontage install. It asserts:
+ *   1. capabilities() reports available + a fully-populated renderEngines object + a capability menu.
+ *   2. retrieveFootage() returns clips whose downloaded path (from the fixture) exists on disk.
+ *   3. produceFromBrief() succeeds with an output mp4 and streams the preflight→…→done stage events.
+ */
+async function runSmokeMontage(): Promise<void> {
+  const fixtureDir = process.env['ME_MONTAGE_FIXTURE'] || join(process.cwd(), 'test', 'fixtures', 'montage')
+  // Resolve a fixture-relative path (the NDJSON stores repo-relative paths) against the CWD.
+  const abs = (p?: string): string => (!p ? '' : isAbsolute(p) ? p : join(process.cwd(), p))
+  try {
+    // The bridge only spawns/replays when the montage feature is enabled AND an OM root is set;
+    // detectCapabilities() early-returns otherwise. Point the root at the fixture dir (an existing
+    // directory) — the fixture seam ignores it, but the guard requires a non-empty value.
+    assertDisposableSmokeProfile(app.getPath('userData'))
+    setSettings({ montage: { enabled: true, openMontageRoot: fixtureDir } })
+
+    // 1) capabilities probe (force a fresh probe, bypassing the 60s cache)
+    const caps = await getMontageCapabilities(true)
+    const re = caps.renderEngines
+    const enginesPresent = !!re && typeof re.ffmpeg === 'boolean' && typeof re.remotion === 'boolean' && typeof re.hyperframes === 'boolean'
+    const capsOk = caps.available === true && enginesPresent && caps.capabilities.length > 0
+
+    // 2) footage retrieval — clips[].path must point at a real file (the fixture stub mp4)
+    const clips = await retrieveFootage({
+      outputDir: join(app.getPath('temp'), `me-montage-smoke-${process.pid}`),
+      queries: [{ query: 'city' }]
+    })
+    const clip = clips[0]
+    const clipExists = !!clip && !!clip.path && existsSync(abs(clip.path))
+    const footageOk = clips.length > 0 && !!clip.clipId && clipExists
+
+    // 3) produce — deterministic footage→compose→review orchestration; capture streamed stages
+    const stages: string[] = []
+    const brief: Record<string, unknown> = {
+      project_id: 'smoke',
+      output_dir: join(app.getPath('temp'), `me-montage-smoke-${process.pid}`),
+      footage: { queries: [{ query: 'city', kind: 'video' }] },
+      compose: { render_runtime: 'remotion', edit_decisions: { render_runtime: 'remotion', cuts: [] } }
+    }
+    const res = await produceFromBrief('smoke', brief, (ev: BridgeEvent) => {
+      if (ev.event === 'stage' && typeof ev.stage === 'string') stages.push(ev.stage)
+    })
+    const outputExists = !!res.output && existsSync(abs(res.output))
+    const wantStages = ['preflight', 'footage', 'compose', 'review', 'done']
+    const stagesOk = wantStages.every((s) => stages.includes(s))
+    const produceOk = res.ok === true && outputExists && stagesOk
+
+    console.log(`SMOKE_MONTAGE_CAPS available=${caps.available} enginesPresent=${enginesPresent} ffmpeg=${re?.ffmpeg} remotion=${re?.remotion} hyperframes=${re?.hyperframes} caps=${caps.capabilities.length}`)
+    console.log(`SMOKE_MONTAGE_FOOTAGE clips=${clips.length} clipId=${clip?.clipId} path='${clip?.path}' exists=${clipExists}`)
+    console.log(`SMOKE_MONTAGE_PRODUCE ok=${res.ok} output='${res.output}' outputExists=${outputExists} stages=${stages.join(',')}`)
+
+    if (!capsOk) throw new Error(`capabilities assertion failed (available=${caps.available} enginesPresent=${enginesPresent} caps=${caps.capabilities.length})`)
+    if (!footageOk) throw new Error(`footage assertion failed (clips=${clips.length} clipId=${clip?.clipId} path='${clip?.path}' exists=${clipExists})`)
+    if (!produceOk) throw new Error(`produce assertion failed (ok=${res.ok} outputExists=${outputExists} stages=${stages.join(',')} error=${res.error || 'none'})`)
+
+    console.log('SMOKE_MONTAGE_OK')
+    closeDatabase()
+    app.exit(0)
+  } catch (e) {
+    console.log('SMOKE_MONTAGE_FAIL ' + (e as Error).message)
+    closeDatabase()
+    app.exit(1)
+  }
+}
+
 /** Remove transient render artifacts (e.g. per-render SFX WAVs) left in temp by a
  *  previous, possibly crashed, run so they don't accumulate. Crash-proof. */
 function sweepTempArtifacts(): void {
@@ -1737,6 +1810,10 @@ app.whenReady().then(() => {
   }
   if (process.env['ME_SMOKE'] === 'broll-gpu-real') {
     void runSmokeBrollGpuReal()
+    return
+  }
+  if (process.env['ME_SMOKE'] === 'montage') {
+    void runSmokeMontage()
     return
   }
   // Demo-dependent smokes (M2–M7) assert against deterministic seeded rows. Production

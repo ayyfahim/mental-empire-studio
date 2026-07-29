@@ -172,6 +172,32 @@ jobs:
           for m in 1 m3 m4 m5 m6 m7 e2e; do
             run "$m"
           done
+      # OpenMontage bridge (W9). The shim test asserts the Python invoker's error contract; the
+      # smoke drives the real bridge (capabilities/footage/produce) against ME_MONTAGE_FIXTURE, which
+      # replays canned NDJSON + a stub mp4 — no real OpenMontage install or ffmpeg needed.
+      - name: Montage bridge shim test
+        run: python3 test/montage/test_shim.py
+      - name: Montage bridge smoke
+        run: |
+          set -euo pipefail
+          userdata="$(mktemp -d)"
+          logfile="/tmp/me-smoke-montage.log"
+          set +e
+          env ME_SMOKE=montage \
+              ME_SMOKE_USERDATA_DIR="$userdata" \
+              ME_MONTAGE_FIXTURE=test/fixtures/montage \
+            xvfb-run -a node_modules/electron/dist/electron --no-sandbox out/main/main.js 2>&1 | tee "$logfile"
+          status=${PIPESTATUS[0]}
+          set -e
+          rm -rf "$userdata"
+          if (( status != 0 )); then
+            echo "Montage smoke failed (status=${status})."
+            exit "$status"
+          fi
+          if ! grep -Fq 'SMOKE_MONTAGE_OK' "$logfile"; then
+            echo "Montage smoke exited without its SMOKE_MONTAGE_OK marker."
+            exit 1
+          fi
       - name: Upload smoke logs
         if: always()
         uses: actions/upload-artifact@v4

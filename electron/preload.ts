@@ -19,7 +19,10 @@ import type {
   RenderProgress,
   AutomationEvent,
   AutomationJobDraft,
-  AutomationJob
+  AutomationJob,
+  MontageProgress,
+  MontageFootageRequest,
+  MontageProduceOptions
 } from '../shared/types'
 import type { ProviderConnection, ProviderJob, ProviderMotionQuery, TalkingPhotosAspectRatio, TalkingPhotosCreateInput, TalkingPhotosScriptCreateInput } from '../shared/talkingphotos'
 
@@ -63,6 +66,13 @@ const api: NativeApi = {
 
   effects: {
     generate: (projectId: string, style: string) => ipcRenderer.invoke('effects:generate', projectId, style)
+  },
+
+  montage: {
+    capabilities: (force?: boolean) => ipcRenderer.invoke('montage:capabilities', force),
+    retrieveFootage: (req: MontageFootageRequest) => ipcRenderer.invoke('montage:retrieveFootage', req),
+    produce: (projectId: string, opts?: MontageProduceOptions) => ipcRenderer.invoke('montage:produce', projectId, opts),
+    cancel: (id: string) => ipcRenderer.invoke('montage:cancel', id)
   },
 
   looks: {
@@ -264,6 +274,7 @@ const api: NativeApi = {
   onTranscribeProgress: (cb: (p: TranscribeProgress) => void) => subscribe('transcribe:progress', cb),
   onRenderProgress: (cb: (p: RenderProgress) => void) => subscribe('render:progress', cb),
   onAutomation: (cb: (e: AutomationEvent) => void) => subscribe('automation:event', cb),
+  onMontageProgress: (cb: (p: MontageProgress) => void) => subscribe('montage:progress', cb),
   onAutomationJob: (cb: (job: AutomationJob) => void) => subscribe('automation:job', cb),
   onProviderJob: (cb: (job: ProviderJob) => void) => subscribe('talkingphotos:job', cb),
   onConnectionStatusChanged: (cb: (connection: ProviderConnection) => void) => subscribe('talkingphotos:connectionStatus', cb)

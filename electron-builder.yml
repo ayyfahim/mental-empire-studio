@@ -37,6 +37,11 @@ extraResources:
   - from: resources/fonts
     to: fonts
     filter: ["**/*"]
+  # OpenMontage bridge invoker shim (Python). OpenMontage itself is NOT bundled — it stays a
+  # user-local dependency pointed to by settings.montage.openMontageRoot.
+  - from: resources/montage
+    to: montage
+    filter: ["**/*"]
 
 # Publish to GitHub Releases (consumed by electron-updater).
 publish:
