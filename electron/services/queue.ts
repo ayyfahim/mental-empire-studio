@@ -38,6 +38,11 @@ function emitR(p: RenderProgress): void {
  *  'auto' uses the GPU only when WebCodecs hardware H.264 encode is present. Probing
  *  happens only for 'auto'/'gpu' so the default ffmpeg path never spins up the worker. */
 async function resolveEngine(settings: ReturnType<typeof getSettings>, strictHardwareGpu = false): Promise<RenderEngine> {
+  // Dry-run seam (ME_SMOKE=m6): only runRender()'s ffmpeg path honors ME_RENDER_FIXTURE's
+  // stub-mp4 short-circuit, so force 'ffmpeg' regardless of the machine's persisted
+  // renderEngine — otherwise a GPU-configured box routes the fixture job at the real
+  // WebCodecs worker, which has no fixture awareness and fails on the fake image paths.
+  if (process.env['ME_RENDER_FIXTURE']) return 'ffmpeg'
   const pref = settings.renderEngine ?? 'ffmpeg'
   const gpuUnavailable = (detail?: string): Error =>
     new Error(`GPU compositor is unavailable${detail ? `: ${detail}` : ''}. CPU-filter ffmpeg fallback is disabled because a GPU encoder is selected.`)
@@ -485,9 +490,11 @@ export async function runAll(): Promise<void> {
   const requested = Math.max(1, settings.concurrency)
   // Hardware mode is intentionally one-at-a-time. Even with NVENC/WebCodecs, captions,
   // muxing, disk IO and stock normalization still have CPU-side work; parallel jobs made
-  // the user's machine peg CPU and turned ETA into fiction.
+  // the user's machine peg CPU and turned ETA into fiction. That constraint doesn't apply
+  // under the ME_RENDER_FIXTURE dry-run seam (ME_SMOKE=m6) — there's no real encode to peg
+  // the CPU with, and the smoke asserts real concurrency to verify the queue runner itself.
   const enc = selectEncoder(settings, probeRenderCapabilities())
-  const concurrency = enc.device === 'gpu' ? 1 : requested
+  const concurrency = enc.device === 'gpu' && !process.env['ME_RENDER_FIXTURE'] ? 1 : requested
   let idx = 0
   let active = 0
   maxActive = 0
