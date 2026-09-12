@@ -7,6 +7,19 @@ if (!channelRoot || !imageDir || !outputName) {
   throw new Error('Usage: node render-ramani.mjs <channel-root> <image-dir> <output-name>')
 }
 
+
+if (process.env.ME_ALLOW_LEGACY_STATIC_LOOP !== '1') {
+  throw new Error(
+    'Retired final renderer: this script only loops still images with captions. ' +
+    'Use the channel edit plan and mixed-media assembly workflow. ' +
+    'Set ME_ALLOW_LEGACY_STATIC_LOOP=1 only to reproduce a labeled historical rough.'
+  )
+}
+
+console.warn(
+  'LEGACY ROUGH MODE: output from render-ramani.mjs is a component/reference and must not be published as a final.'
+)
+
 const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg'
 const ffprobe = process.env.FFPROBE_PATH || 'ffprobe'
 const fontsDir = resolve(process.env.CAPTION_FONTS_DIR || 'resources/fonts')

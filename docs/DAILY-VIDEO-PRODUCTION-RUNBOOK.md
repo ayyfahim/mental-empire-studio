@@ -1,6 +1,6 @@
 # Daily Video Production Runbook
 
-Last verified: 2026-09-02 (Asia/Dhaka)
+Last verified: 2026-09-12 (Asia/Dhaka)
 
 ## Purpose
 
@@ -21,40 +21,34 @@ Do not save API-key values, session cookies, or authorization headers in this re
 
 Read `PROGRESS.md` first when resuming. Read the implementation report only when troubleshooting or changing the workflow.
 
+
 ## Required result
 
-Produce four 16:9 videos per daily run:
+Produce four authored 16:9 videos per daily run. Component renderers do not equal finished edits.
 
-| Channel | Visual treatment |
-| --- | --- |
-| Psyche Noir | Dr. Ramani audio over `ramani_one` still images, with animated captions |
-| Discipline Doctrine | Dr. Ramani audio over `ramani_two` still images, with animated captions |
-| Neural Vault | TalkingPhotos AI talking-person video, with captions added locally |
-| MindCipher | Transcript-driven B-roll edit planned with Meta Muse Spark 1.2 Contributor, optionally including Video Express motion clips from prepared images, with animated captions |
+| Channel | Required final treatment | Automatically insufficient |
+| --- | --- | --- |
+| Psyche Noir | Fictional/composite noir scenarios, symbolic motion, relationship/boundary graphics, evidence cards, and designed stills | Ramani image loop or static AI images plus captions |
+| Discipline Doctrine | Action/process footage, Video Express scenes where needed, step/progress graphics, contrasts, and demonstrations | Generic motivational B-roll plus captions |
+| Neural Vault | TalkingPhotos host as A-roll, then evidence, diagrams, examples, and motion cutaways in a second pass | Full talking avatar plus captions |
+| MindCipher | Transcript-matched footage plus original explanatory graphics, evidence framing, and selected generated motion | Stock B-roll plus captions |
 
-Every final video must contain the complete source audio, visible animated captions, and a GPU-encoded H.264 video stream.
+Every final uses an original channel-specific script/narration, a complete `editing/edit-plan.json`, more than one purposeful media family, and a second editorial assembly pass. These are internal quality controls, not claimed YouTube numeric requirements.
+
 
 ## Workflow map
 
 ```mermaid
 flowchart TD
-    A[Choose four fresh source videos] --> B[Download audio]
-    B --> C[Transcribe with Groq]
-    C --> D[Create TikTok-style ASS captions]
-    D --> E1[Psyche Noir]
-    D --> E2[Discipline Doctrine]
-    D --> E3[Neural Vault]
-    D --> E4[MindCipher]
-    E1 --> F1[ramani_one images\n7 seconds each, loop, trim last]
-    E2 --> F2[ramani_two images\n7 seconds each, loop, trim last]
-    E3 --> F3[TalkingPhotos online\nsplit, render, merge, download]
-    E4 --> F4[Muse Spark 1.2 Contributor plans B-roll\nlocal library, stock, optional Video Express clips]
-    F1 --> G[Burn captions and encode with NVIDIA NVENC]
-    F2 --> G
-    F3 --> G
-    F4 --> G
-    G --> H[Check streams, duration, captions, and playback]
+    A[Research fresh sources] --> B[Write original script]
+    B --> C[Produce original narration]
+    C --> D[Create edit plan]
+    D --> E[Generate component layers]
+    E --> F[Second editorial assembly]
+    F --> G[Editorial and technical gates]
 ```
+
+Source videos provide research, claims to verify, counterpoints, and reference timestamps. They do not provide the final full narration. TalkingPhotos, B-roll renders, still composites, captions, and Video Express clips are component layers; the authored assembly is the final.
 
 ## Verified requirements
 
@@ -111,93 +105,92 @@ curl.exe -N -X POST "https://api.meta.ai/v1/responses" `
 
 Before sending, assert that `model` equals `muse-spark-1.2-contributor` exactly and that `reasoning.effort` equals `xhigh`. Parse the server-sent event stream until `response.completed`; treat `response.failed` or a missing terminal event as a failed planning request.
 
+
 ## Preflight for every run
 
-1. Confirm the required environment-variable names exist. Report only present/missing status; never print their values.
-2. Send one minimal request to Meta using `muse-spark-1.2-contributor`.
-3. Send one minimal search to Pexels, Pixabay, and Coverr.
-4. Confirm Groq authentication and that `whisper-large-v3-turbo` is available.
-5. Inspect `D:\talkingphotos-session` before using TalkingPhotos. It is the authoritative local record of the current endpoints and behavior; do not guess the API.
-6. Check TalkingPhotos quota and concurrency before uploading.
-7. Before Video Express work, read `docs/VIDEOEXPRESS-INTEGRATION.md` and run `node scripts/production/run-videoexpress.mjs --preflight`; confirm login, AI folders, and active queue without consuming generation capacity.
-8. Confirm both Ramani image folders are readable and non-empty.
-9. Confirm the local B-roll directory is readable.
-10. Run a short FFmpeg `h264_nvenc` test and confirm the ASS/subtitles filters are present.
-11. Confirm enough free space on `D:` for source audio, intermediate video, and final renders.
-12. Use Context7 for current API/library documentation and Firecrawl for official web pages. Accept only first-party or official sources. If one helper cannot access a site, use the other or the normal browser restricted to the official domain.
+1. Read `AGENTS.md`, the daily-production skill, and both Analytics Hub strategy files at:
+   - `D:\Work\youtube-analytics-hub\data\fetch-2026-09-04\VIDEO_MAKER_MASTER_PLANNER.md`
+   - `D:\Work\youtube-analytics-hub\data\fetch-2026-09-04\VIDEO_EDITING_HANDBOOK.md`
+2. Confirm required environment-variable names exist. Report only present/missing; never print values.
+3. Verify Meta `muse-spark-1.2-contributor`, Groq `whisper-large-v3-turbo`, and relevant provider searches.
+4. Confirm that each source is research/reference only and that the original script/narration path is recorded.
+5. Create `editing/edit-plan.json` for each channel before asset generation. It must cover the full timeline and state media family, asset, treatment, provenance, and narrative purpose for every block.
+6. Inspect `D:\talkingphotos-session`, quota, concurrency, and current contract before Neural Vault generation.
+7. Read `docs/VIDEOEXPRESS-INTEGRATION.md` and run `node scripts/production/run-videoexpress.mjs --preflight` before every plan that assigns generated motion. Pilot one or two clips before scaling.
+8. Confirm the B-roll library and current provenance manifest are readable. Old Ramani image folders are optional legacy reference assets, never required final inputs.
+9. Run a short FFmpeg `h264_nvenc` test and confirm ASS/subtitle filters.
+10. Confirm enough free space on `D:`.
+11. Use current first-party documentation for unstable services.
 
-Stop only the dependent branch when a preflight fails. Continue checking and preparing the independent branches, then report the exact user action needed.
+Reject any edit plan whose final is only a slideshow, image loop, generic B-roll montage, or talking avatar. Stop only the dependent branch when a preflight fails; continue safe independent work.
+
 
 ## Daily source selection
 
-Select a fresh, suitable source for each channel on the day of the run. Confirm the video is reachable and has a downloadable audio format before editing. Do not blindly reuse the sample URLs below on later dates.
+Select fresh, credible sources that fit each channel, then preserve URLs, titles, publication context, useful timestamps, claims, and counterpoints under `source/references`. Verify factual claims against appropriate primary or authoritative material.
 
-The four sources selected for the 2026-08-31 run were:
+Do not download a creator's complete audio and reuse it as the final narration. Write an original channel-specific script that contributes structure, explanation, comparison, examples, and point of view, then produce original narration from that script. If a short third-party excerpt is genuinely necessary, record its license or transformative purpose and exact duration in the edit plan; editing alone does not make wholesale reused audio original.
 
-| Channel | Selected source |
-| --- | --- |
-| MindCipher | [The Psychology of People Who Waste Their Potential](https://www.youtube.com/watch?v=iMNMyJvZ0F0) |
-| Neural Vault | [Why Breaking an Empath is the WORST Mistake You Can Make](https://www.youtube.com/watch?v=E4u-LDrParE) |
-| Psyche Noir | [Universe Sends These 3 Signs Before Removing a Narcissist From Your Life — Dr. Ramani](https://www.youtube.com/watch?v=95zhEfcfjHI) |
-| Discipline Doctrine | [How to RESPOND When a Narcissist Reaches Out After Silence — Dr. Ramani](https://www.youtube.com/watch?v=vWywrwfVjdI) |
+Historical example URLs in this repository are research records, not narration templates and not automatic picks for later runs.
 
-All four URLs passed a download simulation when verified.
 
 ## Common audio and caption stage
 
-1. Download the best available audio with the bundled or locally available yt-dlp.
-2. Preserve a clean source-audio file for recovery; do not repeatedly recompress it between stages.
-3. Transcribe through Groq with word timestamps using `whisper-large-v3-turbo`.
-4. Keep both a readable transcript and the timestamped machine result.
-5. Generate an ASS subtitle file with a TikTok/CapCut-like treatment: short phrases, large high-contrast text, safe lower-middle placement, active-word color emphasis, and restrained pop animation.
-6. Check line wrapping and safe margins at 1920x1080 before the full render.
+1. Save the approved original script under `script`.
+2. Produce and review `narration\narration.wav`; check pronunciation, pacing, attribution, and claim accuracy.
+3. Keep a lossless or high-quality recovery copy and avoid repeated recompression.
+4. Transcribe the original narration through Groq with word timestamps using `whisper-large-v3-turbo`.
+5. Keep both the readable transcript and timestamped machine result.
+6. Generate an ASS caption file with short phrases, readable contrast, safe placement, and restrained emphasis.
+7. Check wrapping and safe margins at 1920x1080.
 
-ASS rendering and image/video composition use normal FFmpeg filters and therefore may use some CPU. The final H.264 encoding must use NVIDIA NVENC; “GPU encoding” does not mean every filter is GPU-only.
+If a legacy helper requires `source\source.mp3`, use a working copy of the original narration. Captions are an accessibility/presentation layer; they do not by themselves add editorial originality.
+
 
 ## Psyche Noir
 
-1. Use `D:\YT Channel Files\ramani_assets\ramani_one`.
-2. Sort the images into a stable sequence.
-3. Show each image for seven seconds.
-4. When the sequence ends before the audio, loop through it again in the same order.
-5. Trim the final image segment so the video ends exactly with the audio; never cut the audio to fit an image boundary.
-6. Add subtle scale or pan motion only if it does not distract from the captions.
-7. Burn in the animated ASS captions and encode the final video with NVENC.
+1. Build the episode around a fictional or composite relationship situation, not a recycled personality clip.
+2. Use a noir visual language: motivated shadow, selective color, evidence-board or relationship-map graphics, text-message/dialogue recreations, boundary scripts, and symbolic cutaways.
+3. Assign selected scenario/symbolic moments to Video Express when real footage cannot safely or specifically represent the narration.
+4. Use designed still composites sparingly; no static visual may carry a long section merely because captions move over it.
+5. Change visual mode on narrative turns—setup, behavior, interpretation, consequence, response—not on a fixed seven-second clock.
+6. The `ramani_one` loop and `render-ramani.mjs` are retired for finals. They may be used only for an explicitly labeled historical rough under `components/legacy-reference`.
+7. Complete the second editorial pass, captions, disclosure review, and both final gates.
+
 
 ## Discipline Doctrine
 
-1. Use `D:\YT Channel Files\ramani_assets\ramani_two`.
-2. Apply the same seven-second image timing, stable looping, final-segment trim, caption, and NVENC rules as Psyche Noir.
-3. Never swap the two Ramani folders within the same daily run.
+1. Translate each chapter into visible action: routine, choice, obstacle, correction, and measurable progress.
+2. Combine relevant licensed/original footage with Video Express action scenes where stock is too generic.
+3. Add step cards, checklists, progress meters, before/after contrasts, time or habit diagrams, and close detail inserts tied to exact narration claims.
+4. Generic “person walking/gym/city” B-roll is supporting texture only; B-roll plus captions is not a final treatment.
+5. Avoid a fixed slot duration. Pace changes should follow the instruction or behavioral turn.
+6. The `ramani_two` loop and `render-ramani.mjs` are retired for finals and allowed only as labeled historical roughs.
+7. Complete the second editorial pass, captions, disclosure review, and both final gates.
+
 
 ## Neural Vault
 
-1. Use the Neural Vault source audio in TalkingPhotos AI.
-2. Follow the current API behavior documented in `D:\talkingphotos-session`.
-3. Let TalkingPhotos split the audio into supported parts, upload them, and create a talking-person render for every part.
-4. Use the HAR-reproduced 16:9 character `010c1c4c-982c-4ba5-9f86-9d59c27c4a86`, generated from driving image media `4550164`, with `style: high_quality` and `motionId: 0`. Never inherit an unrelated template project's options. The runner uses this UUID by default; `TALKINGPHOTOS_CHARACTER_UUID` remains the explicit override.
-5. High-quality human projects have a verified 60-second limit, so split the narration into at most 60-second parts. Wait for all parts to finish, then use TalkingPhotos' server-side project merge. Do not stitch the parts locally.
-6. Download the merged result.
-7. Add and burn the ASS captions locally, then produce the NVENC final.
+1. Generate the verified 16:9 TalkingPhotos host layer from the original Neural Vault narration.
+2. Follow the current contract documented in `D:\talkingphotos-session`. Keep the approved character/profile, maximum 60-second HQ parts, deterministic recovery, and server-side merge rules.
+3. Store the merged host under `components/talking-host`. It is A-roll, not the final.
+4. Build a second editorial pass with custom neural/psychology diagrams, evidence cards, examples, interface/measurement motifs, close detail crops, and selected Video Express cutaways.
+5. As an internal house range, the host should normally occupy about 40–60% of runtime. Avoid roughly more than 20 uninterrupted seconds unless `editing/edit-plan.json` explains why that moment benefits from continuous delivery.
+6. Do not fake camera changes by repeatedly cropping the same host shot. Each interruption must clarify, prove, exemplify, or emotionally frame the narration.
+7. Burn captions only after the mixed-media timeline is locked, then complete disclosure review and both final gates.
+
 
 ## MindCipher
 
-1. Give the transcript and timing information to Meta using model `muse-spark-1.2-contributor`.
-2. Ask for a structured B-roll plan containing start time, end time, visual idea, search query, and rationale. The model plans the edit; it does not invent source licenses or claim a clip exists.
-3. Search `D:\Mental Empire Studio\broll-library` first and reuse suitable local footage.
-4. Fill genuine gaps from Pexels, Pixabay, and Coverr. Cache downloaded media and record the provider, original page/asset URL, creator when supplied, and required attribution.
-5. Do not mass-download provider libraries. Search only for clips needed by the plan.
-6. Fit, crop, and trim B-roll to 1920x1080 without stretching it.
-7. When selected scenes use prepared still images that need prompt-directed motion, create an immutable `videoexpress-manifest.json` and run `node scripts/production/run-videoexpress.mjs "<job-root>"`. Choose the workflow first: `generated-still` uploads each image as a reference, has Video Express generate a new still from it, and animates that; `direct-upload` animates the uploaded image itself. Under `generated-still` the runner does create the intermediate stills, but neither workflow creates the original reference images.
-8. Preserve each Video Express prompt, generated still, state UUID, remote folder name, and downloaded clip. Never retry `submission_uncertain` without inspecting My AI Videos. Reset an exhausted `attempts` counter only when the item's `generationUuid` is `null`.
-9. Preserve the narration as the primary audio, burn the animated ASS captions, and encode with NVENC.
-10. Use brand new B-roll videos if local ones are not matching with transcript. Match B-roll with transcript in correct position. Use a structured folder for everything as well. (User rule, 2026-09-12: prefer local library first, but fetch fresh provider clips whenever the local match is weak or off-position; keep every asset under the dated run root.)
+1. Give the original transcript and timings to Meta `muse-spark-1.2-contributor` for a structured component plan.
+2. Search the licensed local library first, then Pexels/Pixabay/Coverr for exact gaps. Record page URL, asset URL, creator, license/attribution, and timeline use.
+3. Run `plan-mindcipher.mjs` and `render-mindcipher.mjs` to make a transcript-matched B-roll base. Treat that render as `components/broll-base`, not a final.
+4. Add a second editorial pass with original neuro/psychology diagrams, claim-versus-evidence cards, examples, measurement/UI motifs, and Video Express motion scenes where they clarify the script.
+5. As an internal house range, generic stock should not carry more than roughly half the final runtime without a documented editorial reason. A relevant local clip is still generic if it merely decorates the words.
+6. Cut on conceptual changes rather than repeated seven-second slots. Do not stretch or repeat weak footage to fill time.
+7. Preserve all provenance and Video Express manifest/state artifacts, then complete captions, disclosure review, and both final gates.
 
-Stock-source notes:
-
-- Pexels requires its API key in the `Authorization` header.
-- Pixabay video search uses its videos endpoint and a `key` parameter; cache results for the period required by its documentation.
-- Coverr accepts Bearer authentication and requests attribution/linking for API use. Preserve attribution data even when the final publishing description will be prepared later.
+Stock APIs remain supporting sources. Do not mass-download provider libraries, and never let availability dictate the script's meaning.
 
 ## Thumbnail references
 
@@ -212,33 +205,45 @@ Create one 16:9 thumbnail per channel with the built-in image-generation tool. T
 
 Use concise uppercase copy derived from the selected title. Require verbatim spelling, mobile-readable condensed typography, and no extra words, logos, watermarks, duration badges, borders, or YouTube interface.
 
+
 ## Encoding and verification
 
-Use an FFmpeg build that exposes `h264_nvenc`. Start with the already-tested quality-controlled NVENC configuration and validate a short sample before each full batch. Keep the source frame rate unless there is a reason to normalize it.
+Use an FFmpeg build exposing `h264_nvenc` and validate a short encode before each batch. Keep source frame rate unless the project requires normalization.
 
-For every final file, verify:
+**Editorial verification**
 
-- H.264 video and AAC audio streams are present.
-- The video duration matches the narration within normal container rounding.
-- The opening, middle, and ending play without frozen or missing visuals.
-- Captions are visible, synchronized, inside safe margins, and contain no obvious transcription artifacts.
-- The Ramani image loop has no blank tail.
-- TalkingPhotos part boundaries have no missing audio or duplicate frames.
-- MindCipher has no unexplained black gaps and each external clip has provenance recorded.
-- Every Video Express clip used in a final passes ffprobe, full decode, and representative-frame checks sampled inside the slot actually kept; its manifest, generated stills, timing plan and resumable state remain with the run.
-- Clips trimmed to narration slots are cut on frame boundaries with `-frames:v`, not with `-t`, which rounds up and drifts late across a long timeline.
+- `editing/edit-plan.json` covers the complete actual timeline and includes totals by media family.
+- Representative samples across every chapter show channel-specific editorial decisions.
+- Reject static/caption videos, repeated image loops, generic B-roll/captions, full TalkingPhotos/captions, and fixed-slot template reuse.
+- Confirm MindCipher's B-roll base and Neural Vault's TalkingPhotos host received a second pass.
+- Confirm Psyche Noir and Discipline Doctrine do not use the retired Ramani loop as finals.
+- Record factual sources, asset provenance, licenses, and AI/synthetic elements; perform the altered/synthetic-content disclosure review before upload.
+
+**Technical verification**
+
+- H.264 video and AAC audio are present at 1920x1080.
+- Duration matches the original narration within normal container rounding.
+- Full decode passes; black/frozen runs and boundary defects are absent.
+- Captions are synchronized, readable, and inside safe margins.
+- Every Video Express clip passes ffprobe, full decode, and representative-frame checks for intended motion and artifacts.
+- TalkingPhotos boundaries have no missing audio or duplicated frames.
+- Clip cuts are frame-accurate and the final timeline has no timestamp gaps.
 
 Suggested run layout:
 
 ```text
 D:\MentalEmpire-Production\YYYY-MM-DD\
-  MindCipher\source audio, transcript, captions, provenance, final
-  NeuralVault\source audio, transcript, captions, downloaded merge, final
-  PsycheNoir\source audio, transcript, captions, final
-  DisciplineDoctrine\source audio, transcript, captions, final
+  <Channel>\source\references
+  <Channel>\script
+  <Channel>\narration
+  <Channel>\editing
+  <Channel>\components
+  <Channel>\captions
+  <Channel>\intermediate
+  <Channel>\final
 ```
 
-Keep intermediates until all four finals pass verification. A later cleanup must name the exact dated run directory and must not delete the reusable image or B-roll libraries.
+Keep intermediates until all four finals pass. A cleanup must name the exact dated run directory and must not delete reusable libraries.
 
 ## Official references
 
@@ -254,10 +259,11 @@ Keep intermediates until all four finals pass verification. A later cleanup must
 - TalkingPhotos: [Official application](https://app.talkingphotos.ai); use `D:\talkingphotos-session` for the verified captured API behavior.
 - Video Express: [Official application](https://app.videoexpress.ai/) and the user-supplied [library manager userscript](https://raw.githubusercontent.com/ayyfahim/vea_automator/main/videoexpress-manager.user.js); use `docs/VIDEOEXPRESS-INTEGRATION.md` for the locally verified contract.
 
+
 ## New-session handoff prompt
 
-Use this short instruction in a later session:
+Use this instruction in a later session:
 
-> Read `D:\Work\mental-empire-studio\docs\DAILY-VIDEO-PRODUCTION-RUNBOOK.md`, run every non-destructive preflight without exposing secret values, select four fresh source videos for today, and execute the four channel workflows. Report any branch-specific blocker only after completing the remaining independent checks or work.
+> Read `D:\Work\mental-empire-studio\AGENTS.md`, `docs\DAILY-VIDEO-PRODUCTION-RUNBOOK.md`, the daily-production skill, and both master planning files in `D:\Work\youtube-analytics-hub\data\fetch-2026-09-04`. Treat source videos as research only, produce original scripts/narration, create complete edit plans, use Video Express according to `docs\VIDEOEXPRESS-INTEGRATION.md` where motion is assigned, and do not call a component render a final until it passes the mixed-media editorial gate.
 
-Or invoke `$mental-empire-daily-production`, which routes to this runbook and the current progress checkpoint.
+Or invoke `$mental-empire-daily-production`, which routes to this runbook and current progress checkpoint.

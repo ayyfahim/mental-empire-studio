@@ -31,6 +31,30 @@ product behavior and `PLAN.md` for completed milestone history.
   It has all the endpoints and feature list. So you should never guess how it works. Be 100% sure by 
   checking that directory.
 
+
+## Production quality gate
+
+The production scripts are component generators, not automatic proof that a publishable edit exists. A final daily video must show genuine editorial construction and original value; it must not merely disguise an automated template.
+
+Reject a final that is only:
+
+- still images (even AI-generated) plus captions, pans, zooms, or music;
+- one image folder looped on a fixed interval;
+- generic stock B-roll plus narration and captions;
+- an uninterrupted TalkingPhotos/avatar render plus captions; or
+- the same timeline recipe with assets swapped.
+
+Before a four-channel batch, read the controlling channel strategy in the sibling Analytics Hub checkout:
+
+- `D:\Work\youtube-analytics-hub\data\fetch-2026-09-04\VIDEO_MAKER_MASTER_PLANNER.md`
+- `D:\Work\youtube-analytics-hub\data\fetch-2026-09-04\VIDEO_EDITING_HANDBOOK.md`
+
+Then read `docs/DAILY-VIDEO-PRODUCTION-RUNBOOK.md` and the daily-production skill in this repository. If the sibling checkout lives elsewhere, locate that repository rather than silently skipping the two files.
+
+Every publishable final needs a written `editing/edit-plan.json`, multiple purposeful media families, and a second editorial assembly pass. TalkingPhotos is A-roll, MindCipher's renderer is a B-roll base, and `render-ramani.mjs` is a retired legacy rough renderer; none is a final by itself. Use Video Express for selected motion scenes when the plan calls for generated movement, following `docs/VIDEOEXPRESS-INTEGRATION.md` and `scripts/production/run-videoexpress.mjs`.
+
+These are internal quality controls, not claimed YouTube numeric rules. They exist to make originality and editorial contribution visible in the finished work.
+
 ## Key locations
 
 - `electron/main.ts`: application window, tray, scheduling, and smoke entry points.
