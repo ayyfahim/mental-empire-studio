@@ -230,6 +230,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 async function processChannel(channel) {
   const channelRoot = join(runRoot, channel)
+  if (!existsSync(join(channelRoot, 'source', 'source.mp3'))) {
+    console.log(`${channel}: skipped (source audio not present)`)
+    return
+  }
   const wordsPath = join(channelRoot, 'transcript', 'words.json')
   const transcriptPath = join(channelRoot, 'transcript', 'transcript.txt')
   const assPath = join(channelRoot, 'captions', 'captions.ass')

@@ -37,7 +37,7 @@ The Analytics Hub handbook and master planner control editorial treatment. This 
 
 Creating local production files is within an editing request. Logging into TalkingPhotos or Video Express, uploading media, consuming generation capacity, publishing to YouTube, or deleting remote/local assets must be covered by the current user request. Never infer YouTube publishing permission from a request to create videos.
 
-Never print or persist secret values, cookies, or authorization headers. Read only the required environment variables at runtime and report present/missing status.
+Never print or persist secret values, cookies, or authorization headers. Read only the required environment variables at runtime and report present/missing status. When a value is absent from the process or Windows User environment, `D:\Work\video-automation.env` is the approved local fallback: load only the required names into the current child process, and never copy or log their values.
 
 
 ## Start or resume a dated run

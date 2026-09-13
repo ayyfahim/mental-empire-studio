@@ -6,7 +6,7 @@ Last verified: 2026-09-12 (Asia/Dhaka)
 
 This file is the reusable context for producing one video per Mental Empire channel. A new session should read this file first, run the preflight checks, select fresh source videos for that day, and then execute the four channel workflows.
 
-Do not save API-key values, session cookies, or authorization headers in this repository. Read credentials from Windows environment variables at runtime.
+Do not save API-key values, session cookies, or authorization headers in this repository. Read credentials from Windows environment variables at runtime. If a required value is absent there, load it only into the current production process from `D:\Work\video-automation.env`; never print, copy, commit, or persist that file's values in production artifacts or logs.
 
 ## Related project files
 
