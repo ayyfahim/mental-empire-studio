@@ -48,7 +48,18 @@ function readCredential(name) {
     '-Command',
     buildWindowsUserEnvReadScript(name)
   ], { encoding: 'utf8', windowsHide: true })
-  return result.status === 0 ? String(result.stdout || '').trim() : ''
+  if (result.status === 0 && String(result.stdout || '').trim()) return String(result.stdout || '').trim()
+  // Approved local fallback for this production workspace. Keep values in memory;
+  // never print or persist them.
+  const fallbackPath = 'D:\\Work\\video-automation.env'
+  try {
+    const line = readFileSync(fallbackPath, 'utf8').split(/\r?\n/).find((entry) =>
+      new RegExp(`^\\s*${name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\s*=`).test(entry)
+    )
+    return line ? line.slice(line.indexOf('=') + 1).trim().replace(/^['"]|['"]$/g, '') : ''
+  } catch {
+    return ''
+  }
 }
 
 const email = readCredential('VIDEOEXPRESS_EMAIL')

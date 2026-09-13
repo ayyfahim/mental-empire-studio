@@ -84,3 +84,4 @@ credentials.json
 *.pem
 *.key
 .credentials
+flowmusic-session/chrome-profile/

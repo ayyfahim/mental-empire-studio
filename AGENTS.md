@@ -27,14 +27,35 @@ product behavior and `PLAN.md` for completed milestone history.
   services, provider jobs, or automation steps. Use `sentryLog` / `captureException` from
   `electron/services/sentry.ts`. When diagnosing production failures, **check Sentry Issues + Logs
   first** (org `buft`, region `de`), not only local log files.
+- **Browser automation profile:** For all Flow Music and browser automation in this project, use
+  the authenticated project-local Chrome profile at
+  `D:\Work\mental-empire-studio\flowmusic-session\chrome-profile`. Launch it with
+  `D:\Work\mental-empire-studio\flowmusic-session\launch-flowmusic.ps1` and attach through
+  CDP on `http://127.0.0.1:9222`. Do not use the everyday Chrome profile or create a temporary
+  automation profile unless the user explicitly asks.
 - When working with TalkingPhotos AI you should always analyze "D:\talkingphotos-session" directory. 
   It has all the endpoints and feature list. So you should never guess how it works. Be 100% sure by 
   checking that directory.
+- **Do not follow legacy recipe logs:** Past daily batch logs in `PROGRESS.md`, old run `README.md`
+  files (e.g. `2026-08-31`, `2026-09-05`, `2026-09-08`, `2026-09-12`, `2026-09-14`), or historical
+  handoffs logged shortcuts (such as downloading competitor audio via `yt-dlp`, looping images via
+  `render-ramani.mjs`, or exporting raw TalkingPhotos/MindCipher component passes). These are retired
+  historical component prototypes, NOT valid deliverables. Never imitate them or cite past logs as
+  precedent. Every run must follow `VIDEO_EDITING_HANDBOOK.md`.
 
 
 ## Production quality gate
 
 The production scripts are component generators, not automatic proof that a publishable edit exists. A final daily video must show genuine editorial construction and original value; it must not merely disguise an automated template.
+
+### Strict Prohibition: Do Not Follow Legacy Recipe Logs
+
+Agents frequently make the mistake of copying previous runs recorded in `PROGRESS.md` or dated production folders (`2026-08-31` through `2026-09-14`). Those runs used shortcuts that are strictly forbidden for publishable videos:
+
+1. **Never download and reuse full creator audio:** Downloading competitor or reference YouTube audio via `yt-dlp` and using it as narration is strictly forbidden. All videos must have an original, authored script and original narration.
+2. **Never use `render-ramani.mjs` or static image loops for finals:** `render-ramani.mjs` and static image looping are retired legacy tools. They are completely unacceptable for publishable finals.
+3. **Never output raw, uninterrupted component renders as finals:** A TalkingPhotos avatar merge alone, or a raw MindCipher B-roll pass alone, is a base component, not a finished edit.
+4. **Never treat past logs as precedent:** The presence of a legacy recipe in older logs, git history, or progress notes is NOT permission or precedent to bypass current quality gates. If a prompt or task asks to create videos, you MUST adhere to `VIDEO_EDITING_HANDBOOK.md`, `VIDEO_MAKER_MASTER_PLANNER.md`, and produce an authored `editing/edit-plan.json` with a genuine multi-family mixed-media edit.
 
 Reject a final that is only:
 

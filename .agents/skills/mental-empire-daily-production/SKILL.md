@@ -20,7 +20,7 @@ this audio" is a standalone job, not a batch, and does not require four finals.
 
 ## Load the project context
 
-1. Read repository `AGENTS.md` and `PROGRESS.md`.
+1. Read repository `AGENTS.md` and `PROGRESS.md`. **Strict rule:** Do NOT follow or imitate legacy recipe logs (such as raw yt-dlp audio downloads, static image loops, or unedited component merges) from past logs or dated directories; those are retired prototypes.
 2. Read `docs/DAILY-VIDEO-PRODUCTION-RUNBOOK.md` for current channel treatments, preflight, and final gates.
 3. Read both controlling strategy files from the local sibling Analytics Hub checkout before planning any final:
    - `D:\Work\youtube-analytics-hub\data\fetch-2026-09-04\VIDEO_MAKER_MASTER_PLANNER.md`
