@@ -85,3 +85,6 @@ credentials.json
 *.key
 .credentials
 flowmusic-session/chrome-profile/
+chrome-profile/
+.agents/
+_hist-copy
