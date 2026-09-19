@@ -85,7 +85,7 @@ D:\MentalEmpire-Production\YYYY-MM-DD\<JobName>\
 
 Reuse verified files already present, but validate them before skipping stages. Keep intermediate files until the final passes both technical and editorial gates. When the user asks to start from scratch, rename earlier roots out of the way rather than deleting them.
 
-Fresh source videos are research inputs, not ready-made narration. Preserve links, transcripts, claims, and timestamps in `source/references`; write an original script and record or synthesize narration from that script. Do not download and reuse a creator's full audio as the final voice track. A licensed or genuinely transformative excerpt needs its rights/rationale recorded in the edit plan.
+**Audio narration rule:** This rule doesn't apply for automation channels. For automation channels (Neural Vault, MindCipher, Psyche Noir, The Discipline Doctrine), use original source audio directly—authoring original scripts or generating custom narration is not required. For story-based channels (Bruce Lee, Tupac, Prince), fresh source videos are research inputs, not ready-made narration: write an original script and record or synthesize original speech/narration from that script; do not download and reuse a creator's full audio as the voice track.
 
 
 ## Preflight
@@ -115,7 +115,7 @@ Reject the plan before expensive rendering if it resolves to a static slideshow,
 node scripts/production/transcribe-and-caption.mjs "<run-root>"
 ```
 
-If the current helper expects `source\source.mp3`, place a working copy of the original narration there; do not substitute a downloaded creator audio track. Verify the last word timestamp against the narration duration and parse the ASS file with FFmpeg.
+For automation channels, place the downloaded original source audio at `source\source.mp3`. For story-based channels, place a working copy of the original authored narration there. Verify the last word timestamp against the audio duration and parse the ASS file with FFmpeg.
 
 
 ## Render each channel

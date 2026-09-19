@@ -129,7 +129,7 @@ Reject any edit plan whose final is only a slideshow, image loop, generic B-roll
 
 Select fresh, credible sources that fit each channel, then preserve URLs, titles, publication context, useful timestamps, claims, and counterpoints under `source/references`. Verify factual claims against appropriate primary or authoritative material.
 
-Do not download a creator's complete audio and reuse it as the final narration. Write an original channel-specific script that contributes structure, explanation, comparison, examples, and point of view, then produce original narration from that script. If a short third-party excerpt is genuinely necessary, record its license or transformative purpose and exact duration in the edit plan; editing alone does not make wholesale reused audio original.
+**Audio narration rule:** This rule doesn't apply for automation channels. For automation channels (Neural Vault, MindCipher, Psyche Noir, The Discipline Doctrine), use original source audio directly—authoring original scripts or generating custom narration is not required. For story-based channels (Bruce Lee, Tupac, Prince), do not download a creator's complete audio and reuse it as narration: write an original channel-specific script and produce original speech/narration from that script. If a short third-party excerpt is genuinely necessary, record its license or transformative purpose and exact duration in the edit plan; editing alone does not make wholesale reused audio original.
 
 Historical example URLs in this repository are research records, not narration templates and not automatic picks for later runs.
 
@@ -144,7 +144,7 @@ Historical example URLs in this repository are research records, not narration t
 6. Generate an ASS caption file with short phrases, readable contrast, safe placement, and restrained emphasis.
 7. Check wrapping and safe margins at 1920x1080.
 
-If a legacy helper requires `source\source.mp3`, use a working copy of the original narration. Captions are an accessibility/presentation layer; they do not by themselves add editorial originality.
+For automation channels, place the downloaded original source audio at `source\source.mp3`. For story-based channels, use a working copy of the original authored narration. Captions are an accessibility/presentation layer; they do not by themselves add editorial originality.
 
 
 ## Psyche Noir
@@ -264,6 +264,6 @@ Keep intermediates until all four finals pass. A cleanup must name the exact dat
 
 Use this instruction in a later session:
 
-> Read `D:\Work\mental-empire-studio\AGENTS.md`, `docs\DAILY-VIDEO-PRODUCTION-RUNBOOK.md`, the daily-production skill, and both master planning files in `D:\Work\youtube-analytics-hub\data\fetch-2026-09-04`. Treat source videos as research only, produce original scripts/narration, create complete edit plans, use Video Express according to `docs\VIDEOEXPRESS-INTEGRATION.md` where motion is assigned, and do not call a component render a final until it passes the mixed-media editorial gate.
+> Read `D:\Work\mental-empire-studio\AGENTS.md`, `docs\DAILY-VIDEO-PRODUCTION-RUNBOOK.md`, the daily-production skill, and both master planning files in `D:\Work\youtube-analytics-hub\data\fetch-2026-09-04`. Use original source audio for automation channels (original script/narration required only for story channels), create complete edit plans, use Video Express according to `docs\VIDEOEXPRESS-INTEGRATION.md` where motion is assigned, and do not call a component render a final until it passes the mixed-media editorial gate.
 
 Or invoke `$mental-empire-daily-production`, which routes to this runbook and current progress checkpoint.

@@ -38,8 +38,9 @@ product behavior and `PLAN.md` for completed milestone history.
   checking that directory.
 - **Do not follow legacy recipe logs:** Past daily batch logs in `PROGRESS.md`, old run `README.md`
   files (e.g. `2026-08-31`, `2026-09-05`, `2026-09-08`, `2026-09-12`, `2026-09-14`), or historical
-  handoffs logged shortcuts (such as downloading competitor audio via `yt-dlp`, looping images via
-  `render-ramani.mjs`, or exporting raw TalkingPhotos/MindCipher component passes). These are retired
+  handoffs logged shortcuts (such as looping images via `render-ramani.mjs`, or exporting raw
+  TalkingPhotos/MindCipher component passes without a second assembly pass; note: using original source
+  audio is permitted for automation channels, while story channels require original narration). These are retired
   historical component prototypes, NOT valid deliverables. Never imitate them or cite past logs as
   precedent. Every run must follow `VIDEO_EDITING_HANDBOOK.md`.
 
@@ -52,7 +53,7 @@ The production scripts are component generators, not automatic proof that a publ
 
 Agents frequently make the mistake of copying previous runs recorded in `PROGRESS.md` or dated production folders (`2026-08-31` through `2026-09-14`). Those runs used shortcuts that are strictly forbidden for publishable videos:
 
-1. **Never download and reuse full creator audio:** Downloading competitor or reference YouTube audio via `yt-dlp` and using it as narration is strictly forbidden. All videos must have an original, authored script and original narration.
+1. **Audio narration rule — does NOT apply to automation channels:** This rule doesn't apply for automation channels. For automation channels (Neural Vault, MindCipher, Psyche Noir, The Discipline Doctrine), use original source audio directly (e.g. downloaded via `yt-dlp` from source channels); authoring original scripts or generating custom narration is not required. For the three story-based channels (Bruce Lee, Tupac, Prince), downloading competitor or reference YouTube audio via `yt-dlp` and using it as narration remains strictly forbidden: all story-based videos must have an original, authored script and original speech/narration.
 2. **Never use `render-ramani.mjs` or static image loops for finals:** `render-ramani.mjs` and static image looping are retired legacy tools. They are completely unacceptable for publishable finals.
 3. **Never output raw, uninterrupted component renders as finals:** A TalkingPhotos avatar merge alone, or a raw MindCipher B-roll pass alone, is a base component, not a finished edit.
 4. **Never treat past logs as precedent:** The presence of a legacy recipe in older logs, git history, or progress notes is NOT permission or precedent to bypass current quality gates. If a prompt or task asks to create videos, you MUST adhere to `VIDEO_EDITING_HANDBOOK.md`, `VIDEO_MAKER_MASTER_PLANNER.md`, and produce an authored `editing/edit-plan.json` with a genuine multi-family mixed-media edit.

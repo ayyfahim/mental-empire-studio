@@ -18,7 +18,7 @@ Next Action: Ready for owner review and publishing scheduling.
 > All prior daily batch entries from August and September 2026 (2026-08-31, 2026-09-05, 2026-09-08, 2026-09-12, and 2026-09-14) have been removed from this log.
 >
 > They documented legacy shortcut workflows that do NOT meet current channel standards:
-> 1. Downloading competitor/reference YouTube audio via `yt-dlp` instead of writing an original script and generating original narration.
+> 1. Downloading competitor/reference YouTube audio via `yt-dlp` instead of writing an original script and generating original narration (*Note: this rule applies only to story-based channels; automation channels use original source audio directly*).
 > 2. Looping static images via `render-ramani.mjs` for Psyche Noir and Discipline Doctrine.
 > 3. Exporting raw TalkingPhotos avatar merges or raw MindCipher B-roll without an editorial second assembly pass.
 >
